@@ -1,9 +1,13 @@
 #include "MRSelectObjectByClick.h"
+#include "MRViewer/MRMouseController.h"
 #include "MRViewer/MRViewer.h"
-#include "MRViewer/MRRibbonMenu.h"
+#include "MRViewer/MRRibbonSchema.h"
+#include "MRViewer/MRViewport.h"
 #include "MRMesh/MRObject.h"
 #include "MRMesh/MRObjectsAccess.h"
 #include "MRMesh/MR2to3.h"
+#include "MRMesh/MRSceneRoot.h"
+#include "MRMesh/MRVisualObject.h"
 #include <GLFW/glfw3.h>
 
 namespace MR
@@ -19,8 +23,8 @@ void SelectObjectByClick::drawDialog( float, ImGuiContext* )
     if ( !picked_ )
         return;
     auto drawList = ImGui::GetBackgroundDrawList();
-    auto downPos = getViewerInstance().mouseController.getDownMousePos();
-    auto currPos = getViewerInstance().mouseController.getMousePos();
+    auto downPos = getViewerInstance().mouseController().getDownMousePos();
+    auto currPos = getViewerInstance().mouseController().getMousePos();
     Box2i rect;
     rect.include( downPos );
     rect.include( currPos );
@@ -28,13 +32,13 @@ void SelectObjectByClick::drawDialog( float, ImGuiContext* )
                        Color::white().getUInt32() );
 }
 
-bool SelectObjectByClick::onMouseDown_( MouseButton button, int modifier )
+bool SelectObjectByClick::onMouseDown_( MouseButton button, int modifiers )
 {
-    if ( button != MouseButton::Left )
+    if ( button != MouseButton::Left || ( modifiers & ~GLFW_MOD_CONTROL ) != 0 )
         return false;
 
     picked_ = true;
-    ctrl_ = modifier == GLFW_MOD_CONTROL;
+    ctrl_ = modifiers == GLFW_MOD_CONTROL;
     return true;
 }
 
@@ -60,12 +64,12 @@ bool SelectObjectByClick::onMouseMove_( int, int )
 
 void SelectObjectByClick::select_( bool up )
 {
-    auto downPos = getViewerInstance().mouseController.getDownMousePos();
-    auto currPos = getViewerInstance().mouseController.getMousePos();
+    auto downPos = getViewerInstance().mouseController().getDownMousePos();
+    auto currPos = getViewerInstance().mouseController().getMousePos();
 
     std::vector<std::shared_ptr<VisualObject>> newSelection;
     const auto& viewport = viewer->viewport();
-    bool smallPick = ( downPos - currPos ).lengthSq() < 9;
+    bool smallPick = distanceSq( downPos, currPos ) < 9;
     if ( smallPick ) // 3*3
     {
         const auto [obj, pick] = viewport.pick_render_object();

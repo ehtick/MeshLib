@@ -44,14 +44,14 @@ std::string getMeshVerticesShader()
 )";
 }
 
-std::string getMeshFragmentShader( bool gl4, bool alphaSort )
+std::string getMeshFragmentShader( bool gl4, bool alphaSort, bool msaaEnabled )
 {
     return
         getFragmentShaderHeaderBlock( gl4, alphaSort ) +
         getMeshFragmentShaderArgumetsBlock() +
         getShaderMainBeginBlock() +
         getFragmentShaderClippingBlock() +
-        getFragmentShaderOnlyOddBlock( gl4 && !alphaSort ) +
+        getFragmentShaderOnlyOddBlock( gl4 && msaaEnabled ) + // alphaSort disable MSAA without changing current number of samples
         getMeshFragmentShaderColoringBlock() +
         getFragmentShaderEndBlock( alphaSort );
 }
@@ -65,6 +65,7 @@ std::string getMeshFragmentShaderArgumetsBlock()
   uniform mat4 normal_matrix;
 
   uniform highp usampler2D selection;      // (in from base) selection BitSet
+  uniform highp usampler2D texturePerFace;      // (in from base) texture index for each face
   uniform sampler2D faceNormals;     // (in from base) normals per face
   uniform sampler2D faceColors;      // (in from base) face color
   uniform bool perFaceColoring;      // (in from base) use faces colormap is true
@@ -82,7 +83,7 @@ std::string getMeshFragmentShaderArgumetsBlock()
   uniform vec4 clippingPlane;        // (in from base) clipping plane
   uniform bool invertNormals;        // (in from base) invert normals if true
   uniform bool mirrored;
-  uniform sampler2D tex;             // (in from base) texture
+  uniform highp sampler2DArray tex;             // (in from base) texture
   uniform float specExp;   // (in from base) lighting parameter 
   uniform bool useTexture;           // (in from base) enable texture
   uniform vec3 ligthPosEye;   // (in from base) light position transformed by view only (not proj)
@@ -106,8 +107,15 @@ std::string getMeshFragmentShaderArgumetsBlock()
 
 std::string getMeshFragmentShaderColoringBlock()
 {
-    return R"(
-    uint primitiveId = ( uint(primitiveIdf1) << 20u ) + uint(primitiveIdf0);
+    return 
+#ifdef __EMSCRIPTEN__
+        R"(
+    uint primitiveId = ( uint(primitiveIdf1) << 20u ) + uint(primitiveIdf0);)"
+#else
+        R"(
+    uint primitiveId = uint(gl_PrimitiveID);)"
+#endif
+        R"(
     vec3 normEyeCpy = normal_eye;
     if ( flatShading )
     {
@@ -158,7 +166,16 @@ std::string getMeshFragmentShaderColoringBlock()
 
     if ( useTexture && !selected )
     {
-      vec4 textColor = texture(tex, texcoordi);
+      ivec2 tPFTexSize = textureSize( texturePerFace, 0 );
+      vec4 textColor;
+      if(tPFTexSize.x == 0)
+        textColor = texture(tex, vec3(texcoordi, 0.0));
+      else
+      {
+        uint textId = texelFetch(texturePerFace, ivec2( primitiveId % uint(tPFTexSize.x), primitiveId / uint(tPFTexSize.x) ), 0 ).r;
+        textColor = texture(tex, vec3(texcoordi, float(textId)));
+      }
+
       float destA = colorCpy.a;
       colorCpy.a = textColor.a + destA * ( 1.0 - textColor.a );
       if ( colorCpy.a == 0.0 )

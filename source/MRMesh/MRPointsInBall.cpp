@@ -1,17 +1,24 @@
 #include "MRPointsInBall.h"
 #include "MRPointCloud.h"
+#include "MRMesh.h"
 #include "MRAABBTreePoints.h"
 
 namespace MR
 {
 
-void findPointsInBall( const PointCloud& pointCloud, const Vector3f& center, float radius, 
+void findPointsInBall( const PointCloud& pointCloud, const Ball3f& ball,
     const FoundPointCallback& foundCallback, const AffineXf3f* xf )
 {
-    findPointsInBall( pointCloud.getAABBTree(), center, radius, foundCallback, xf );
+    findPointsInBall( pointCloud.getAABBTree(), ball, foundCallback, xf );
 }
 
-void findPointsInBall( const AABBTreePoints& tree, const Vector3f& center, float radius, 
+void findPointsInBall( const Mesh& mesh, const Ball3f& ball,
+    const FoundPointCallback& foundCallback, const AffineXf3f* xf )
+{
+    findPointsInBall( mesh.getAABBTreePoints(), ball, foundCallback, xf );
+}
+
+void findPointsInBall( const AABBTreePoints& tree, const Ball3f& ball,
     const FoundPointCallback& foundCallback, const AffineXf3f* xf )
 {
     if ( !foundCallback )
@@ -21,22 +28,19 @@ void findPointsInBall( const AABBTreePoints& tree, const Vector3f& center, float
     }
 
     if ( tree.nodes().empty() )
-    {
-        assert( false );
         return;
-    }
 
     const auto& orderedPoints = tree.orderedPoints();
-    const float radiusSq = sqr( radius );
 
     constexpr int MaxStackSize = 32; // to avoid allocations
-    AABBTreePoints::NodeId subtasks[MaxStackSize];
+    NodeId subtasks[MaxStackSize];
     int stackSize = 0;
 
-    auto addSubTask = [&]( AABBTreePoints::NodeId n )
+    auto addSubTask = [&]( NodeId n )
     {
-        float distSq = ( transformed( tree.nodes()[n].box, xf ).getBoxClosestPointTo( center ) - center ).lengthSq();
-        if ( distSq <= radiusSq )
+        const auto & box = tree.nodes()[n].box;
+        float distSq = xf ? transformed( box, *xf ).getDistanceSq( ball.center ) : box.getDistanceSq( ball.center );
+        if ( distSq <= ball.radiusSq )
             subtasks[stackSize++] = n;
     };
 
@@ -53,7 +57,7 @@ void findPointsInBall( const AABBTreePoints& tree, const Vector3f& center, float
             for ( int i = first; i < last; ++i )
             {
                 auto coord = xf ? ( *xf )( orderedPoints[i].coord ) : orderedPoints[i].coord;
-                if ( ( coord - center ).lengthSq() <= radiusSq )
+                if ( !ball.outside( coord ) )
                     foundCallback( orderedPoints[i].id, coord );
             }
             continue;

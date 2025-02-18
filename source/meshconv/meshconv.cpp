@@ -6,10 +6,28 @@
 #include "MRMesh/MRConvexHull.h"
 #include "MRMesh/MRTimer.h"
 #include "MRMesh/MRLog.h"
+#include "MRMesh/MRSystem.h"
+#include "MRMesh/MRStringConvert.h"
 #include "MRPch/MRSpdlog.h"
+#include "MRIOExtras/MRIOExtras.h"
+#pragma warning(push)
+#if _MSC_VER >= 1937 // Visual Studio 2022 version 17.7
+#pragma warning(disable: 5267) //definition of implicit copy constructor is deprecated because it has a user-provided destructor
+#endif
 #include <boost/program_options.hpp>
+#pragma warning(pop)
 #include <boost/exception/diagnostic_information.hpp>
 #include <iostream>
+
+// Fix parsing std::filesystem::path with spaces (see https://github.com/boostorg/program_options/issues/69)
+namespace boost
+{
+template <>
+inline std::filesystem::path lexical_cast<std::filesystem::path, std::string>( const std::string &arg )
+{
+    return std::filesystem::path( arg );
+}
+} //namespace boost
 
 bool doCommand( const boost::program_options::option& option, MR::Mesh& mesh )
 {
@@ -31,7 +49,7 @@ bool doCommand( const boost::program_options::option& option, MR::Mesh& mesh )
         rems.targetEdgeLen = targetEdgeLen;
         MR::remesh( mesh, rems );
 
-        std::cout << "re-meshed successfully to target edge length " << targetEdgeLen << "\n";
+        std::cout << "remeshed successfully to target edge length " << targetEdgeLen << "\n";
     }
     else if ( option.string_key == "unite" || option.string_key == "subtract" || option.string_key == "intersect" )
     {
@@ -70,6 +88,8 @@ bool doCommand( const boost::program_options::option& option, MR::Mesh& mesh )
 // can throw
 static int mainInternal( int argc, char **argv )
 {
+    MR::loadIOExtras();
+
     std::filesystem::path inFilePath;
     std::filesystem::path outFilePath;
 
@@ -120,11 +140,11 @@ static int mainInternal( int argc, char **argv )
         .allow_unregistered()
         .run();
 
-    if ( vm.count("help") || !vm.count("input-file") || !vm.count("output-file") )
+    if ( vm.count("help") || !vm.count("input-file") )
     {
         std::cerr << 
             "meshconv is mesh file conversion utility based on MeshInspector/MeshLib\n"
-            "Usage: meshconv input-file output-file [options]\n"
+            "Usage: meshconv input-file [output-file] [options]\n"
             << allCommands << "\n";
         return 0;
     }
@@ -139,7 +159,7 @@ static int mainInternal( int argc, char **argv )
     }
 
     std::cout << "Loading " << inFilePath << "..." << std::endl;
-    MR::Timer t("LoadMesh");
+    MR::Timer t( "LoadMesh" );
     auto loadRes = MR::MeshLoad::fromAnySupportedFormat( inFilePath );
     if ( !loadRes.has_value() )
     {
@@ -147,7 +167,11 @@ static int mainInternal( int argc, char **argv )
         return 1;
     }
     auto mesh = std::move( loadRes.value() );
-    std::cout << "loaded successfully in " << t.secondsPassed().count() << "s\n"
+    std::cout << "loaded successfully in " << t.secondsPassed().count() << "s" << std::endl;
+    t.finish();
+
+    t.restart( "MeshInfo" );
+    std::cout
         << "num vertices: " << mesh.topology.numValidVerts() << "\n"
         << "num edges:    " << mesh.topology.computeNotLoneUndirectedEdges() << "\n"
         << "num faces:    " << mesh.topology.numValidFaces() << std::endl;
@@ -163,16 +187,23 @@ static int mainInternal( int argc, char **argv )
         }
     }
 
-    std::cout << "Saving " << outFilePath << "..." << std::endl;
-    t.restart("SaveMesh");
-    auto saveRes = MR::MeshSave::toAnySupportedFormat( mesh, outFilePath );
-    if ( !saveRes.has_value() )
+    if ( !outFilePath.empty() )
     {
-        std::cerr << "Mesh save error: " << saveRes.error() << "\n";
-        return 1;
+        std::cout << "Saving " << outFilePath << "..." << std::endl;
+        t.restart( "SaveMesh" );
+        auto saveRes = MR::MeshSave::toAnySupportedFormat( mesh, outFilePath );
+        if ( !saveRes.has_value() )
+        {
+            std::cerr << "Mesh save error: " << saveRes.error() << "\n";
+            return 1;
+        }
+        std::cout << "saved successfully in " << t.secondsPassed().count() << "s" << std::endl;
+        t.finish();
     }
-    std::cout << "saved successfully in " << t.secondsPassed().count() << "s\n";
-    t.finish();
+
+#ifdef _WIN32
+    std::cout << "Peak virtual memory usage: " << MR::bytesString( MR::getProccessMemoryInfo().maxVirtual ) << std::endl;
+#endif
 
     return 0;
 }

@@ -13,7 +13,7 @@ namespace MR
  * edges should have invalid left face (FaceId == -1)
  * @return Expected with has_value()=true if holes filled, otherwise - string error
  */
-MRMESH_API VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresentativeEdges );
+MRMESH_API Expected<void> fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresentativeEdges );
 
 /// computes the transformation that maps
 /// O into center mass of contours' points
@@ -21,4 +21,9 @@ MRMESH_API VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& h
 MRMESH_API AffineXf3f getXfFromOxyPlane( const Contours3f& contours );
 MRMESH_API AffineXf3f getXfFromOxyPlane( const Mesh& mesh, const std::vector<EdgePath>& paths );
 
-}
+/// given an ObjectMesh and the contours of a planar hole in it,
+/// fills the hole using fillContours2D function and updates object's attributes;
+/// if some contours were not closed on input, then closes them by adding a bridge edge in each
+MRMESH_API Expected<void> fillPlanarHole( ObjectMesh& obj, std::vector<EdgeLoop>& holeContours );
+
+} //namespace MR

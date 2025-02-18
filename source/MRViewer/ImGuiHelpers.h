@@ -7,10 +7,13 @@
 // v. 2.0. If a copy of the MPL was not distributed with this file, You can
 // obtain one at http://mozilla.org/MPL/2.0/.
 
+#include "MRMesh/MRFlagOperators.h"
 #include "exports.h"
-#include "ImGuiTraits.h"
 #include "MRMesh/MRVector2.h"
 #include "MRMesh/MRColor.h"
+#include "MRViewer/MRUnits.h"
+#include "MRViewer/MRImGui.h"
+#include <misc/cpp/imgui_stdlib.h>
 #include <algorithm>
 #include <functional>
 #include <cstddef>
@@ -68,15 +71,7 @@ inline bool ListBox(const char* label, int* idx, const std::vector<std::string>&
 
 inline bool InputText(const char* label, std::string &str, ImGuiInputTextFlags flags = 0, ImGuiInputTextCallback callback = NULL, void* user_data = NULL)
 {
-  char buf[1024];
-  std::fill_n(buf, 1024, char(0));
-  std::copy_n(str.begin(), std::min(1024, (int) str.size()), buf);
-  if (ImGui::InputText(label, buf, 1024, flags, callback, user_data))
-  {
-    str = std::string(buf);
-    return true;
-  }
-  return false;
+  return ImGui::InputText( label, &str, flags, callback, user_data );
 }
 
 
@@ -152,6 +147,17 @@ inline bool Checkbox(const char* label, Getter get, Setter set)
     return ret;
 }
 
+/// helper structure for PlotCustomHistogram describing background grid line and label
+struct HistogramGridLine
+{
+    /// value on the corresponding axis where the line and label are located
+    float value{};
+    /// label text
+    std::string label;
+    /// label tooltip
+    std::string tooltip;
+};
+
 /// draws a histogram
 /// \param selectedBarId (if not negative) the bar to highlight as selected
 /// \param hoveredBarId (if not negative) the bar to highlight as hovered
@@ -161,7 +167,9 @@ MRVIEWER_API void PlotCustomHistogram( const char* str_id,
                                  std::function<void( int idx )> on_click,
                                  int values_count, int values_offset = 0,
                                  float scale_min = FLT_MAX, float scale_max = FLT_MAX,
-                                 ImVec2 frame_size = ImVec2( 0, 0 ), int selectedBarId = -1, int hoveredBarId = -1 );
+                                 ImVec2 frame_size = ImVec2( 0, 0 ), int selectedBarId = -1, int hoveredBarId = -1,
+                                 const std::vector<HistogramGridLine>& gridIndexes = {},
+                                 const std::vector<HistogramGridLine>& gridValues = {} );
 
 /// begin typical state plugin window
 MRVIEWER_API bool BeginStatePlugin( const char* label, bool* open, float width );
@@ -169,6 +177,9 @@ MRVIEWER_API bool BeginStatePlugin( const char* label, bool* open, float width )
 /// Structure that contains parameters for State plugin window with custom style
 struct CustomStatePluginWindowParameters
 {
+    // All fields those have explicit initializers, even if they have sane default constructors.
+    // This makes it so that Clangd doens't warn when they aren't initialized in partial aggregate initialization.
+
     /// current collapsed state of window
     /// in/out parameter, owned outside of `BeginCustomStatePlugin` function
     bool* collapsed{ nullptr };
@@ -176,16 +187,30 @@ struct CustomStatePluginWindowParameters
     float width{ 0.0f };
     /// window height, usually calculated internally (if value is zero)
     float height{ 0.0f };
-    /// if this parameter set, window located on bottom part of viewport
-    bool isDown{ false };
+    /// If false, will never show the scrollbar.
+    bool allowScrollbar = true;
+    /// start Position
+    ImVec2* position{ nullptr };
+    /// the position of the starting point of the window
+    ImVec2 pivot{ 0.0f, 0.0f };
     /// menu scaling, needed to proper scaling of internal window parts
     float menuScaling{ 1.0f };
     /// window flags, ImGuiWindowFlags_NoScrollbar and ImGuiWindow_NoScrollingWithMouse are forced inside `BeginCustomStatePlugin` function
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize;
     /// outside owned parameter for windows with resize option
     ImVec2* changedSize{ nullptr };
+    /// reaction on press "Help" button
+    std::function<void()> helpBtnFn = nullptr;
+    /// if true esc button closes the plugin
+    bool closeWithEscape{ true };
 };
 
+/// returns the position of the window that will be located at the bottom of the viewport
+/// for a value pivot = ( 0.0f, 1.0f )
+MRVIEWER_API ImVec2 GetDownPosition( const float width );
+
+// Calculate and return the height of the window title
+MRVIEWER_API float GetTitleBarHeght( float menuScaling );
 /// begin state plugin window with custom style.  if you use this function, you must call EndCustomStatePlugin to close the plugin correctly.
 /// the flags ImGuiWindowFlags_NoScrollbar and ImGuiWindow_NoScrollingWithMouse are forced in the function.
 MRVIEWER_API bool BeginCustomStatePlugin( const char* label, bool* open, const CustomStatePluginWindowParameters& params = {} );
@@ -220,11 +245,13 @@ MRVIEWER_API bool Link( const char* label, uint32_t color = MR::Color( 60, 120, 
 /// values are bits
 enum class PaletteChanges
 {
-    None,                  // 0b00
-    Texture,               // 0b01
-    Ranges,                // 0b10
-    All = Texture | Ranges // 0b11
+    None    = 0,
+    Reset   = 1, // reset palette
+    Texture = 2, // texture and legend must be updated
+    Ranges  = 4, // uv-coordinates must be recomputed for the same values
+    All = Texture | Ranges | Reset, // 0b111
 };
+MR_MAKE_FLAG_OPERATORS( PaletteChanges )
 
 /// Helper palette widget, allows to change palette ranges and filter type \n
 /// can load and save palette preset.
@@ -232,7 +259,7 @@ enum class PaletteChanges
 /// \param fixZero if present shows checkbox to fix zero symmetrical palette
 /// \return mask of changes, if it has PaletteChanges::Texture bit - object requires texture update,
 /// if it has PaletteChanges::Ranges uv coordinates should be recalculated and updated in object
-MRVIEWER_API PaletteChanges Palette( 
+MRVIEWER_API PaletteChanges Palette(
     const char* label,
     MR::Palette& palette,
     std::string& presetName,
@@ -241,13 +268,21 @@ MRVIEWER_API PaletteChanges Palette(
     bool* fixZero = nullptr,
     float speed = 1.0f,
     float min = std::numeric_limits<float>::lowest(),
-    float max = std::numeric_limits<float>::max(),
-    const char* format = "%.3f" );
+    float max = std::numeric_limits<float>::max()
+);
+
+// Parameters for the `Plane( MR::PlaneWidget& ... )` function
+enum class PlaneWidgetFlags
+{
+    None = 0,   // Default setup
+    DisableVisibility = 1   // Don't show "Show Plane" checkbox (and the preceding separator)
+};
+MR_MAKE_FLAG_OPERATORS( PlaneWidgetFlags )
 
 /// Helper plane widget, allows to draw specified plain in the scene \n
 /// can import plane from the scene, draw it with mouse or adjust with controls
 /// planeWidget stores the plane widget params
-MRVIEWER_API void Plane( MR::PlaneWidget& planeWidget, float menuScaling );
+MRVIEWER_API void Plane( MR::PlaneWidget& planeWidget, float menuScaling, PlaneWidgetFlags flags = {} );
 
 
 /// draw image with Y-direction inversed up-down
@@ -256,7 +291,7 @@ MRVIEWER_API void Image( const MR::ImGuiImage& image, const ImVec2& size, const 
 
 /// get image coordinates under cursor considering Y-direction flipping
 MRVIEWER_API MR::Vector2i GetImagePointerCoord( const MR::ImGuiImage& image, const ImVec2& size, const ImVec2& imagePos );
- 
+
 
 /// draw spinner in given place, radius with respect to scaling
 MRVIEWER_API void Spinner( float radius, float scaling );

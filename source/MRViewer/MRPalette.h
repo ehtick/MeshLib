@@ -4,10 +4,12 @@
 #include "MRMesh/MRVector4.h"
 #include "MRMesh/MRMeshTexture.h"
 #include "MRMesh/MRColor.h"
-#include "MRPch/MRJson.h"
 #include "MRMesh/MRExpected.h"
-#include <imgui.h>
+#include "MRViewer/MRImGui.h"
+#include <algorithm>
 #include <filesystem>
+
+namespace Json{ class Value; }
 
 namespace MR
 {
@@ -22,34 +24,29 @@ namespace MR
 class Palette
 {
 public:
-    // preset palette colors
-    static inline const std::vector<Color> DefaultColors =
-    {
-        Color( Vector4f { 0.1f, 0.25f, 1.0f, 1.f } ),// almost blue   |
-        Color( Vector4f { 0.15f, 0.5f, 0.75f,1.f } ),//               | -> "inside" the ref mesh
-        Color( Vector4f { 0.2f, 0.75f, 0.5f, 1.f } ),//               |
-        Color( Vector4f { 0.25f, 1.0f, 0.25f,1.f } ),// almost green -> zero distance
-        Color( Vector4f { 0.5f, 0.75f, 0.2f, 1.f } ),//               |
-        Color( Vector4f { 0.75f, 0.5f, 0.15f,1.f } ),//               | -> "outside"
-        Color( Vector4f { 1.0f, 0.25f, 0.1f, 1.f } ),// almost red    |
-    };
+    /// preset palette colors: from blue via green to red
+    MRVIEWER_API static const std::vector<Color> DefaultColors;
+    [[nodiscard]] static const std::vector<Color> & BlueGreenRedColors() { return DefaultColors; }
+
+    /// simpler palette colors: from green to red
+    [[nodiscard]] MRVIEWER_API static const std::vector<Color> & GreenRedColors();
 
     MRVIEWER_API Palette( const std::vector<Color>& colors );
     /**
      * @brief Set base palette colors
-     * @detail colors.size() should be more or equal 2
+     * colors.size() should be more or equal 2
      * for discrete palette using vector of colors calculated by mixing the base colors
      * i.e. base {blue, red} -> discrete 3 {blue, 0.5*blue + 0.5*red, red}
      */
     MRVIEWER_API void setBaseColors( const std::vector<Color>& colors );
     /**
      * @brief set range limits for palette (need for find color by value)
-     * @detail all palette colors are evenly distributed between min and max
+     * all palette colors are evenly distributed between min and max
      */
     MRVIEWER_API void setRangeMinMax( float min, float max );
     /**
      * @brief set range limits for palette (need for find color by value)
-     * @detail two half palette colors are evenly distributed between MinNeg / MaxNeg and MinPos / MaxPos
+     * two half palette colors are evenly distributed between MinNeg / MaxNeg and MinPos / MaxPos
      * for values between MaxNeg / MinPos return one color (from center palette)
      */
     MRVIEWER_API void setRangeMinMaxNegPos( float minNeg, float maxNeg, float minPos, float maxPos );
@@ -59,9 +56,11 @@ public:
     // set palette type (linear / discrete)
     MRVIEWER_API void setFilterType( FilterType type );
 
-    // Discrete: bar consists of single colored rectangles for each initial color
-    // Linear (default): color is changing from one to another during initial color list
-    MRVIEWER_API void draw( const ImVec2& pose, const ImVec2& size );
+    /// Draws vertical legend with labels in ImGui window with given name
+    /// Discrete: bar consists of single colored rectangles for each initial color
+    /// Linear (default): color is changing from one to another during initial color list
+    /// \param onlyTopHalf if true, draws only top half of the palette and labels stretched to whole window
+    MRVIEWER_API void draw( const std::string& windowName, const ImVec2& pose, const ImVec2& size, bool onlyTopHalf = false );
 
     // structure for label
     struct MRVIEWER_CLASS Label
@@ -97,8 +96,24 @@ public:
         return texture_;
     };
 
-    // get UV coordinate in palette for given value
-    MRVIEWER_API UVCoord getUVcoord( float val );
+    // get relative position in [0,1], where 0 is for minimum and 1 is for maximum
+    MRVIEWER_API float getRelativePos( float val ) const;
+
+    /// get UV coordinate in palette for given value
+    /// \param valid true - return coordinate of palette's color, false - return coordinate of gray
+    UVCoord getUVcoord( float val, bool valid = true ) const
+    {
+        return {
+            ( texEnd_ - texStart_ ) * getRelativePos( val ) + texStart_,
+            valid ? 0.25f : 0.75f
+        };
+    }
+
+    /// get UV coordinates in palette for given values
+    /// \param region only these vertices will be processed
+    /// \param valids if given then defines subregion with valid values, and invalid values will get gray color
+    MRVIEWER_API VertUVCoords getUVcoords( const VertScalars & values, const VertBitSet & region, const VertPredicate & valids = {} ) const;
+    MRVIEWER_API VertUVCoords getUVcoords( const VertScalars & values, const VertBitSet & region, const VertBitSet * valids ) const;
 
     // base parameters of palette
     struct Parameters
@@ -108,7 +123,16 @@ public:
         int discretization = 7; // number of different colors for discrete palette
     };
 
-    MRVIEWER_API const Parameters& getParameters() const;
+    [[nodiscard]] const Parameters& getParameters() const { return parameters_; }
+
+    /// returns minimum value in the palette's range
+    [[nodiscard]] float getRangeMin() const { return parameters_.ranges.front(); }
+
+    /// returns maximum value in the palette's range
+    [[nodiscard]] float getRangeMax() const { return parameters_.ranges.back(); }
+
+    /// returns minimum squared value, not smaller than all squared values of palette's range
+    [[nodiscard]] float getRangeSq() const { return std::max( sqr( getRangeMin() ), sqr( getRangeMax() ) ); }
 
     // returns formated string for this value of palette
     MRVIEWER_API std::string getStringValue( float value );
@@ -116,6 +140,7 @@ public:
     MRVIEWER_API int getMaxLabelCount();
     // sets maximal label count
     MRVIEWER_API void setMaxLabelCount( int val );
+
 private:
     void setRangeLimits_( const std::vector<float>& ranges );
 
@@ -140,6 +165,9 @@ private:
     // stores OpenGL textures. Change useDiscrete_ to switch between them
     MeshTexture texture_;
 
+    // texture positions of min and max values
+    float texStart_ = 0, texEnd_ = 1;
+
     Parameters parameters_;
 
     bool isWindowOpen_ = false;
@@ -147,6 +175,8 @@ private:
     bool useCustomLabels_ = false;
 
     int maxLabelCount_ = 0;
+
+    float prevMaxLabelWidth_ = 0.0f;
 
     static void resizeCallback_( ImGuiSizeCallbackData* data );
 };
@@ -161,7 +191,7 @@ public:
     /// returns true if load was succeed
     MRVIEWER_API static bool loadPreset( const std::string& name, Palette& palette );
     /// saves given palette to preset with given name
-    MRVIEWER_API static VoidOrErrStr savePreset( const std::string& name, const Palette& palette );
+    MRVIEWER_API static Expected<void> savePreset( const std::string& name, const Palette& palette );
     /// returns path to presets folder
     MRVIEWER_API static std::filesystem::path getPalettePresetsFolder();
 private:

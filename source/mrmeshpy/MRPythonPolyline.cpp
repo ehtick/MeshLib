@@ -1,4 +1,4 @@
-#include "MRMesh/MRPython.h"
+#include "MRPython/MRPython.h"
 #include "MRMesh/MRMeshFwd.h"
 #include "MRMesh/MRPolyline.h"
 #include "MRMesh/MRVector3.h"
@@ -9,18 +9,22 @@
 #include "MRMesh/MRBox.h"
 #include "MRMesh/MRAABBTreePolyline.h"
 #include "MRMesh/MR2DContoursTriangulation.h"
-#include "MRMesh/MRSymbolMesh.h"
+#include "MRSymbolMesh/MRSymbolMesh.h"
 #include "MRMesh/MRFaceFace.h"
 #include "MRMesh/MRPolyline2Collide.h"
 
-#define CONCAT(a, b) 
+#define CONCAT(a, b)
+
+MR_ADD_PYTHON_CUSTOM_CLASS( mrmeshpy, PolylineTopology, MR::PolylineTopology )
 
 #define MR_ADD_PYTHON_POLYLINE(dimension) \
-MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, Polyline##dimension, []( pybind11::module_& m )\
+MR_ADD_PYTHON_CUSTOM_CLASS( mrmeshpy, Polyline##dimension, MR::Polyline<MR::Vector##dimension<float>> ) \
+MR_ADD_PYTHON_CUSTOM_CLASS( mrmeshpy, AABBTreePolyline##dimension, MR::AABBTreePolyline##dimension )    \
+MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, Polyline##dimension, [] ( pybind11::module_& )                             \
 {\
     using VectorType = MR::Vector##dimension<float>;\
     using PolylineType = MR::Polyline<VectorType>;\
-    pybind11::class_<PolylineType>( m, "Polyline"#dimension ).\
+    MR_PYTHON_CUSTOM_CLASS( Polyline##dimension ).\
 /*        def_readwrite( "topology", &PolylineType::topology ).*/\
         def_readwrite( "points", &PolylineType::points ).\
 \
@@ -44,7 +48,8 @@ MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, Polyline##dimension, []( pybind11::module_& 
 \
         def( "orgPnt", &PolylineType::orgPnt, pybind11::arg( "e" ), "Returns coordinates of the edge origin." ).\
         def( "destPnt", &PolylineType::destPnt, pybind11::arg( "e" ), "Returns coordinates of the edge destination." ).\
-        def( "edgePoint", &PolylineType::edgePoint, pybind11::arg( "e" ), pybind11::arg( "f" ), "Returns a point on the edge: origin point for f=0 and destination point for f=1." ).\
+        def( "edgePoint", ( VectorType( PolylineType::* )( MR::EdgeId, float )const )&PolylineType::edgePoint, pybind11::arg( "e" ), pybind11::arg( "f" ), "Returns a point on the edge: origin point for f=0 and destination point for f=1." ).\
+        def( "edgePoint", ( VectorType( PolylineType::* )( const MR::EdgePoint& )const )&PolylineType::edgePoint, pybind11::arg( "ep" ), "Computes coordinates of point given as edge and relative position on it." ).\
         def( "edgeCenter", &PolylineType::edgeCenter, pybind11::arg( "e" ), "Returns edge's centroid." ).\
 \
         def( "edgeVector", &PolylineType::edgeVector, pybind11::arg( "e" ), "Returns vector equal to edge destination point minus edge origin point." ).\
@@ -85,14 +90,20 @@ MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, Polyline##dimension, []( pybind11::module_& 
         def( "addFromSurfacePath", &PolylineType::addFromSurfacePath, pybind11::arg( "mesh" ), pybind11::arg( "path" ),\
             "Adds path to this polyline.\n"\
             "Return the edge from first new to second new vertex." );\
-} )
+    } ) \
+    MR_ADD_PYTHON_VEC( mrmeshpy, vectorPolyline##dimension, MR::Polyline<MR::Vector##dimension<float>> )
 
 MR_ADD_PYTHON_POLYLINE(2)
 MR_ADD_PYTHON_POLYLINE(3)
 
 MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, PlanarTriangulation, [] ( pybind11::module_& m )
 {
-    m.def("findHoleVertIdsByHoleEdges",&MR::PlanarTriangulation::findHoleVertIdsByHoleEdges,
+    pybind11::enum_<MR::PlanarTriangulation::WindingMode>( m, "WindingMode", "specify mode of detecting inside and outside parts of triangulation" ).
+        value( "NonZero", MR::PlanarTriangulation::WindingMode::NonZero ).
+        value( "Negative", MR::PlanarTriangulation::WindingMode::Negative ).
+        value( "Positive", MR::PlanarTriangulation::WindingMode::Positive );
+
+    m.def( "findHoleVertIdsByHoleEdges", &MR::PlanarTriangulation::findHoleVertIdsByHoleEdges,
         pybind11::arg( "tp" ), pybind11::arg( "holePaths" ),
         "return vertices of holes that correspond internal contours representation of PlanarTriangulation" );
 
@@ -100,10 +111,11 @@ MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, PlanarTriangulation, [] ( pybind11::module_&
         pybind11::arg( "contours" ), pybind11::arg( "holeVertsIds" ) = nullptr,
         "Triangulate 2d contours.\n"
         "Only closed contours are allowed (first point of each contour should be the same as last point of the contour).\n"
-        "holeVertsIds if set merge only points with same vertex id, otherwise merge all points with same coordinates\n"
-        "Return created mesh" );
+        "\tholeVertsIds if set merge only points with same vertex id, otherwise merge all points with same coordinates\n"
+        "\treturn created mesh" );
 } )
 
+#ifndef MRMESH_NO_LABEL
 MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, SymbolsMesh, [] ( pybind11::module_& m )
 {
     m.def( "addBaseToPlanarMesh", &MR::addBaseToPlanarMesh,
@@ -111,10 +123,12 @@ MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, SymbolsMesh, [] ( pybind11::module_& m )
         "Given a planar mesh with boundary on input located in plane XY, packs and extends it along Z on zOffset to make a volumetric closed mesh.\n"
         "Note! zOffset should be > 0.\n" );
 } )
+#endif
 
-MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, UndirectedEdgeUndirectedEdge, [] ( pybind11::module_& m )
+MR_ADD_PYTHON_CUSTOM_CLASS( mrmeshpy, UndirectedEdgeUndirectedEdge, MR::UndirectedEdgeUndirectedEdge )
+MR_ADD_PYTHON_CUSTOM_DEF( mrmeshpy, UndirectedEdgeUndirectedEdge, [] ( pybind11::module_& )
 {
-    pybind11::class_<MR::UndirectedEdgeUndirectedEdge>( m, "UndirectedEdgeUndirectedEdge" ).
+    MR_PYTHON_CUSTOM_CLASS( UndirectedEdgeUndirectedEdge ).
         def( pybind11::init<>() ).
         def( pybind11::init<MR::UndirectedEdgeId, MR::UndirectedEdgeId>(), pybind11::arg( "a" ), pybind11::arg( "b" ) ).
         def_readwrite( "aUndirEdge", &MR::UndirectedEdgeUndirectedEdge::aUndirEdge ).

@@ -1,35 +1,41 @@
 #include "MRSystem.h"
 #include "MRStringConvert.h"
-#include "MRPch/MRSpdlog.h"
+#include "MRSystemPath.h"
 #include "MRConfig.h"
+#include "MRStacktrace.h"
+#include "MRDirectory.h"
+#include "MRRestoringStreamsSink.h"
+#include "MRPch/MRSpdlog.h"
+#include "MRPch/MRSuppressWarning.h"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 
 #ifdef _WIN32
+#include <psapi.h>
+#include <shellapi.h>
 
 #ifndef _MSC_VER
 #include <cpuid.h>
 #endif
 #ifdef __MINGW32__
-#include <windows.h>
+#include "MRPch/MRWinapi.h"
 #endif
 
 #else //not Windows
 
+#ifndef __EMSCRIPTEN__
+#include <fmt/chrono.h>
+#endif
+
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
-#ifndef MRMESH_NO_CLIPBOARD
-#include <clip/clip.h>
-#endif
 #else
 #include "MRPch/MRWasm.h"
 #ifndef __EMSCRIPTEN__
+  #include <sys/sysinfo.h>
   #ifndef __ARM_CPU__
     #include <cpuid.h>
-  #endif
-  #ifndef MRMESH_NO_CLIPBOARD
-    #include <clip/clip.h>
   #endif
 #endif
 #endif
@@ -37,6 +43,7 @@
 #include <libgen.h>
 #include <unistd.h>
 #include <limits.h>
+#include <regex>
 #include <pwd.h>
 
 #endif
@@ -48,6 +55,40 @@
 #ifndef MR_PROJECT_NAME
 #define MR_PROJECT_NAME "MeshInspector"
 #endif
+
+namespace
+{
+
+// removes log files from given folder that are older than given amount of hours
+void removeOldLogs( const std::filesystem::path& dir, int hours = 24 )
+{
+    std::error_code ec;
+    if ( !std::filesystem::is_directory( dir, ec ) )
+        return;
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t nowSinceEpoch = std::chrono::system_clock::to_time_t( now );
+
+    for ( auto entry : MR::Directory{ dir, ec } )
+    {
+        auto fileName = MR::utf8string( entry.path().filename() );
+        auto prefixOffset = fileName.find( "MRLog_" );
+        if ( prefixOffset == std::string::npos )
+            continue; // not log file
+        std::tm tm;
+        std::stringstream ss( fileName.substr( prefixOffset + 6, 19 ) );
+        ss >> std::get_time( &tm, "%Y-%m-%d_%H-%M-%S" );
+        if ( ss.fail() )
+            continue; // cannot parse time
+        std::time_t fileDateSinceEpoch = std::mktime( &tm );
+        auto diffHours = ( nowSinceEpoch - fileDateSinceEpoch ) / 3600;
+        if ( diffHours < hours )
+            continue; // "young" file
+        std::filesystem::remove( entry.path(), ec );
+    }
+}
+
+}
 
 namespace MR
 {
@@ -85,126 +126,59 @@ void SetCurrentThreadName( const char * name )
     #pragma warning(pop)
 #elif defined(__APPLE__) && defined(__MACH__)
     pthread_setname_np(name);
+#elif defined(__EMSCRIPTEN__)
+    (void)name;
 #else
-#ifndef __EMSCRIPTEN__
     pthread_setname_np( pthread_self(), name);
-#endif
 #endif
 }
 
 
 std::filesystem::path GetExeDirectory()
 {
-#ifdef _WIN32
-    HMODULE hm = GetModuleHandleA( "MRMesh.dll" );
-    wchar_t szPath[MAX_PATH];
-    GetModuleFileNameW( hm, szPath, MAX_PATH );
-#else
-    #ifdef __EMSCRIPTEN__
-        return "/";
-    #endif
-    char szPath[PATH_MAX];
-    #ifdef __APPLE__
-          uint32_t size = PATH_MAX + 1;
-
-          if (_NSGetExecutablePath(szPath, &size) != 0) {
-            // Buffer size is too small.
-            spdlog::error( "Executable directory is too long" );
-            return {};
-          }
-          szPath[size] = '\0';
-    #else
-        ssize_t count = readlink( "/proc/self/exe", szPath, PATH_MAX );
-        if( count < 0 )
-        {
-            spdlog::error( "Executable directory was not found" );
-            return {};
-        }
-        if( count >= PATH_MAX )
-        {
-            spdlog::error( "Executable directory is too long" );
-            return {};
-        }
-        szPath[count] = '\0';
-    #endif
-#endif
-    auto res = std::filesystem::path{ szPath }.parent_path() / "";
-    return res;
+    return SystemPath::getExecutableDirectory().value_or( std::filesystem::path{} );
 }
 
 std::filesystem::path GetResourcesDirectory()
 {
-    auto exePath = GetExeDirectory();
-#if defined(_WIN32) || defined(__EMSCRIPTEN__)
-    return exePath;
-#else
-    // "build" in path means that MeshInspector is not installed to system
-    // so all resources are near executable file
-    if ( std::find( exePath.begin(), exePath.end(), "build" ) != exePath.end() )
-        return exePath;
-    #ifdef __APPLE__
-        #ifdef MR_FRAMEWORK
-    return "/Library/Frameworks/" + std::string( MR_PROJECT_NAME ) + ".framework/Versions/Current/Resources/";
-        #else
-    return "/Applications/" + std::string( MR_PROJECT_NAME ) + ".app/Contents/Resources/";
-        #endif
-    #else
-    return "/usr/local/etc/" + std::string( MR_PROJECT_NAME ) + "/";
-    #endif
-#endif
+    return SystemPath::getResourcesDirectory();
 }
 
 std::filesystem::path GetFontsDirectory()
 {
-    auto exePath = GetExeDirectory();
-#if defined(_WIN32) || defined(__EMSCRIPTEN__)
-    return exePath;
-#else
-    // "build" in path means that MeshInspector is not installed to system
-    // so all fonts are near executable file
-    if ( std::find( exePath.begin(), exePath.end(), "build" ) != exePath.end() )
-        return exePath;
-    #ifdef __APPLE__
-    return GetResourcesDirectory() / "fonts/";
-    #else
-    return "/usr/local/share/fonts/";
-    #endif
-#endif
+    return SystemPath::getFontsDirectory();
 }
 
 std::filesystem::path GetLibsDirectory()
 {
-    auto exePath = GetExeDirectory();
-#if defined(_WIN32) || defined(__EMSCRIPTEN__)
-    return exePath;
-#else
-    // "build" in path means that MeshInspector is not installed to system
-    // so all libs are near executable file
-    if ( std::find( exePath.begin(), exePath.end(), "build" ) != exePath.end() )
-        return exePath;
-    #ifdef __APPLE__
-        #ifdef MR_FRAMEWORK
-    return "/Library/Frameworks/" + std::string( MR_PROJECT_NAME ) + ".framework/Versions/Current/lib/";
-        #else
-    return "/Applications/" + std::string( MR_PROJECT_NAME ) + ".app/Contents/libs/";
-        #endif
-    #else
-    return "/usr/local/lib/" + std::string( MR_PROJECT_NAME ) + "/";
-    #endif
-#endif
+    return SystemPath::getPluginsDirectory();
+}
+
+std::filesystem::path GetEmbeddedPythonDirectory()
+{
+    return SystemPath::getPythonModulesDirectory();
 }
 
 std::filesystem::path getUserConfigDir()
 {
-#ifdef _WIN32
+#if defined( _WIN32 )
     std::filesystem::path filepath( _wgetenv( L"APPDATA" ) );
 #else
-    struct passwd* pw = getpwuid( getuid() );
-    if ( !pw )
+#if defined( __EMSCRIPTEN__ )
+    std::filesystem::path filepath( "/" );
+#else
+    std::filesystem::path filepath;
+    const auto* pw = getpwuid( getuid() );
+    if ( pw )
+    {
+        filepath = pw->pw_dir;
+    }
+    else
     {
         spdlog::error( "getpwuid error! errno: {}", errno );
+        filepath = std::getenv( "HOME" );
     }
-    std::filesystem::path filepath( pw->pw_dir );
+#endif
     filepath /= ".local";
     filepath /= "share";
 #endif
@@ -213,7 +187,7 @@ std::filesystem::path getUserConfigDir()
     if ( !std::filesystem::is_directory( filepath, ec ) || ec )
     {
         if ( ec )
-            spdlog::warn( "is {} a directory failed: {}", utf8string( filepath ), systemToUtf8( ec.message() ) );
+            spdlog::info( "{} is not a valid directory yet: {}", utf8string( filepath ), systemToUtf8( ec.message() ) );
         std::filesystem::create_directories( filepath, ec );
         if ( ec )
             spdlog::error( "create directories {} failed: {}", utf8string( filepath ), systemToUtf8( ec.message() ) );
@@ -249,95 +223,24 @@ std::filesystem::path GetTempDirectory()
 std::filesystem::path GetHomeDirectory()
 {
 #if defined( _WIN32 )
-    return _wgetenv( L"USERPROFILE" );
+    if ( auto* home = _wgetenv( L"USERPROFILE" ) )
+        return home;
 #elif !defined( __EMSCRIPTEN__ )
-    if ( auto home = std::getenv( "HOME" ) )
+    if ( auto* home = std::getenv( "HOME" ) )
         return home;
     if ( auto* pw = getpwuid( getuid() ) )
         return pw->pw_dir;
+#endif
     return {};
-#else
-    return {};
-#endif
-}
-
-std::string GetClipboardText()
-{
-#if defined( __EMSCRIPTEN__ )
-    return "";
-#elif defined( _WIN32 )
-    // Try opening the clipboard
-    if ( !OpenClipboard( nullptr ) )
-    {
-        spdlog::warn( "Could not open clipboard" );
-        return "";
-    }
-
-    // Get handle of clipboard object for ANSI text
-    HANDLE hData = GetClipboardData( CF_TEXT );
-    if ( !hData )
-    {
-        // no text data
-        CloseClipboard();
-        return "";
-    }
-
-    // Lock the handle to get the actual text pointer
-    char* pszText = static_cast< char* >( GlobalLock( hData ) );
-    if ( !pszText )
-    {
-        CloseClipboard();
-        return "";
-    }
-    // Save text in a string class instance
-    std::string text( pszText );
-
-    // Release the lock
-    GlobalUnlock( hData );
-
-    // Release the clipboard
-    CloseClipboard();
-
-    return text;
-#elif defined(MRMESH_NO_CLIPBOARD)
-    return "";
-#else
-    std::string text;
-    if ( !clip::get_text( text ) )
-    {
-        spdlog::error( "Could not open clipboard" );
-        return "";
-    }
-    return text;
-#endif
-}
-
-void SetClipboardText( const std::string& text )
-{
-#if defined( __EMSCRIPTEN__ )
-    ( void )text;
-    return;
-#elif defined( _WIN32 )
-    HGLOBAL hMem = GlobalAlloc( GMEM_MOVEABLE, text.size() + 1 );
-    memcpy( GlobalLock( hMem ), text.c_str(), text.size() + 1 );
-    GlobalUnlock( hMem );
-    OpenClipboard( 0 );
-    EmptyClipboard();
-    SetClipboardData( CF_TEXT, hMem );
-    CloseClipboard();
-#elif defined( MRMESH_NO_CLIPBOARD )
-    ( void )text;
-    return;
-#else
-    if ( !clip::set_text( text ) )
-        spdlog::error( "Could not set clipboard" );
-#endif
 }
 
 std::string GetMRVersionString()
 {
 #ifndef __EMSCRIPTEN__
+    MR_SUPPRESS_WARNING_PUSH
+    MR_SUPPRESS_WARNING( "-Wdeprecated-declarations", 4996 )
     auto directory = GetResourcesDirectory();
+    MR_SUPPRESS_WARNING_POP
     auto versionFilePath = directory / "mr.version";
     std::error_code ec;
     std::string configPrefix = "";
@@ -384,12 +287,47 @@ void OpenLink( const std::string& url )
 #ifdef __APPLE__
     auto openres = system( ( "open " + url ).c_str() );
 #else
-    auto openres = system( ( "xdg-open " + url ).c_str() );
+    auto openres = system( ( "xdg-open " + url + " &" ).c_str() );
 #endif
     if ( openres == -1 )
     {
         spdlog::warn( "Error opening {}", url );
     }
+#endif
+#endif // _WIN32
+}
+
+// Opens given file in associated application
+bool OpenDocument( const std::filesystem::path& path )
+{
+#ifdef _WIN32
+    HINSTANCE result = ShellExecuteW( NULL, L"open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    // "If the function succeeds, it returns a value greater than 32"
+    if ( ( INT_PTR )result <= 32 )
+    {
+        spdlog::warn( "Error opening {}, error code {}", utf8string( path ), ( int )( INT_PTR )result );
+        return false;
+    }
+    return true;
+
+#else
+#ifdef __EMSCRIPTEN__
+    ( void )path;
+    return false;
+#else
+    std::ostringstream command;
+#ifdef __APPLE__
+    command << "open " << std::quoted( path.string(), '\'' );
+#else
+    command << "xdg-open " << std::quoted( path.string(), '\'' ) << " &";
+#endif
+    auto openres = system( command.str().c_str() );
+    if ( openres == -1 )
+    {
+        spdlog::warn( "Error opening {}", path.string() );
+        return false;
+    }
+    return true;
 #endif
 #endif // _WIN32
 }
@@ -421,15 +359,14 @@ std::string GetCpuId()
     // https://stackoverflow.com/questions/850774/how-to-determine-the-hardware-cpu-and-ram-on-a-machine
     char CPUBrandString[0x40] = {};
     int CPUInfo[4] = {-1};
-    unsigned   nExIds, i = 0;
     // Get the information associated with each extended ID.
 #ifdef _MSC_VER
     __cpuid( CPUInfo, 0x80000000 );
 #else
     __cpuid( 0x80000000, CPUInfo[0], CPUInfo[1], CPUInfo[2], CPUInfo[3] );
 #endif
-    nExIds = CPUInfo[0];
-    for ( i = 0x80000000; i <= nExIds; ++i )
+    unsigned nExIds = CPUInfo[0];
+    for ( unsigned i = 0x80000000; i <= nExIds; ++i )
     {
 #ifdef _MSC_VER
         __cpuid( CPUInfo, i );
@@ -444,8 +381,89 @@ std::string GetCpuId()
         else if ( i == 0x80000004 )
             std::memcpy( CPUBrandString + 32, CPUInfo, sizeof( CPUInfo ) );
     }
+    for ( int i = 0x3f; i >= 0; --i )
+    {
+        if ( CPUBrandString[i] == ' ' )
+            CPUBrandString[i] = '\0';
+        else if ( CPUBrandString[i] != '\0' )
+            break;
+    }
+
     auto res = std::string( CPUBrandString );
     return res.substr( res.find_first_not_of(' ') );
+#endif
+}
+
+std::string GetDetailedOSName()
+{
+#ifdef _WIN32
+    wchar_t value[255];
+    DWORD BufferSize = 255;
+    RegGetValue( HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"ProductName",
+        RRF_RT_ANY, NULL, ( PVOID )&value, &BufferSize );
+    auto winName = Utf16ToUtf8( value );
+
+    BufferSize = 255;
+    RegGetValue( HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"CurrentBuild",
+    RRF_RT_ANY, NULL, ( PVOID )&value, &BufferSize );
+    auto buildStr = Utf16ToUtf8( value );
+
+    int build = std::atoi( buildStr.c_str() );
+    if ( build >= 22000 )
+    {
+        auto winPos = winName.find( "Windows 10" );
+        if ( winPos != std::string::npos )
+            winName[winPos + 9] = '1';
+    }
+    winName += " " + buildStr;
+
+    return winName;
+#else
+#ifdef __EMSCRIPTEN__
+    return "Wasm";
+#else
+// if linux
+#ifndef __APPLE__
+    std::ifstream stream( "/etc/os-release" );
+    std::string line;
+    std::regex nameRegex( "^PRETTY_NAME=\"(.*?)\"$" );
+    std::smatch match;
+
+    std::string name;
+    while ( std::getline( stream, line ) )
+    {
+        if ( std::regex_search( line, match, nameRegex ) )
+        {
+            name = match[1].str();
+            break;
+        }
+    }
+    return name;
+#else // if  apple
+    char buf[1024];
+    unsigned buflen = 0;
+    char line[256];
+    FILE* sw_vers = popen( "sw_vers -productName", "r" );
+    while ( fgets( line, sizeof( line ), sw_vers ) != NULL )
+    {
+        int l = snprintf( buf + buflen, sizeof( buf ) - buflen, "%s", line );
+        buflen += l;
+        assert( buflen < sizeof( buf ) );
+    }
+    pclose( sw_vers );
+    sw_vers = popen( "sw_vers -productVersion", "r" );
+    while ( fgets( line, sizeof( line ), sw_vers ) != NULL )
+    {
+        int l = snprintf( buf + buflen, sizeof( buf ) - buflen, " %s", line );
+        buflen += l;
+        assert( buflen < sizeof( buf ) );
+    }
+    pclose( sw_vers );
+    auto aplStr = std::string( buf );
+    aplStr.erase( std::remove( aplStr.begin(), aplStr.end(), '\n' ), aplStr.end() );
+    return aplStr;
+#endif
+#endif
 #endif
 }
 
@@ -467,6 +485,124 @@ std::string getOSNoSpaces()
     #endif
     #endif
     #endif
+}
+
+void setNewHandlerIfNeeded()
+{
+#ifdef __EMSCRIPTEN__
+    std::set_new_handler( []
+    {
+        MAIN_THREAD_EM_ASM( notEnoughMemoryError() );
+        // Default Emscripten behaviour if exceptions are disabled
+        std::abort();
+    } );
+#endif
+}
+
+#ifndef __EMSCRIPTEN__
+std::string getCurrentStacktrace()
+{
+    return getCurrentStacktraceInline();
+}
+#endif
+
+SystemMemory getSystemMemory()
+{
+    SystemMemory res;
+#ifdef __EMSCRIPTEN__
+    // not implemented
+#elif defined _WIN32
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof( MEMORYSTATUSEX );
+    if ( GlobalMemoryStatusEx( &memInfo ) )
+    {
+        res.physicalTotal = memInfo.ullTotalPhys;
+        res.physicalAvailable = memInfo.ullAvailPhys;
+    }
+    else
+        assert( false );
+#elif defined __APPLE__
+    // https://stackoverflow.com/a/8782978/7325599
+    int mib [] = { CTL_HW, HW_MEMSIZE };
+    int64_t value = 0;
+    size_t length = sizeof(value);
+    if( -1 != sysctl(mib, 2, &value, &length, NULL, 0) )
+        res.physicalTotal = size_t( value );
+    else
+        assert( false );
+#else // Linux
+    struct sysinfo sysInfo;
+    if ( sysinfo( &sysInfo ) == 0 )
+    {
+        res.physicalTotal = size_t( sysInfo.totalram ) * sysInfo.mem_unit;
+        res.physicalAvailable = size_t( sysInfo.freeram ) * sysInfo.mem_unit;
+    }
+    else
+        assert( false );
+#endif
+    return res;
+}
+
+#ifdef _WIN32
+ProccessMemoryInfo getProccessMemoryInfo()
+{
+    ProccessMemoryInfo res;
+    PROCESS_MEMORY_COUNTERS pmc;
+    if ( GetProcessMemoryInfo( GetCurrentProcess(), &pmc, sizeof(pmc)) )
+    {
+        res.currVirtual =    pmc.PagefileUsage;
+        res.maxVirtual = pmc.PeakPagefileUsage;
+        res.currPhysical =    pmc.WorkingSetSize;
+        res.maxPhysical = pmc.PeakWorkingSetSize;
+    }
+    return res;
+}
+#endif //_WIN32
+
+void setupLoggerByDefault()
+{
+#ifndef __EMSCRIPTEN__
+#ifndef _WIN32 //on Windows we use WindowsExceptionsLogger instead
+    printStacktraceOnCrash();
+#endif
+#endif //__EMSCRIPTEN__
+    redirectSTDStreamsToLogger();
+    // write log to console
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    console_sink->set_level( spdlog::level::trace );
+    console_sink->set_pattern( Logger::instance().getDefaultPattern() );
+    Logger::instance().addSink( console_sink );
+
+    // write log to file
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t( now );
+    auto fileName = GetTempDirectory();
+    fileName /= "Logs";
+    removeOldLogs( fileName );
+
+    fileName /= fmt::format( "MRLog_{:%Y-%m-%d_%H-%M-%S}_{}.txt", fmt::localtime( t ),
+                std::chrono::milliseconds( now.time_since_epoch().count() ).count() % 1000 );
+
+    auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>( utf8string( fileName ), 1024 * 1024 * 5, 1, true );
+    file_sink->set_level( spdlog::level::trace );
+    file_sink->set_pattern( Logger::instance().getDefaultPattern() );
+    Logger::instance().addSink( file_sink );
+
+#ifdef _WIN32
+    auto msvc_sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+    msvc_sink->set_level( spdlog::level::trace );
+    msvc_sink->set_pattern( Logger::instance().getDefaultPattern() );
+    Logger::instance().addSink( msvc_sink );
+#endif
+
+    auto logger = Logger::instance().getSpdLogger();
+
+    logger->set_level( spdlog::level::trace );
+
+    // update file on each msg
+    logger->flush_on( spdlog::level::trace );
+
+    spdlog::info( "MR Version info: {}", GetMRVersionString() );
 }
 
 } //namespace MR

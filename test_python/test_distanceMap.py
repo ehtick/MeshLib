@@ -1,5 +1,5 @@
-from helper import *
 import pytest
+from helper import *
 
 
 def test_distance_map():
@@ -21,14 +21,14 @@ def test_distance_map():
     params.orgPoint.y = -(R1 + R2)
     params.orgPoint.z = -R2
 
-    map = mrmesh.computeDistanceMapD(mrmesh.MeshPart(torus), params)
-    
-    tomesh = mrmesh.distanceMapToMesh(map, mrmesh.DistanceMapToWorld(params))
+    map = mrmesh.computeDistanceMapD(torus, params)
 
-    assert (map.isValid(0,0) == False)
-    assert (map.isValid(7,7) == True)
-    assert (map.isValid(9,9) == False)
-    assert (map.isValid(10,10) == False)
-    assert (map.isValid(13,13) == True)
-    assert (map.isValid(19,19) == False)
-    assert (tomesh.topology.numValidFaces()>0)
+    tomesh = mrmesh.distanceMapToMesh(map, params.xf())
+
+    assert map.isValid(0, 0) == False
+    assert map.isValid(7, 7) == True
+    assert map.isValid(9, 9) == False
+    assert map.isValid(10, 10) == False
+    assert map.isValid(13, 13) == True
+    assert map.isValid(19, 19) == False
+    assert tomesh.topology.numValidFaces() > 0

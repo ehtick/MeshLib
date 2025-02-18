@@ -8,9 +8,10 @@
 #include "MRMeshBuilder.h"
 #include "MRMeshDelone.h"
 #include "MRHash.h"
+#include "MRMarkedContour.h"
+#include "MRGTest.h"
 #include "MRPch/MRTBB.h"
 #include "MRPch/MRSpdlog.h"
-#include "MRGTest.h"
 #include <parallel_hashmap/phmap.h>
 #include <queue>
 #include <functional>
@@ -136,18 +137,29 @@ void getTriangulationWeights( const MeshTopology& topology, const NewEdgesMap& m
         }
         if ( metrics.edgeMetric )
         {
-            auto edgeACMetric = metrics.edgeMetric(
-                aVert, topology.org( loop[v] ),
-                !abConn.hasPrev() ? topology.dest( topology.prev( loop[processedConn.a] ) ) : topology.org( loop[abConn.prevA] ),
-                bVert );
+            VertId leftVert;
+            if ( abConn.hasPrev() )
+                leftVert = topology.org( loop[abConn.prevA] );
+            else if ( topology.right( loop[processedConn.a] ) )
+                leftVert = topology.dest( topology.prev( loop[processedConn.a] ) );
 
-            auto  edgeCBMetric = metrics.edgeMetric(
-                topology.org( loop[v] ), bVert,
-                !bcConn.hasPrev() ? topology.dest( topology.prev( loop[v] ) ) : topology.org( loop[bcConn.prevA] ),
-                aVert );
+            if ( leftVert )
+            {
+                auto edgeACMetric = metrics.edgeMetric( aVert, topology.org( loop[v] ), leftVert, bVert );
+                weight = metrics.combineMetric( weight, edgeACMetric );
+            }
 
-            weight = metrics.combineMetric( weight, edgeACMetric );
-            weight = metrics.combineMetric( weight, edgeCBMetric );
+            VertId rightVert;
+            if ( bcConn.hasPrev() )
+                rightVert = topology.org( loop[bcConn.prevA] );
+            else if ( topology.right( loop[v] ) )
+                rightVert = topology.dest( topology.prev( loop[v] ) );
+
+            if ( rightVert )
+            {
+                auto edgeCBMetric = metrics.edgeMetric( topology.org( loop[v] ), bVert, rightVert, aVert );
+                weight = metrics.combineMetric( weight, edgeCBMetric );
+            }
         }
 
         if ( weight < processedConn.weight )
@@ -158,65 +170,81 @@ void getTriangulationWeights( const MeshTopology& topology, const NewEdgesMap& m
     }
 }
 
+struct MapPatchElement
+{
+    int a{ -1 };
+    int b{ -1 };
+    int newPrevA{ -1 };
+};
+using MapPatch = std::vector<MapPatchElement>;
+
 // this function go backward by given triangulation and tries to fix multiple edges
 // return false if triangulation has multiple edges that cannot be fixed
-bool removeMultipleEdgesFromTriangulation( const MeshTopology& topology, NewEdgesMap& map, const EdgePath& loop,  const FillHoleMetric& metricRef,
-    WeightedConn start, int maxPolygonSubdivisions )
+bool removeMultipleEdgesFromTriangulation( const MeshTopology& topology, const NewEdgesMap& map, const EdgePath& loop,  const FillHoleMetric& metricRef,
+    WeightedConn start, int maxPolygonSubdivisions, MapPatch& mapPatch )
 {
     MR_TIMER;
-
-    phmap::flat_hash_set<std::pair<VertId, VertId>> edgesInTriangulation;
-    auto testExistance = [&] ( VertId a, VertId b )->bool
+    mapPatch.clear();
+    HashSet<VertPair> edgesInTriangulation;
+    auto testExistance = [&] ( int a, int b )->bool
     {
-        if ( a > b )
-            std::swap( a, b );
-        auto it = edgesInTriangulation.find( { a,b } );
+        auto dist = ( a - b + loop.size() ) % loop.size();
+        if ( dist == 1 || dist + 1 == loop.size() )
+            return false;
+        auto aV = topology.org( loop[a] );
+        auto bV = topology.org( loop[b] );
+        if ( topology.findEdge( aV, bV ) )
+            return true;
+        if ( aV > bV )
+            std::swap( aV, bV );
+        auto it = edgesInTriangulation.find( { aV,bV } );
         return it != edgesInTriangulation.end();
     };
     std::vector<unsigned> optimalStepsCache( maxPolygonSubdivisions );
     std::queue<WeightedConn> newEdgesQueue;
-    newEdgesQueue.push( start );
+    
+    auto pushInQueue = [&] ( int a, int b )
+    {
+        VertId aV, bV;
+        aV = topology.org( loop[a] );
+        bV = topology.org( loop[b] );
+        if ( aV > bV )
+            std::swap( aV, bV );
+        edgesInTriangulation.insert( { aV,bV } );
+        newEdgesQueue.push( map[a][b] );
+    };
+
+    pushInQueue( start.a, start.b );
     while ( !newEdgesQueue.empty() )
     {
         start = std::move( newEdgesQueue.front() );
         newEdgesQueue.pop();
-
-        VertId aV, bV;
-        aV = topology.org( loop[start.a] );
-        bV = topology.org( loop[start.b] );
-        if ( aV > bV )
-            std::swap( aV, bV );
-        edgesInTriangulation.insert( { aV,bV } ); // add edge to map
-
-        if ( start.hasPrev() )
+        if ( !start.hasPrev() )
+            continue;
+        if ( testExistance( start.a, start.prevA ) || testExistance( start.b, start.prevA ) ) // test if this edge exists
         {
-            VertId prevV = topology.org( loop[start.prevA] );
-            if ( testExistance( aV, prevV ) || testExistance( bV, prevV ) ) // test if this edge exists
+            // fix multiple edge 
+            unsigned steps = ( start.b + unsigned( loop.size() ) - start.a ) % unsigned( loop.size() );
+            getOptimalSteps( optimalStepsCache, ( start.a + 1 ) % loop.size(), steps, unsigned( loop.size() ), maxPolygonSubdivisions );
+            optimalStepsCache.erase( std::remove_if( optimalStepsCache.begin(), optimalStepsCache.end(), [&] ( unsigned v )
             {
-                // fix multiple edge 
-                unsigned steps = ( start.b + unsigned( loop.size() ) - start.a ) % unsigned( loop.size() );
-                getOptimalSteps( optimalStepsCache, ( start.a + 1 ) % loop.size(), steps, unsigned( loop.size() ), maxPolygonSubdivisions );
-                optimalStepsCache.erase( std::remove_if( optimalStepsCache.begin(), optimalStepsCache.end(), [&] ( unsigned v )
-                {
-                    VertId vV = topology.org( loop[v] );
-                    return testExistance( aV, vV ) || testExistance( bV, vV ); // remove existing duplicates
-                } ) );
-                if ( optimalStepsCache.empty() )
-                    return false;
-                WeightedConn newPrev{ start.a,start.b,DBL_MAX };
-                getTriangulationWeights( topology, map, loop, metricRef, optimalStepsCache, newPrev ); // find better among steps
-                if ( !newPrev.hasPrev() )
-                    return false;
-                start.prevA = newPrev.prevA;
-                map[start.a][start.b].prevA = start.prevA;
-            }
-            auto distA = ( start.a - start.prevA + loop.size() ) % loop.size();
-            auto distB = ( start.b - start.prevA + loop.size() ) % loop.size();
-            if ( distA >= 2 && distA <= int( loop.size() ) - 2 )
-                newEdgesQueue.push( map[start.a][start.prevA] );
-            if ( distB >= 2 && distB <= int( loop.size() ) - 2 )
-                newEdgesQueue.push( map[start.prevA][start.b] );
+                return testExistance( start.a, v ) || testExistance( start.b, v ); // remove existing duplicates
+            } ), optimalStepsCache.end() );
+            if ( optimalStepsCache.empty() )
+                return false;
+            WeightedConn newPrev{ start.a,start.b,DBL_MAX,0 };
+            getTriangulationWeights( topology, map, loop, metricRef, optimalStepsCache, newPrev ); // find better among steps
+            if ( !newPrev.hasPrev() || !map[start.a][newPrev.prevA].hasPrev() || !map[start.prevA][newPrev.b].hasPrev() )
+                return false;
+            start.prevA = newPrev.prevA;
+            mapPatch.emplace_back( MapPatchElement{ .a = start.a,.b = start.b,.newPrevA = start.prevA } );
         }
+        auto distA = ( start.a - start.prevA + loop.size() ) % loop.size();
+        auto distB = ( start.b - start.prevA + loop.size() ) % loop.size();
+        if ( distA >= 2 && distA <= int( loop.size() ) - 2 )
+            pushInQueue( start.a, start.prevA );
+        if ( distB >= 2 && distB <= int( loop.size() ) - 2 )
+            pushInQueue( start.prevA, start.b );
     }
     return true;
 }
@@ -470,10 +498,16 @@ bool buildCylinderBetweenTwoHoles( Mesh & mesh, const StitchHolesParams& params 
 
 // returns new edge connecting org(a) and org(b),
 // if left or right of new edge is triangular region then makes new faceids
-static EdgeId makeNewEdge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNewFaces )
+static EdgeId makeNewEdge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNewFaces, FaceId f = {} )
 {
     auto newFace = [&]()
     {
+        if ( f )
+        {
+            auto res = f;
+            f = {};
+            return res;
+        }
         auto res = topology.addFaceId();
         if ( outNewFaces )
             outNewFaces->autoResizeSet( res );
@@ -490,27 +524,33 @@ static EdgeId makeNewEdge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitS
     return newEdge;
 }
 
-void executeFillHolePlan( Mesh & mesh, EdgeId a0, FillHolePlan & plan, FaceBitSet * outNewFaces )
+void executeHoleFillPlan( Mesh & mesh, EdgeId a0, HoleFillPlan & plan, FaceBitSet * outNewFaces )
 {
     [[maybe_unused]] const auto fsz0 = mesh.topology.faceSize();
+    const FaceId f0 = mesh.topology.left( a0 );
     if ( plan.items.empty() )
     {
         if ( mesh.topology.isLeftTri( a0 ) )
         {
-            assert( plan.numNewTris == 1 );
-            auto newFaceId = mesh.topology.addFaceId();
-            if ( outNewFaces )
-                outNewFaces->autoResizeSet( newFaceId );
-            mesh.topology.setLeft( a0, newFaceId );
+            assert( plan.numTris == 1 );
+            if ( !f0 )
+            {
+                auto newFaceId = mesh.topology.addFaceId();
+                if ( outNewFaces )
+                    outNewFaces->autoResizeSet( newFaceId );
+                mesh.topology.setLeft( a0, newFaceId );
+            }
         }
         else
         {
-            assert( plan.numNewTris >= 3 );
+            assert( plan.numTris >= 3 );
             fillHoleTrivially( mesh, a0, outNewFaces );
         }
     }
     else
     {
+        if ( f0 )
+            mesh.topology.setLeft( a0, {} );
         auto getEdge = [&]( int code )
         {
             if ( code >= 0 )
@@ -521,29 +561,23 @@ void executeFillHolePlan( Mesh & mesh, EdgeId a0, FillHolePlan & plan, FaceBitSe
         {
             EdgeId a = getEdge( plan.items[i].edgeCode1 );
             EdgeId b = getEdge( plan.items[i].edgeCode2 );
-            EdgeId c = makeNewEdge( mesh.topology, a, b, outNewFaces );
+            EdgeId c = makeNewEdge( mesh.topology, a, b, outNewFaces, i + 1 == plan.items.size() ? f0 : FaceId{} );
             plan.items[i].edgeCode1 = (int)c;
         }
     }
     [[maybe_unused]] const auto fsz = mesh.topology.faceSize();
-    assert( plan.numNewTris == int( fsz - fsz0 ) );
+    assert( plan.numTris == int( fsz - fsz0 + ( f0 ? 1 : 0 ) ) );
 }
 
 // Sub cubic complexity
-FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams& params )
+HoleFillPlan getHoleFillPlan( const Mesh& mesh, EdgeId a0, const FillHoleParams& params )
 {
-    FillHolePlan res;
+    HoleFillPlan res;
     if ( params.stopBeforeBadTriangulation )
         *params.stopBeforeBadTriangulation = false;
     if ( params.maxPolygonSubdivisions < 2 )
     {
         assert( false );
-        return res;
-    }
-    if ( mesh.topology.left( a0 ) )
-    {
-        assert( false );
-        spdlog::error( "getFillHolePlan: edge does not represent a hole" );
         return res;
     }
 
@@ -558,7 +592,7 @@ FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams&
     if ( loopEdgesCounter <= 3 )
     {
         // no new edges, one triangle
-        res.numNewTris = 1;
+        res.numTris = 1;
         return res;
     }
 
@@ -604,6 +638,7 @@ FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams&
         });
     }
     // find minimum triangulation
+    MapPatch savedMapPatch, cachedMapPatch;
     WeightedConn finConn{-1,-1,DBL_MAX};
     for ( unsigned i = 0; i < loopEdgesCounter; ++i )
     {
@@ -611,17 +646,29 @@ FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams&
         double weight = metrics.combineMetric( newEdgesMap[i][cIndex].weight, newEdgesMap[cIndex][i].weight );
         if ( metrics.edgeMetric )
         {
-            auto lastEdgeMetric = metrics.edgeMetric(
-                mesh.topology.org( edgeMap[i] ), mesh.topology.org( edgeMap[cIndex] ),
-                !newEdgesMap[i][cIndex].hasPrev() ? mesh.topology.dest( mesh.topology.prev( edgeMap[i] ) ) : mesh.topology.org( edgeMap[newEdgesMap[i][cIndex].prevA] ),
-                !newEdgesMap[cIndex][i].hasPrev() ? mesh.topology.dest( mesh.topology.prev( edgeMap[cIndex] ) ) : mesh.topology.org( edgeMap[newEdgesMap[cIndex][i].prevA] )
-            );
-            weight = metrics.combineMetric( weight, lastEdgeMetric );
+            VertId leftVert;
+            if ( newEdgesMap[i][cIndex].hasPrev() )
+                leftVert = mesh.topology.org( edgeMap[newEdgesMap[i][cIndex].prevA] );
+            else if ( mesh.topology.right( edgeMap[i] ) )
+                leftVert = mesh.topology.dest( mesh.topology.prev( edgeMap[i] ) );
+
+            VertId rightVert;
+            if ( newEdgesMap[cIndex][i].hasPrev() )
+                rightVert = mesh.topology.org( edgeMap[newEdgesMap[cIndex][i].prevA] );
+            else if ( mesh.topology.right( edgeMap[cIndex] ) )
+                rightVert = mesh.topology.dest( mesh.topology.prev( edgeMap[cIndex] ) );
+
+            if ( leftVert && rightVert )
+            {
+                auto lastEdgeMetric = metrics.edgeMetric( mesh.topology.org( edgeMap[i] ), mesh.topology.org( edgeMap[cIndex] ), leftVert, rightVert );
+                weight = metrics.combineMetric( weight, lastEdgeMetric );
+            }
         }
         if ( weight < finConn.weight &&
             ( params.multipleEdgesResolveMode != FillHoleParams::MultipleEdgesResolveMode::Strong || // try to fix multiple if needed
-                removeMultipleEdgesFromTriangulation( mesh.topology, newEdgesMap, edgeMap, metrics, newEdgesMap[cIndex][i], params.maxPolygonSubdivisions ) ) )
+                removeMultipleEdgesFromTriangulation( mesh.topology, newEdgesMap, edgeMap, metrics, newEdgesMap[cIndex][i], params.maxPolygonSubdivisions, cachedMapPatch ) ) )
         {
+            savedMapPatch = cachedMapPatch;
             finConn = newEdgesMap[cIndex][i];
             finConn.weight = weight;
         }
@@ -639,9 +686,13 @@ FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams&
     if ( finConn.a == -1 || finConn.b == -1 )
     {
         // "trivial" fill
-        res.numNewTris = loopEdgesCounter;
+        res.numTris = loopEdgesCounter;
         return res;
     }
+
+    if ( params.multipleEdgesResolveMode == FillHoleParams::MultipleEdgesResolveMode::Strong && !savedMapPatch.empty() )
+        for ( const auto& [patchA, patchB, patchPrevA] : savedMapPatch )
+            newEdgesMap[patchA][patchB].prevA = patchPrevA;
 
     // queue for adding new edges (not to make tree like recursive logic)
     WeightedConn fictiveLastConn( finConn.a, ( finConn.b + 1 ) % loopEdgesCounter, 0.0 );
@@ -671,9 +722,46 @@ FillHolePlan getFillHolePlan( const Mesh& mesh, EdgeId a0, const FillHoleParams&
             newEdgesQueue.push( {newEdgesMap[curConn.first.prevA][curConn.first.b],newEdgeCode} );
         }
 
-        ++res.numNewTris;
+        ++res.numTris;
     }
     return res;
+}
+
+HoleFillPlan getPlanarHoleFillPlan( const Mesh& mesh, EdgeId e )
+{
+    bool stopOnBad{ false };
+    FillHoleParams params;
+    params.metric = getPlaneNormalizedFillMetric( mesh, e );
+    params.stopBeforeBadTriangulation = &stopOnBad;
+
+    auto res = getHoleFillPlan( mesh, e, params );
+    if ( stopOnBad ) // triangulation cannot be good if we fall in this `if`, so let it create degenerated faces
+        res = getHoleFillPlan( mesh, e, { getMinAreaMetric( mesh ) } );
+    return res;
+}
+
+bool isHoleBd( const MeshTopology & topology, const EdgeLoop & loop )
+{
+    if ( loop.empty() )
+        return false;
+
+    const EdgeId a0 = loop.front();
+    EdgeId a = a0;
+    int n = 0;
+    for (;;)
+    {
+        if ( topology.left( a ) )
+            return false;
+        a = topology.prev( a.sym() );
+        ++n;
+        if ( a == a0 )
+            break;
+        if ( n >= loop.size() )
+            return false;
+        if ( a != loop[n] )
+            return false;
+    }
+    return n == loop.size();
 }
 
 void fillHole( Mesh& mesh, EdgeId a0, const FillHoleParams& params )
@@ -692,8 +780,12 @@ void fillHole( Mesh& mesh, EdgeId a0, const FillHoleParams& params )
         ++loopEdgesCounter;
     } while ( a != a0 );
 
-    if ( loopEdgesCounter < 3 )
+    if ( loopEdgesCounter < 2 )
+    {
+        // loop hole
+        assert( false );
         return;
+    }
 
     if ( params.makeDegenerateBand )
     {
@@ -702,17 +794,39 @@ void fillHole( Mesh& mesh, EdgeId a0, const FillHoleParams& params )
             a = mesh.topology.prev( a.sym() );
     }
 
-    auto plan = getFillHolePlan( mesh, a0, params );
+    if ( loopEdgesCounter == 2 )
+    {
+        EdgeId a1 = mesh.topology.next( a0 );
+        EdgeId a2 = mesh.topology.prev( a1.sym() );
+        mesh.topology.splice( a0, a1 );
+        mesh.topology.splice( a2, a1.sym() );
+        assert( mesh.topology.isLoneEdge( a1 ) );
+        return;
+    }
+
+    auto plan = getHoleFillPlan( mesh, a0, params );
     if ( params.stopBeforeBadTriangulation && *params.stopBeforeBadTriangulation )
         return;
 
-    executeFillHolePlan( mesh, a0, plan, params.outNewFaces );
+    executeHoleFillPlan( mesh, a0, plan, params.outNewFaces );
+}
+
+void fillHoles( Mesh& mesh, const std::vector<EdgeId> & as, const FillHoleParams& params )
+{
+    MR_TIMER
+
+    // TODO: parallel getHoleFillPlan
+
+    for ( auto a : as )
+        fillHole( mesh, a, params );
 }
 
 VertId fillHoleTrivially( Mesh& mesh, EdgeId a, FaceBitSet * outNewFaces /*= nullptr */ )
 {
     MR_WRITER( mesh );
-    assert( !mesh.topology.left( a ) );
+    const FaceId f0 = mesh.topology.left( a );
+    if ( f0 )
+        mesh.topology.setLeft( a, {} );
 
     auto addFaceId = [&]()
     {
@@ -751,7 +865,7 @@ VertId fillHoleTrivially( Mesh& mesh, EdgeId a, FaceBitSet * outNewFaces /*= nul
     }
     // and last face
     assert( mesh.topology.isLeftTri( e0 ) );
-    mesh.topology.setLeft( e0, addFaceId() );
+    mesh.topology.setLeft( e0, f0 ? f0 : addFaceId() );
 
     mesh.topology.setOrg( e0.sym(), centerVert );
 
@@ -815,6 +929,17 @@ EdgeId extendHole( Mesh& mesh, EdgeId a, const Plane3f & plane, FaceBitSet * out
         outNewFaces );
 }
 
+std::vector<EdgeId> extendAllHoles( Mesh& mesh, const Plane3f & plane, FaceBitSet * outNewFaces )
+{
+    MR_TIMER
+    auto borders = mesh.topology.findHoleRepresentiveEdges();
+    
+    for ( auto& border : borders )
+        border = extendHole( mesh, border, plane, outNewFaces );
+
+    return borders;
+}
+
 EdgeId buildBottom( Mesh& mesh, EdgeId a, Vector3f dir, float holeExtension, FaceBitSet* outNewFaces /*= nullptr */ )
 {
     dir = dir.normalized();
@@ -841,16 +966,19 @@ EdgeId makeDegenerateBandAroundHole( Mesh& mesh, EdgeId a, FaceBitSet * outNewFa
         outNewFaces );
 }
 
-bool makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNewFaces )
+MakeBridgeResult makeQuadBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNewFaces )
 {
     assert( !topology.left( a ) );
     assert( !topology.left( b ) );
+    MakeBridgeResult res;
     if ( a == b )
-    {
-        return false;
-    }
+        return res;
+    bool swapped = false;
     if ( topology.prev( b.sym() ) == a )
+    {
+        swapped = true;
         std::swap( a, b );
+    }
     if ( topology.prev( a.sym() ) == b )
     {
         if ( !topology.isLeftTri( a ) )
@@ -861,7 +989,7 @@ bool makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNe
                 if ( topology.dest( e ) == bDest )
                 {
                     // there is an edge between org(a) and dest(b), so if create another one, then multiple edges appear
-                    return false;
+                    return res;
                 }
             }
 
@@ -871,14 +999,22 @@ bool makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNe
                 auto e = topology.makeEdge();
                 topology.splice( a, e );
                 topology.splice( topology.prev( b.sym() ), e.sym() );
+                if ( swapped )
+                    res.nb = e;
+                else
+                    res.na = e;
             }
         }
         auto f = topology.addFaceId();
         topology.setLeft( a, f );
+        ++res.newFaces;
         if ( outNewFaces )
             outNewFaces->autoResizeSet( f );
-        return true;
+        assert( !res.na || ( !swapped && topology.fromSameOriginRing( a, res.na ) && !topology.left( res.na ) ) );
+        assert( !res.nb || (  swapped && topology.fromSameOriginRing( a, res.nb ) && !topology.left( res.nb ) ) );
+        return res;
     }
+    assert( !swapped );
 
     // general case
 
@@ -890,7 +1026,7 @@ bool makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNe
         if ( eDest == bOrg || eDest == bDest )
         {
             // there is an edge between org(a) and ( org(b) or dest(b) ), so if create another one, then multiple edges appear
-            return false;
+            return res;
         }
     }
     for ( auto e : orgRing( topology, a.sym() ) )
@@ -899,32 +1035,124 @@ bool makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNe
         if ( eDest == bOrg || eDest == bDest )
         {
             // there is an edge between dest(a) and ( org(b) or dest(b) ), so if create another one, then multiple edges appear
-            return false;
+            return res;
         }
     }
 
     auto c = topology.makeEdge();
-    auto d = topology.makeEdge();
     auto e = topology.makeEdge();
     topology.splice( topology.prev( a.sym() ), c );
-    topology.splice( c, d );
     topology.splice( a, e.sym() );
+    res.na = e.sym();
     topology.splice( topology.prev( b.sym() ), e );
-    topology.splice( e, d.sym() );
     topology.splice( b, c.sym() );
-    assert( topology.isLeftTri( a ) );
-    assert( topology.isLeftTri( b ) );
+    res.nb = c.sym();
+    assert( topology.isLeftQuad( a ) );
 
     auto fa = topology.addFaceId();
     topology.setLeft( a, fa );
-    auto fb = topology.addFaceId();
-    topology.setLeft( b, fb );
+    ++res.newFaces;
+    assert( res.na && topology.fromSameOriginRing( a, res.na ) && !topology.left( res.na ) );
+    assert( res.nb && topology.fromSameOriginRing( b, res.nb ) && !topology.left( res.nb ) );
     if ( outNewFaces )
-    {
         outNewFaces->autoResizeSet( fa );
-        outNewFaces->autoResizeSet( fb );
+    return res;
+}
+
+void splitQuad( MeshTopology & topology, EdgeId a, FaceBitSet * outNewFaces )
+{
+    assert( topology.isLeftQuad( a ) );
+    assert( topology.left( a ) );
+    auto d = topology.makeEdge();
+    topology.splice( topology.prev( a.sym() ), d );
+    topology.splice( topology.next( a ).sym(), d.sym() );
+    assert( topology.isLeftTri( d ) );
+    assert( topology.isLeftTri( d.sym() ) );
+    assert( topology.left( d ) );
+    assert( !topology.left( d.sym() ) );
+    auto f = topology.addFaceId();
+    topology.setLeft( d.sym(), f );
+    if ( outNewFaces )
+        outNewFaces->autoResizeSet( f );
+}
+
+MakeBridgeResult makeBridge( MeshTopology & topology, EdgeId a, EdgeId b, FaceBitSet * outNewFaces )
+{
+    auto res = makeQuadBridge( topology, a, b, outNewFaces );
+    if ( res.na && res.nb )
+    {
+        assert( res.newFaces == 1 );
+        splitQuad( topology, a, outNewFaces );
+        ++res.newFaces;
     }
-    return true;
+    return res;
+}
+
+MakeBridgeResult makeSmoothBridge( Mesh & mesh, EdgeId a, EdgeId b, float samplingStep, FaceBitSet * outNewFaces )
+{
+    MR_TIMER
+    MakeBridgeResult res = makeQuadBridge( mesh.topology, a, b, outNewFaces );
+    if ( !res.na && !res.nb )
+        return res;
+
+    // build spline starting in the middle of edge (a) and ending in the middle of edge (b),
+    // with tangents at the ends inside existing triangles
+    const Vector3f centerA = mesh.edgeCenter( a );
+    const Vector3f centerB = mesh.edgeCenter( b );
+    const Vector3f tangentA = mesh.leftTangent( a.sym() );
+    const Vector3f tangentB = mesh.leftTangent( b.sym() );
+    const Vector3f dirA = mesh.edgeVector( a ).normalized();
+    const Vector3f dirB = mesh.edgeVector( b.sym() ).normalized();
+
+    const float tangentStep = 0.99f * samplingStep; // to avoid splitting of tangents
+
+    Contour3f normals{ dirA, dirA, dirB, dirB };
+    auto marked = makeSpline( Contour3f{ centerA + tangentStep * tangentA, centerA, centerB, centerB + tangentStep * tangentB },
+        { .samplingStep = samplingStep, .controlStability = 10, .iterations = 3, .normals = &normals } );
+    assert( normals.size() == marked.contour.size() );
+
+    const EdgeId ca = res.na;
+    // split the only bridge's triangle or quadrangle on segments according to the spline
+    const int midPoints = (int)normals.size() - 4;
+    if ( midPoints > 0 )
+    {
+        const auto lenA = mesh.edgeLength( a );
+        const auto lenB = mesh.edgeLength( b );
+        for ( int i = 0; i < midPoints; ++i )
+        {
+            const auto u = float( i + 1 ) / ( midPoints + 1 );
+            const auto len = ( 1 - u ) * lenA + u * lenB;
+            if ( ca )
+            {
+                // split the first boundary of the bridge
+                const auto p = marked.contour[i + 2] - 0.5f * len * normals[i + 2];
+                const auto e = mesh.splitEdge( ca, p, outNewFaces );
+                ++res.newFaces;
+                assert( mesh.topology.isLeftTri( e.sym() ) );
+                if ( i == 0 )
+                    res.na = e;
+            }
+            if ( res.nb )
+            {
+                // split the second boundary of the bridge
+                const auto p = marked.contour[i + 2] + 0.5f * len * normals[i + 2];
+                [[maybe_unused]] const auto e = mesh.splitEdge( res.nb.sym(), p, outNewFaces );
+                assert( mesh.topology.isLeftTri( e ) );
+                ++res.newFaces;
+            }
+        }
+    }
+    if ( ca && mesh.topology.isLeftQuad( ca.sym() ) )
+    {
+        // split the last quadrangle;
+        // mesh.topology.prev( ca ) below to have the same diagonal as in above quadrangles
+        splitQuad( mesh.topology, mesh.topology.prev( ca ), outNewFaces );
+        ++res.newFaces;
+    }
+
+    assert( !res.na || ( mesh.topology.fromSameOriginRing( a, res.na ) && !mesh.topology.left( res.na ) ) );
+    assert( !res.nb || ( mesh.topology.fromSameOriginRing( b, res.nb ) && !mesh.topology.left( res.nb ) ) );
+    return res;
 }
 
 EdgeId makeBridgeEdge( MeshTopology & topology, EdgeId a, EdgeId b )
@@ -1006,7 +1234,17 @@ TEST( MRMesh, makeBridge )
     topology.setOrg( b.sym(), topology.addVertId() );
     EXPECT_EQ( topology.numValidFaces(), 0 );
     FaceBitSet fbs;
-    EXPECT_TRUE( makeBridge( topology, a, b, &fbs ) );
+    auto bridgeRes = makeBridge( topology, a, b, &fbs );
+    EXPECT_TRUE( bridgeRes );
+    EXPECT_EQ( bridgeRes.newFaces, 2 );
+    EXPECT_TRUE( bridgeRes.na );
+    EXPECT_EQ( topology.org( a ), topology.org( bridgeRes.na ) );
+    EXPECT_TRUE( topology.left( a ) );
+    EXPECT_FALSE( topology.left( bridgeRes.na ) );
+    EXPECT_TRUE( bridgeRes.nb );
+    EXPECT_EQ( topology.org( b ), topology.org( bridgeRes.nb ) );
+    EXPECT_TRUE( topology.left( b ) );
+    EXPECT_FALSE( topology.left( bridgeRes.nb ) );
     EXPECT_EQ( fbs.count(), 2 );
     EXPECT_EQ( topology.numValidVerts(), 4 );
     EXPECT_EQ( topology.numValidFaces(), 2 );
@@ -1021,7 +1259,15 @@ TEST( MRMesh, makeBridge )
     topology.setOrg( b.sym(), topology.addVertId() );
     EXPECT_EQ( topology.numValidFaces(), 0 );
     fbs.reset();
-    makeBridge( topology, a, b, &fbs );
+    bridgeRes = makeBridge( topology, a, b, &fbs );
+    EXPECT_TRUE( bridgeRes );
+    EXPECT_EQ( bridgeRes.newFaces, 1 );
+    EXPECT_TRUE( bridgeRes.na );
+    EXPECT_EQ( topology.org( a ), topology.org( bridgeRes.na ) );
+    EXPECT_TRUE( topology.left( a ) );
+    EXPECT_FALSE( topology.left( bridgeRes.na ) );
+    EXPECT_FALSE( bridgeRes.nb );
+    EXPECT_TRUE( topology.left( b ) );
     EXPECT_EQ( fbs.count(), 1 );
     EXPECT_EQ( topology.numValidVerts(), 3 );
     EXPECT_EQ( topology.numValidFaces(), 1 );

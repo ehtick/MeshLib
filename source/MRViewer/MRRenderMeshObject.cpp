@@ -8,10 +8,15 @@
 #include "MRGLStaticHolder.h"
 #include "MRRenderGLHelpers.h"
 #include "MRRenderHelpers.h"
-#include "MRMeshViewer.h"
+#include "MRViewer.h"
 #include "MRGladGlfw.h"
 #include "MRPch/MRTBB.h"
 #include "MRMesh/MRRegionBoundary.h"
+#include "MRMesh/MRMatrix4.h"
+#include "MRMesh/MRPlane3.h"
+#include "MRMesh/MRSceneSettings.h"
+#include "MRViewer/MRRenderDefaultObjects.h"
+#include "MRMesh/MRParallelFor.h"
 
 namespace MR
 {
@@ -29,20 +34,29 @@ RenderMeshObject::~RenderMeshObject()
     freeBuffers_();
 }
 
-void RenderMeshObject::render( const RenderParams& renderParams )
+bool RenderMeshObject::render( const ModelRenderParams& renderParams )
 {
+    RenderModelPassMask desiredPass =
+        !objMesh_->getVisualizeProperty( VisualizeMaskType::DepthTest, renderParams.viewportId ) ? RenderModelPassMask::NoDepthTest :
+        ( objMesh_->getGlobalAlpha( renderParams.viewportId ) < 255 || objMesh_->getFrontColor( objMesh_->isSelected(), renderParams.viewportId ).a < 255 || objMesh_->getBackColor( renderParams.viewportId ).a < 255 ) ? RenderModelPassMask::Transparent :
+        RenderModelPassMask::Opaque;
+    if ( !bool( renderParams.passMask & desiredPass ) )
+        return false; // Nothing to draw in this pass.
+
     if ( !Viewer::constInstance()->isGLInitialized() )
     {
         objMesh_->resetDirty();
-        return;
+        return false;
     }
     update_( renderParams.viewportId );
 
-    if ( renderParams.alphaSort )
+    if ( renderParams.allowAlphaSort && desiredPass == RenderModelPassMask::Transparent )
     {
         GL_EXEC( glDepthMask( GL_FALSE ) );
         GL_EXEC( glColorMask( GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE ) );
+#ifndef __EMSCRIPTEN__
         GL_EXEC( glDisable( GL_MULTISAMPLE ) );
+#endif
     }
     else
     {
@@ -68,9 +82,11 @@ void RenderMeshObject::render( const RenderParams& renderParams )
 
     GL_EXEC( glEnable( GL_BLEND ) );
     GL_EXEC( glBlendFuncSeparate( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA ) );
-    bindMesh_( renderParams.alphaSort );
 
-    auto shader = renderParams.alphaSort ? GLStaticHolder::getShaderId( GLStaticHolder::TransparentMesh ) : GLStaticHolder::getShaderId( GLStaticHolder::Mesh );
+    const bool useAlphaSort = renderParams.allowAlphaSort && desiredPass == RenderModelPassMask::Transparent;
+    bindMesh_( useAlphaSort );
+
+    auto shader = useAlphaSort ? GLStaticHolder::getShaderId( GLStaticHolder::TransparentMesh ) : GLStaticHolder::getShaderId( GLStaticHolder::Mesh );
     // Send transformations to the GPU
     GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "model" ), 1, GL_TRUE, renderParams.modelMatrix.data() ) );
     GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "view" ), 1, GL_TRUE, renderParams.viewMatrix.data() ) );
@@ -93,10 +109,11 @@ void RenderMeshObject::render( const RenderParams& renderParams )
         renderParams.clipPlane.n.x, renderParams.clipPlane.n.y,
         renderParams.clipPlane.n.z, renderParams.clipPlane.d ) );
 
-    GL_EXEC( auto fixed_colori = glGetUniformLocation( shader, "fixed_color" ) );
+    auto fixed_colori = GL_EXEC( glGetUniformLocation( shader, "fixed_color" ) );
     GL_EXEC( glUniform1f( glGetUniformLocation( shader, "specExp" ), objMesh_->getShininess() ) );
     GL_EXEC( glUniform1f( glGetUniformLocation( shader, "specularStrength" ), objMesh_->getSpecularStrength() ) );
-    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "ambientStrength" ), objMesh_->getAmbientStrength() ) );
+    float ambient = objMesh_->getAmbientStrength() * ( objMesh_->isSelected() ? SceneSettings::get( SceneSettings::FloatType::AmbientCoefSelectedObj ) : 1.0f );
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "ambientStrength" ), ambient ) );
     GL_EXEC( glUniform1f( glGetUniformLocation( shader, "globalAlpha" ), objMesh_->getGlobalAlpha( renderParams.viewportId ) / 255.0f ) );
     GL_EXEC( glUniform3fv( glGetUniformLocation( shader, "ligthPosEye" ), 1, &renderParams.lightPos.x ) );
     GL_EXEC( glUniform4f( fixed_colori, 0.0, 0.0, 0.0, 0.0 ) );
@@ -116,32 +133,39 @@ void RenderMeshObject::render( const RenderParams& renderParams )
         GL_EXEC( glUniform4f( glGetUniformLocation( shader, "backColor" ), backColor[0], backColor[1], backColor[2], backColor[3] ) );
 
         // Texture
-        GL_EXEC( auto useTexture = glGetUniformLocation( shader, "useTexture" ) );
+        auto useTexture = GL_EXEC( glGetUniformLocation( shader, "useTexture" ) );
         GL_EXEC( glUniform1i( useTexture, objMesh_->getVisualizeProperty( MeshVisualizePropertyType::Texture, renderParams.viewportId ) ||
             objMesh_->hasAncillaryTexture() ) );
 
         GL_EXEC( glDepthFunc( getDepthFunctionLess( renderParams.depthFunction ) ) );
         drawMesh_( true, renderParams.viewportId );
-        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
     }
     // Render wireframe
     if ( objMesh_->getVisualizeProperty( MeshVisualizePropertyType::Edges, renderParams.viewportId ) )
-        renderMeshEdges_( renderParams );
+        renderMeshEdges_( renderParams, useAlphaSort );
     if ( objMesh_->getVisualizeProperty( MeshVisualizePropertyType::BordersHighlight, renderParams.viewportId ) )
-        renderEdges_( renderParams, borderArrayObjId_, objMesh_->getBordersColor( renderParams.viewportId ), DIRTY_BORDER_LINES );
+        renderEdges_( renderParams, useAlphaSort, borderArrayObjId_, objMesh_->getBordersColor( renderParams.viewportId ), DIRTY_BORDER_LINES );
     if ( objMesh_->getVisualizeProperty( MeshVisualizePropertyType::SelectedEdges, renderParams.viewportId ) )
-        renderEdges_( renderParams, selectedEdgesArrayObjId_, objMesh_->getSelectedEdgesColor( renderParams.viewportId ), DIRTY_EDGES_SELECTION );
+        renderEdges_( renderParams, useAlphaSort, selectedEdgesArrayObjId_, objMesh_->getSelectedEdgesColor( renderParams.viewportId ), DIRTY_EDGES_SELECTION );
+    // Render vertices
+    if ( objMesh_->getVisualizeProperty( MeshVisualizePropertyType::Points, renderParams.viewportId ) )
+        renderMeshVerts_( renderParams, useAlphaSort );
 
-    if ( renderParams.alphaSort )
+    if ( renderParams.allowAlphaSort && desiredPass == RenderModelPassMask::Transparent )
     {
         // enable back masks, disabled for alpha sort
         GL_EXEC( glDepthMask( GL_TRUE ) );
         GL_EXEC( glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE ) );
+#ifndef __EMSCRIPTEN__
         GL_EXEC( glEnable( GL_MULTISAMPLE ) );
+#endif
     }
+
+    return true;
 }
 
-void RenderMeshObject::renderPicker( const BaseRenderParams& parameters, unsigned geomId )
+void RenderMeshObject::renderPicker( const ModelBaseRenderParams& parameters, unsigned geomId )
 {
     if ( !Viewer::constInstance()->isGLInitialized() )
     {
@@ -153,8 +177,11 @@ void RenderMeshObject::renderPicker( const BaseRenderParams& parameters, unsigne
     GL_EXEC( glViewport( ( GLsizei )0, ( GLsizei )0, ( GLsizei )parameters.viewport.z, ( GLsizei )parameters.viewport.w ) );
 
     bindMeshPicker_();
-
+#ifdef __EMSCRIPTEN__
     auto shader = GLStaticHolder::getShaderId( GLStaticHolder::Picker );
+#else
+    auto shader = GLStaticHolder::getShaderId( GLStaticHolder::MeshDesktopPicker );
+#endif
 
     GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "model" ), 1, GL_TRUE, parameters.modelMatrix.data() ) );
     GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "view" ), 1, GL_TRUE, parameters.viewMatrix.data() ) );
@@ -169,7 +196,7 @@ void RenderMeshObject::renderPicker( const BaseRenderParams& parameters, unsigne
 
     GL_EXEC( glDepthFunc( getDepthFunctionLess( parameters.depthFunction ) ) );
     drawMesh_( true, parameters.viewportId, true );
-    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
 }
 
 size_t RenderMeshObject::heapBytes() const
@@ -186,13 +213,14 @@ size_t RenderMeshObject::glBytes() const
         + vertNormalsBuffer_.size()
         + vertColorsBuffer_.size()
         + facesIndicesBuffer_.size()
-        + texture_.size()
+        + textureArray_.size()
         + faceSelectionTex_.size()
         + faceSelectionTex_.size()
         + facesNormalsTex_.size()
         + edgesTexture_.size()
         + selEdgesTexture_.size()
-        + borderTexture_.size();
+        + borderTexture_.size()
+        + pointValidBuffer_.size();
 }
 
 void RenderMeshObject::forceBindAll()
@@ -202,14 +230,15 @@ void RenderMeshObject::forceBindAll()
     bindEdges_();
     bindSelectedEdges_();
     bindBorders_();
+    bindPoints_( false );
 }
 
-void RenderMeshObject::renderEdges_( const RenderParams& renderParams, GLuint vao, const Color& colorChar, uint32_t dirtyFlag )
+void RenderMeshObject::renderEdges_( const ModelRenderParams& renderParams, bool alphaSort, GLuint vao, const Color& colorChar, uint32_t dirtyFlag )
 {
     // Send lines data to GL, install lines properties
     GL_EXEC( glBindVertexArray( vao ) );
 
-    auto shader = renderParams.alphaSort ?
+    auto shader = alphaSort ?
         GLStaticHolder::getShaderId( GLStaticHolder::TransparentLines ) :
         GLStaticHolder::getShaderId( GLStaticHolder::Lines );
 
@@ -259,17 +288,17 @@ void RenderMeshObject::renderEdges_( const RenderParams& renderParams, GLuint va
 
     GL_EXEC( glDepthFunc( getDepthFunctionLEqual( renderParams.depthFunction ) ) );
     GL_EXEC( glDrawArrays( GL_TRIANGLES, 0, size * 6 ) );
-    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
 
     dirty_ &= ~dirtyFlag;
 }
 
-void RenderMeshObject::renderMeshEdges_( const RenderParams& renderParams )
+void RenderMeshObject::renderMeshEdges_( const ModelRenderParams& renderParams, bool alphaSort )
 {
     // Send lines data to GL, install lines properties
     GL_EXEC( glBindVertexArray( edgesArrayObjId_ ) );
 
-    auto shader = renderParams.alphaSort ?
+    auto shader = alphaSort ?
         GLStaticHolder::getShaderId( GLStaticHolder::TransparentLines ) :
         GLStaticHolder::getShaderId( GLStaticHolder::Lines );
 
@@ -308,7 +337,64 @@ void RenderMeshObject::renderMeshEdges_( const RenderParams& renderParams )
 
     GL_EXEC( glDepthFunc( getDepthFunctionLess( renderParams.depthFunction ) ) );
     GL_EXEC( glDrawArrays( GL_TRIANGLES, 0, edgeSize_ * 6 ) );
-    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
+}
+
+void RenderMeshObject::renderMeshVerts_( const ModelRenderParams& renderParams, bool alphaSort )
+{
+    bindPoints_( alphaSort );
+
+    // Send transformations to the GPU
+    auto shader = GLStaticHolder::getShaderId( alphaSort ? GLStaticHolder::TransparentPoints : GLStaticHolder::Points );
+
+    GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "model" ), 1, GL_TRUE, renderParams.modelMatrix.data() ) );
+    GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "view" ), 1, GL_TRUE, renderParams.viewMatrix.data() ) );
+    GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "proj" ), 1, GL_TRUE, renderParams.projMatrix.data() ) );
+    if ( renderParams.normMatrixPtr )
+    {
+        GL_EXEC( glUniformMatrix4fv( glGetUniformLocation( shader, "normal_matrix" ), 1, GL_TRUE, renderParams.normMatrixPtr->data() ) );
+    }
+
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "invertNormals" ), objMesh_->getVisualizeProperty( VisualizeMaskType::InvertedNormals, renderParams.viewportId ) ) );
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "perVertColoring" ), objMesh_->getColoringType() == ColoringType::VertsColorMap ) );
+
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "useClippingPlane" ), objMesh_->getVisualizeProperty( VisualizeMaskType::ClippedByPlane, renderParams.viewportId ) ) );
+    GL_EXEC( glUniform4f( glGetUniformLocation( shader, "clippingPlane" ),
+        renderParams.clipPlane.n.x, renderParams.clipPlane.n.y,
+        renderParams.clipPlane.n.z, renderParams.clipPlane.d ) );
+
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "hasNormals" ), 1 ) );
+
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "specExp" ), objMesh_->getShininess() ) );
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "specularStrength" ), objMesh_->getSpecularStrength() ) );
+    float ambient = objMesh_->getAmbientStrength() * ( objMesh_->isSelected() ? SceneSettings::get( SceneSettings::FloatType::AmbientCoefSelectedObj ) : 1.0f );
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "ambientStrength" ), ambient ) );
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "globalAlpha" ), objMesh_->getGlobalAlpha( renderParams.viewportId ) / 255.0f ) );
+    GL_EXEC( glUniform3fv( glGetUniformLocation( shader, "ligthPosEye" ), 1, &renderParams.lightPos.x ) );
+
+    const auto& mainColor = Vector4f( objMesh_->getPointsColor( renderParams.viewportId ) );
+    GL_EXEC( glUniform4f( glGetUniformLocation( shader, "mainColor" ), mainColor[0], mainColor[1], mainColor[2], mainColor[3] ) );
+
+    const auto& backColor = mainColor;
+    GL_EXEC( glUniform4f( glGetUniformLocation( shader, "backColor" ), backColor[0], backColor[1], backColor[2], backColor[3] ) );
+
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "showSelVerts" ), false ) );
+    const auto emptyColor = Vector4f();
+    GL_EXEC( glUniform4f( glGetUniformLocation( shader, "selectionColor" ), emptyColor[0], emptyColor[1], emptyColor[2], emptyColor[3] ) );
+    GL_EXEC( glUniform4f( glGetUniformLocation( shader, "selBackColor" ), emptyColor[0], emptyColor[1], emptyColor[2], emptyColor[3] ) );
+
+    GL_EXEC( glUniform1ui( glGetUniformLocation( shader, "primBucketSize" ), 1 ) );
+
+    getViewerInstance().incrementThisFrameGLPrimitivesCount( Viewer::GLPrimitivesType::PointElementsNum, pointValidSize_ );
+
+#ifdef __EMSCRIPTEN__
+    GL_EXEC( glUniform1f( glGetUniformLocation( shader, "pointSize" ), objMesh_->getPointSize() ) );
+#else
+    GL_EXEC( glPointSize( objMesh_->getPointSize() ) );
+#endif
+    GL_EXEC( glDepthFunc( getDepthFunctionLess( renderParams.depthFunction ) ) );
+    GL_EXEC( glDrawElements( GL_POINTS, ( GLsizei ) pointValidSize_, GL_UNSIGNED_INT, 0 ) );
+    GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
 }
 
 void RenderMeshObject::bindMesh_( bool alphaSort )
@@ -332,18 +418,53 @@ void RenderMeshObject::bindMesh_( bool alphaSort )
     auto faces = loadFaceIndicesBuffer_();
     facesIndicesBuffer_.loadDataOpt( GL_ELEMENT_ARRAY_BUFFER, faces.dirty(), faces );
 
-    const auto& texture = objMesh_->hasAncillaryTexture() ? objMesh_->getAncillaryTexture() : objMesh_->getTexture();
     GL_EXEC( glActiveTexture( GL_TEXTURE0 ) );
-    texture_.loadDataOpt( dirty_ & DIRTY_TEXTURE,
+
+    if ( bool( dirty_ & DIRTY_TEXTURE ) )
+    {
+        if ( objMesh_->hasAncillaryTexture() )
         {
-            .resolution = texture.resolution,
-            .internalFormat = GL_RGBA,
-            .format = GL_RGBA,
-            .type = GL_UNSIGNED_BYTE,
-            .wrap = texture.wrap,
-            .filter = texture.filter
-        },
-        texture.pixels );
+            const auto& texture = objMesh_->getAncillaryTexture();
+
+            textureArray_.loadDataOpt( dirty_ & DIRTY_TEXTURE,
+                {
+                    .resolution = GlTexture2::ToResolution( texture.resolution ),
+                    .internalFormat = GL_RGBA,
+                    .format = GL_RGBA,
+                    .type = GL_UNSIGNED_BYTE,
+                    .wrap = texture.wrap,
+                    .filter = texture.filter
+                },
+                texture.pixels );
+        }
+        else
+        {
+            const auto& textures = objMesh_->getTextures();
+
+            auto res = textures.empty() ? Vector2i() : textures.front().resolution;
+            auto wrap = textures.empty() ? WrapType::Clamp : textures.front().wrap;
+            auto filter = textures.empty() ? FilterType::Linear : textures.front().filter;
+
+            auto& buffer = GLStaticHolder::getStaticGLBuffer();
+            auto texSize = res.x * res.y;
+            auto pixels = buffer.prepareBuffer<Color>( size_t( texSize * textures.size() ) );
+            size_t numTex = 0;
+            for ( const auto& tex : textures )
+                std::copy( tex.pixels.begin(), tex.pixels.end(), &pixels[texSize * numTex++] );
+
+            GlTexture2DArray::Settings settings;
+            settings.resolution = Vector3i{ res.x, res.y, int( textures.size() ) };
+            settings.internalFormat = GL_RGBA;
+            settings.format = GL_RGBA;
+            settings.type = GL_UNSIGNED_BYTE;
+            settings.wrap = wrap;
+            settings.filter = filter;
+
+            textureArray_.loadData( settings, pixels );
+        }
+    }
+    else
+        textureArray_.bind();
     GL_EXEC( glUniform1i( glGetUniformLocation( shader, "tex" ), 0 ) );
 
     // Diffuse
@@ -355,7 +476,7 @@ void RenderMeshObject::bindMesh_( bool alphaSort )
         auto res = calcTextureRes( int( facesColorMap.size() ), maxTexSize_ );
         facesColorMap.resize( res.x * res.y );
         faceColorsTex_.loadData(
-            { .resolution = res, .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
+            { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
             facesColorMap );
     }
     else
@@ -366,7 +487,7 @@ void RenderMeshObject::bindMesh_( bool alphaSort )
     auto faceNormals = loadFaceNormalsTextureBuffer_();
     GL_EXEC( glActiveTexture( GL_TEXTURE2 ) );
     facesNormalsTex_.loadDataOpt( faceNormals.dirty(),
-        { .resolution = faceNormalsTextureSize_, .internalFormat = GL_RGBA32F, .format = GL_RGBA, .type = GL_FLOAT },
+        { .resolution = GlTexture2::ToResolution( faceNormalsTextureSize_ ), .internalFormat = GL_RGBA32F, .format = GL_RGBA, .type = GL_FLOAT },
         faceNormals );
     GL_EXEC( glUniform1i( glGetUniformLocation( shader, "faceNormals" ), 2 ) );
 
@@ -374,9 +495,18 @@ void RenderMeshObject::bindMesh_( bool alphaSort )
     auto faceSelection = loadFaceSelectionTextureBuffer_();
     GL_EXEC( glActiveTexture( GL_TEXTURE3 ) );
     faceSelectionTex_.loadDataOpt( faceSelection.dirty(),
-        { .resolution = faceSelectionTextureSize_, .internalFormat = GL_R32UI, .format = GL_RED_INTEGER, .type = GL_UNSIGNED_INT },
+        { .resolution = GlTexture2::ToResolution( faceSelectionTextureSize_ ), .internalFormat = GL_R32UI, .format = GL_RED_INTEGER, .type = GL_UNSIGNED_INT },
         faceSelection );
     GL_EXEC( glUniform1i( glGetUniformLocation( shader, "selection" ), 3 ) );
+
+    // Texture per faces
+    auto texturePerFaces = loadTexturePerFaceTextureBuffer_();
+    GL_EXEC( glActiveTexture( GL_TEXTURE4 ) );
+    texturePerFace_.loadDataOpt(
+        texturePerFaces.dirty(),
+        { .resolution = GlTexture2::ToResolution( texturePerFaceSize_ ), .internalFormat = GL_R8UI, .format = GL_RED_INTEGER, .type = GL_UNSIGNED_BYTE },
+        texturePerFaces );
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "texturePerFace" ), 4 ) );
 
     dirty_ &= ~DIRTY_MESH;
     dirty_ &= ~DIRTY_VERTS_COLORMAP;
@@ -384,7 +514,12 @@ void RenderMeshObject::bindMesh_( bool alphaSort )
 
 void RenderMeshObject::bindMeshPicker_()
 {
+#ifdef __EMSCRIPTEN__
     auto shader = GLStaticHolder::getShaderId( GLStaticHolder::Picker );
+#else
+    auto shader = GLStaticHolder::getShaderId( GLStaticHolder::MeshDesktopPicker );
+#endif
+
     GL_EXEC( glBindVertexArray( meshPickerArrayObjId_ ) );
     GL_EXEC( glUseProgram( shader ) );
 
@@ -430,7 +565,7 @@ void RenderMeshObject::bindEdges_()
         }
     } );
     edgesTexture_.loadData(
-        { .resolution = res, .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
+        { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
         positions );
     dirtyEdges_ = false;
 }
@@ -462,7 +597,7 @@ void RenderMeshObject::bindBorders_()
         }
     }
     borderTexture_.loadData(
-        { .resolution = res, .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
+        { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
         positions );
 }
 
@@ -490,7 +625,7 @@ void RenderMeshObject::bindSelectedEdges_()
         positions[i++] = mesh->destPnt( e );
     }
     selEdgesTexture_.loadData(
-        { .resolution = res, .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
+        { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
         positions );
 }
 
@@ -512,6 +647,34 @@ void RenderMeshObject::bindEmptyTextures_(GLuint shaderId)
     GL_EXEC( glUniform1i( glGetUniformLocation( shaderId, "lineColors" ), 2 ) );
 }
 
+void RenderMeshObject::bindPoints_( bool alphaSort )
+{
+    auto shader = GLStaticHolder::getShaderId( alphaSort ? GLStaticHolder::TransparentPoints : GLStaticHolder::Points );
+    GL_EXEC( glBindVertexArray( pointsArrayObjId_ ) );
+    GL_EXEC( glUseProgram( shader ) );
+
+    const auto positions = loadVertPosBuffer_();
+    bindVertexAttribArray( shader, "position", vertPosBuffer_, positions, 3, positions.dirty(), positions.glSize() != 0 );
+
+    const auto normals = loadVertNormalsBuffer_();
+    bindVertexAttribArray( shader, "normal", vertNormalsBuffer_, normals, 3, normals.dirty(), normals.glSize() != 0 );
+
+    const auto colors = loadVertColorsBuffer_();
+    bindVertexAttribArray( shader, "K", vertColorsBuffer_, colors, 4, colors.dirty(), colors.glSize() != 0 );
+
+    auto validIndices = loadPointValidIndicesBuffer_();
+    pointValidBuffer_.loadDataOpt( GL_ELEMENT_ARRAY_BUFFER, validIndices.dirty(), validIndices );
+
+    // VertColors
+    GL_EXEC( glActiveTexture( GL_TEXTURE0 ) );
+    if ( !emptyVertsColorTexture_.valid() )
+        emptyVertsColorTexture_.gen();
+    emptyVertsColorTexture_.bind();
+    GL_EXEC( glUniform1i( glGetUniformLocation( shader, "selection" ), 0 ) );
+
+    dirtyPointPos_ = false;
+}
+
 void RenderMeshObject::drawMesh_( bool /*solid*/, ViewportId viewportId, bool picker ) const
 {
     /* Avoid Z-buffer fighting between filled triangles & wireframe lines */
@@ -520,7 +683,7 @@ void RenderMeshObject::drawMesh_( bool /*solid*/, ViewportId viewportId, bool pi
          | objMesh_->getVisualizePropertyMask( MeshVisualizePropertyType::PolygonOffsetFromCamera )
        // intentionally do not check selected edges and borders since they are typically thicker and include not all edges
        //  | objMesh_->getVisualizePropertyMask( MeshVisualizePropertyType::SelectedEdges )
-       //  | objMesh_->getVisualizePropertyMask( MeshVisualizePropertyType::BordersHighlight ) 
+       //  | objMesh_->getVisualizePropertyMask( MeshVisualizePropertyType::BordersHighlight )
         ).contains( viewportId ) )
     {
         // offset triangles further with factor depending on triangle orientation to clearly see edges on top of them
@@ -558,6 +721,9 @@ void RenderMeshObject::initBuffers_()
     GL_EXEC( glGenVertexArrays( 1, &selectedEdgesArrayObjId_ ) );
     GL_EXEC( glBindVertexArray( selectedEdgesArrayObjId_ ) );
 
+    GL_EXEC( glGenVertexArrays( 1, &pointsArrayObjId_ ) );
+    GL_EXEC( glBindVertexArray( pointsArrayObjId_ ) );
+
     GL_EXEC( glGetIntegerv( GL_MAX_TEXTURE_SIZE, &maxTexSize_ ) );
     assert( maxTexSize_ > 0 );
 
@@ -573,6 +739,7 @@ void RenderMeshObject::freeBuffers_()
     GL_EXEC( glDeleteVertexArrays( 1, &meshPickerArrayObjId_ ) );
     GL_EXEC( glDeleteVertexArrays( 1, &borderArrayObjId_ ) );
     GL_EXEC( glDeleteVertexArrays( 1, &selectedEdgesArrayObjId_ ) );
+    GL_EXEC( glDeleteVertexArrays( 1, &pointsArrayObjId_ ) );
 }
 
 void RenderMeshObject::update_( ViewportMask mask )
@@ -583,7 +750,7 @@ void RenderMeshObject::update_( ViewportMask mask )
     if ( dirtyNormalFlag & DIRTY_FACES_RENDER_NORMAL )
     {
         // vertNormalsBufferObj_ should be valid no matter what normals we use
-        if ( !objMesh_->creases().any() )
+        if ( objMesh_->creases().none() )
             dirtyNormalFlag |= DIRTY_VERTS_RENDER_NORMAL;
         else
             dirtyNormalFlag |= DIRTY_CORNERS_RENDER_NORMAL;
@@ -591,13 +758,39 @@ void RenderMeshObject::update_( ViewportMask mask )
     objDirty &= ~( DIRTY_RENDER_NORMALS - dirtyNormalFlag );
     dirty_ |= objDirty;
 
-    if ( objMesh_->getColoringType() != ColoringType::VertsColorMap )
-        dirty_ &= ~DIRTY_VERTS_COLORMAP;
-
     if ( dirty_ & DIRTY_FACE || dirty_ & DIRTY_POSITION )
+    {
         dirtyEdges_ = true;
+        dirtyPointPos_ = true;
+    }
 
     objMesh_->resetDirtyExeptMask( DIRTY_RENDER_NORMALS - dirtyNormalFlag );
+
+#ifndef __EMSCRIPTEN__
+    if ( !cornerMode && bool( dirty_ & DIRTY_CORNERS_RENDER_NORMAL ) )
+    {
+        // always need corner mode for creases
+        // it should not affect dirtyEdges_
+        cornerMode = true;
+        dirty_ |= DIRTY_POSITION;
+        dirty_ |= DIRTY_VERTS_COLORMAP;
+        dirty_ |= DIRTY_UV;
+        dirty_ |= DIRTY_FACE;
+        dirtyPointPos_ = true;
+    }
+    if ( cornerMode && bool( dirty_ & DIRTY_VERTS_RENDER_NORMAL ) )
+    {
+        assert( objMesh_->creases().none() );
+        // disable corner mode if no creases
+        // it should not affect dirtyEdges_
+        cornerMode = false;
+        dirty_ |= DIRTY_POSITION;
+        dirty_ |= DIRTY_VERTS_COLORMAP;
+        dirty_ |= DIRTY_UV;
+        dirty_ |= DIRTY_FACE;
+        dirtyPointPos_ = true;
+    }
+#endif
 }
 
 RenderBufferRef<Vector3f> RenderMeshObject::loadVertPosBuffer_()
@@ -610,24 +803,33 @@ RenderBufferRef<Vector3f> RenderMeshObject::loadVertPosBuffer_()
 
     const auto& mesh = objMesh_->mesh();
     const auto& topology = mesh->topology;
-    auto numF = topology.lastValidFace() + 1;
-    auto buffer = glBuffer.prepareBuffer<Vector3f>( vertPosSize_ = 3 * numF );
-
-    tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+    if ( cornerMode )
     {
-        for ( FaceId f = range.begin(); f < range.end(); ++f )
-        {
-            if ( !mesh->topology.hasFace( f ) )
-                continue;
-            auto ind = 3 * f;
-            Vector3f v[3];
-            mesh->getTriPoints( f, v[0], v[1], v[2] );
-            for ( int i = 0; i < 3; ++i )
-                buffer[ind + i] = v[i];
-        }
-    } );
+        auto numF = topology.lastValidFace() + 1;
+        auto buffer = glBuffer.prepareBuffer<Vector3f>( vertPosSize_ = 3 * numF );
 
-    return buffer;
+        tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+        {
+            for ( FaceId f = range.begin(); f < range.end(); ++f )
+            {
+                if ( !mesh->topology.hasFace( f ) )
+                    continue;
+                auto ind = 3 * f;
+                Vector3f v[3];
+                mesh->getTriPoints( f, v[0], v[1], v[2] );
+                for ( int i = 0; i < 3; ++i )
+                    buffer[ind + i] = v[i];
+            }
+        } );
+
+        return buffer;
+    }
+    else
+    {
+        auto buffer = glBuffer.prepareBuffer<Vector3f>( vertPosSize_ = topology.lastValidVert() + 1 );
+        std::copy( MR::begin( mesh->points ), MR::begin( mesh->points ) + vertPosSize_, buffer.data() );
+        return buffer;
+    }
 }
 
 RenderBufferRef<Vector3f> RenderMeshObject::loadVertNormalsBuffer_()
@@ -666,29 +868,38 @@ RenderBufferRef<Vector3f> RenderMeshObject::loadVertNormalsBuffer_()
     }
     else if ( dirty_ & DIRTY_VERTS_RENDER_NORMAL )
     {
-        MR_NAMED_TIMER( "dirty_vertices_normals" )
-
-        auto buffer = glBuffer.prepareBuffer<Vector3f>( vertNormalsSize_ = 3 * numF );
+        MR_NAMED_TIMER( "dirty_vertices_normals" );
 
         const auto vertNormals = computePerVertNormals( *mesh );
-        tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+        if ( cornerMode )
         {
-            for ( FaceId f = range.begin(); f < range.end(); ++f )
-            {
-                if ( !mesh->topology.hasFace( f ) )
-                    continue;
-                auto ind = 3 * f;
-                VertId v[3];
-                topology.getTriVerts( f, v );
-                for ( int i = 0; i < 3; ++i )
-                {
-                    const auto &norm = getAt( vertNormals, v[i] );
-                    buffer[ind + i] = norm;
-                }
-            }
-        } );
+            auto buffer = glBuffer.prepareBuffer<Vector3f>( vertNormalsSize_ = 3 * numF );
 
-        return buffer;
+            tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+            {
+                for ( FaceId f = range.begin(); f < range.end(); ++f )
+                {
+                    if ( !mesh->topology.hasFace( f ) )
+                        continue;
+                    auto ind = 3 * f;
+                    VertId v[3];
+                    topology.getTriVerts( f, v );
+                    for ( int i = 0; i < 3; ++i )
+                    {
+                        const auto& norm = getAt( vertNormals, v[i] );
+                        buffer[ind + i] = norm;
+                    }
+                }
+            } );
+
+            return buffer;
+        }
+        else
+        {
+            auto buffer = glBuffer.prepareBuffer<Vector3f>( vertNormalsSize_ = topology.lastValidVert() + 1 );
+            std::copy( MR::begin( vertNormals ), MR::end( vertNormals ), buffer.data() );
+            return buffer;
+        }
     }
     else
     {
@@ -700,31 +911,42 @@ RenderBufferRef<Color> RenderMeshObject::loadVertColorsBuffer_()
 {
     auto& glBuffer = GLStaticHolder::getStaticGLBuffer();
     if ( !( dirty_ & DIRTY_VERTS_COLORMAP ) || !objMesh_->mesh() )
-        return glBuffer.prepareBuffer<Color>( vertColorsSize_, false );
+        return glBuffer.prepareBuffer<Color>( vertColorsSize_, false ); // use updated color map
+    if ( objMesh_->getColoringType() != ColoringType::VertsColorMap )
+        return glBuffer.prepareBuffer<Color>( vertColorsSize_ = 0 ); // clear color map if not used
 
     MR_NAMED_TIMER( "vert_colormap" );
-
     const auto& mesh = objMesh_->mesh();
     const auto& topology = mesh->topology;
-    auto numF = topology.lastValidFace() + 1;
-    auto buffer = glBuffer.prepareBuffer<Color>( vertColorsSize_ = 3 * numF );
-
     const auto& vertsColorMap = objMesh_->getVertsColorMap();
-    tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
-    {
-        for ( FaceId f = range.begin(); f < range.end(); ++f )
-        {
-            if ( !mesh->topology.hasFace( f ) )
-                continue;
-            auto ind = 3 * f;
-            VertId v[3];
-            topology.getTriVerts( f, v );
-            for ( int i = 0; i < 3; ++i )
-                buffer[ind + i] = getAt( vertsColorMap, v[i] );
-        }
-    } );
 
-    return buffer;
+    if ( cornerMode )
+    {
+        auto numF = topology.lastValidFace() + 1;
+        auto buffer = glBuffer.prepareBuffer<Color>( vertColorsSize_ = 3 * numF );
+
+        tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+        {
+            for ( FaceId f = range.begin(); f < range.end(); ++f )
+            {
+                if ( !mesh->topology.hasFace( f ) )
+                    continue;
+                auto ind = 3 * f;
+                VertId v[3];
+                topology.getTriVerts( f, v );
+                for ( int i = 0; i < 3; ++i )
+                    buffer[ind + i] = getAt( vertsColorMap, v[i] );
+            }
+        } );
+
+        return buffer;
+    }
+    else
+    {
+        auto buffer = glBuffer.prepareBuffer<Color>( vertColorsSize_ = topology.lastValidVert() + 1 );
+        std::copy( MR::begin( vertsColorMap ), MR::begin( vertsColorMap ) + vertColorsSize_, buffer.data() );
+        return buffer;
+    }
 }
 
 RenderBufferRef<UVCoord> RenderMeshObject::loadVertUVBuffer_()
@@ -745,23 +967,32 @@ RenderBufferRef<UVCoord> RenderMeshObject::loadVertUVBuffer_()
     }
     if ( uvCoords.size() >= numV )
     {
-        auto buffer = glBuffer.prepareBuffer<UVCoord>( vertUVSize_ = 3 * numF );
-
-        tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+        if ( cornerMode )
         {
-            for ( FaceId f = range.begin(); f < range.end(); ++f )
-            {
-                if ( !mesh->topology.hasFace( f ) )
-                    continue;
-                auto ind = 3 * f;
-                VertId v[3];
-                topology.getTriVerts( f, v );
-                for ( int i = 0; i < 3; ++i )
-                    buffer[ind + i] = getAt( uvCoords, v[i] );
-            }
-        } );
+            auto buffer = glBuffer.prepareBuffer<UVCoord>( vertUVSize_ = 3 * numF );
 
-        return buffer;
+            tbb::parallel_for( tbb::blocked_range<FaceId>( 0_f, FaceId{ numF } ), [&] ( const tbb::blocked_range<FaceId>& range )
+            {
+                for ( FaceId f = range.begin(); f < range.end(); ++f )
+                {
+                    if ( !mesh->topology.hasFace( f ) )
+                        continue;
+                    auto ind = 3 * f;
+                    VertId v[3];
+                    topology.getTriVerts( f, v );
+                    for ( int i = 0; i < 3; ++i )
+                        buffer[ind + i] = getAt( uvCoords, v[i] );
+                }
+            } );
+
+            return buffer;
+        }
+        else
+        {
+            auto buffer = glBuffer.prepareBuffer<UVCoord>( vertUVSize_ = numV );
+            std::copy( MR::begin( uvCoords ), MR::begin( uvCoords ) + numV, buffer.data() );
+            return buffer;
+        }
     }
     else
     {
@@ -775,6 +1006,8 @@ RenderBufferRef<Vector3i> RenderMeshObject::loadFaceIndicesBuffer_()
     if ( !( dirty_ & DIRTY_FACE ) || !objMesh_->mesh() )
         return glBuffer.prepareBuffer<Vector3i>( faceIndicesSize_, !facesIndicesBuffer_.valid() );
 
+    // CORNDER BASED
+
     const auto& mesh = objMesh_->mesh();
     const auto& topology = mesh->topology;
     auto numF = topology.lastValidFace() + 1;
@@ -784,11 +1017,20 @@ RenderBufferRef<Vector3i> RenderMeshObject::loadFaceIndicesBuffer_()
     {
         for ( FaceId f = range.begin(); f < range.end(); ++f )
         {
-            auto ind = 3 * f;
-            if ( topology.hasFace( f ) )
-                buffer[f] = Vector3i{ ind, ind + 1, ind + 2 };
-            else
+            if ( !topology.hasFace( f ) )
                 buffer[f] = Vector3i();
+            else
+            {
+                if ( cornerMode )
+                {
+                    auto ind = 3 * f;
+                    buffer[f] = Vector3i{ ind, ind + 1, ind + 2 };
+                }
+                else
+                {
+                    topology.getTriVerts( f, ( ThreeVertIds& )buffer[f] );
+                }
+            }
         }
     } );
 
@@ -810,7 +1052,7 @@ RenderBufferRef<unsigned> RenderMeshObject::loadFaceSelectionTextureBuffer_()
     assert( faceSelectionTextureSize_.x * faceSelectionTextureSize_.y >= size );
     auto buffer = glBuffer.prepareBuffer<unsigned>( faceSelectionTextureSize_.x * faceSelectionTextureSize_.y );
 
-    const auto& selection = objMesh_->getSelectedFaces().m_bits;
+    const auto& selection = objMesh_->getSelectedFaces().bits();
     const unsigned* selectionData = ( unsigned* )selection.data();
     tbb::parallel_for( tbb::blocked_range<int>( 0, (int)buffer.size() ), [&] ( const tbb::blocked_range<int>& range )
     {
@@ -850,6 +1092,70 @@ RenderBufferRef<Vector4f> RenderMeshObject::loadFaceNormalsTextureBuffer_()
     return buffer;
 }
 
-MR_REGISTER_RENDER_OBJECT_IMPL( ObjectMeshHolder, RenderMeshObject )
+RenderBufferRef<uint8_t> RenderMeshObject::loadTexturePerFaceTextureBuffer_()
+{
+    auto& glBuffer = GLStaticHolder::getStaticGLBuffer();
+    if ( !( dirty_ & DIRTY_TEXTURE_PER_FACE ) || !objMesh_->mesh() )
+        return glBuffer.prepareBuffer<uint8_t>( texturePerFaceSize_.x * texturePerFaceSize_.y, false );
+
+    const auto& mesh = objMesh_->mesh();
+    const auto& topology = mesh->topology;
+    auto numF = topology.lastValidFace() + 1;
+
+    auto size = numF;
+    texturePerFaceSize_ = calcTextureRes( size, maxTexSize_ );
+    assert( texturePerFaceSize_.x * texturePerFaceSize_.y >= size );
+    auto buffer = glBuffer.prepareBuffer<uint8_t >( texturePerFaceSize_.x * texturePerFaceSize_.y );
+
+    const auto& texPerFace = objMesh_->getTexturePerFace();
+    ParallelFor( 0, ( int )buffer.size(), [&] ( size_t r )
+    {
+        if ( r < texPerFace.size() )
+            buffer[r] = static_cast<uint8_t>(texPerFace.vec_[r]);
+        else
+            buffer[r] = 0;
+    } );
+
+    return buffer;
+}
+
+RenderBufferRef<VertId> RenderMeshObject::loadPointValidIndicesBuffer_()
+{
+    auto& glBuffer = GLStaticHolder::getStaticGLBuffer();
+    if ( !dirtyPointPos_ || !objMesh_->mesh() )
+        return glBuffer.prepareBuffer<VertId>( pointValidSize_, !pointValidBuffer_.valid() );
+
+    MR_NAMED_TIMER( "mesh_points_dirty_valid_indices" );
+
+    const auto& topology = objMesh_->mesh()->topology;
+    const auto& validPoints = topology.getValidVerts();
+    pointValidSize_ = int( validPoints.count() );
+    auto buffer = glBuffer.prepareBuffer<VertId>( pointValidSize_ );
+    if ( cornerMode )
+    {
+        auto unprocessedPoints = validPoints;
+        const auto& validFaces = topology.getValidFaces();
+        VertId verts[3];
+        size_t out = 0;
+        for ( auto f : validFaces )
+        {
+            topology.getTriVerts( f, verts );
+            for ( int i = 0; i < 3; ++i )
+            {
+                if ( unprocessedPoints.test_set( VertId( verts[i] ), false ) )
+                    buffer[out++] = VertId( int( f ) * 3 + i );
+            }
+        }
+    }
+    else
+    {
+        size_t out = 0;
+        for ( auto v : validPoints )
+            buffer[out++] = v;
+    }
+    return buffer;
+}
+
+MR_REGISTER_RENDER_OBJECT_IMPL( ObjectMeshHolder, RenderObjectCombinator<RenderDefaultUiObject, RenderMeshObject> )
 
 }

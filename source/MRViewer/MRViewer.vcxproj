@@ -12,16 +12,50 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ImGuiHelpers.cpp" />
+    <ClCompile Include="MRAncillaryLabels.cpp" />
+    <ClCompile Include="MRAncillaryLines.cpp" />
+    <ClCompile Include="MRAncillaryMesh.cpp" />
+    <ClCompile Include="MRAncillaryPoints.cpp" />
     <ClCompile Include="MRAppendHistory.cpp" />
     <ClCompile Include="MRAlphaSortGL.cpp" />
     <ClCompile Include="ImGuiMenu.cpp" />
+    <ClCompile Include="MRClipboard.cpp" />
+    <ClCompile Include="MRConsoleWindows.cpp" />
     <ClCompile Include="MRAsyncTimer.cpp" />
     <ClCompile Include="MRColorTheme.cpp" />
     <ClCompile Include="MRCommandLoop.cpp" />
     <ClCompile Include="MRCreateShader.cpp" />
     <ClCompile Include="MRCudaAccessor.cpp" />
+    <ClCompile Include="MRDirectionWidget.cpp" />
+    <ClCompile Include="MRGLTexture.cpp" />
+    <ClCompile Include="MRHistoryStore.cpp" />
+    <ClCompile Include="MRMacOSOpenDocumentsHandler.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="MRMarkedVoxelSlice.cpp" />
+    <ClCompile Include="MRMeshBoundarySelectionWidget.cpp" />
+    <ClCompile Include="MRFrameCounter.cpp" />
+    <ClCompile Include="MRMoveObjectByMouseImpl.cpp" />
+    <ClCompile Include="MRObjectImGuiLabel.cpp" />
+    <ClCompile Include="MRObjectMeshSubdivide.cpp" />
+    <ClCompile Include="MROpenObjects.cpp" />
+    <ClCompile Include="MRPointsShader.cpp" />
+    <ClCompile Include="MRProjectMeshAttributes.cpp" />
+    <ClCompile Include="MRRenderDefaultObjects.cpp" />
+    <ClCompile Include="MRRibbonNotification.cpp" />
+    <ClCompile Include="MRRibbonSceneObjectsListDrawer.cpp" />
+    <ClCompile Include="MRUISaveChangesPopup.cpp" />
+    <ClCompile Include="MRSceneCache.cpp" />
+    <ClCompile Include="MRSceneObjectsListDrawer.cpp" />
+    <ClCompile Include="MRSelectCurvaturePreference.cpp" />
     <ClCompile Include="MRFrameRedrawRequest.cpp" />
     <ClCompile Include="MRGetSystemInfoJson.cpp" />
+    <ClCompile Include="MRObjectPointsHistory.cpp" />
+    <ClCompile Include="MRRibbonMenuSearch.cpp" />
+    <ClCompile Include="MRSceneTextureGL.cpp" />
+    <ClCompile Include="MRShowModal.cpp" />
+    <ClCompile Include="MRPickPointManager.cpp" />
     <ClCompile Include="MRToolsLibrary.cpp" />
     <ClCompile Include="MRLinesShader.cpp" />
     <ClCompile Include="MRMeshShader.cpp" />
@@ -55,12 +89,15 @@
     <ClCompile Include="MRSplashWindow.cpp" />
     <ClCompile Include="MRStatePlugin.cpp" />
     <ClCompile Include="MRDemoPlugin.cpp" />
-    <ClCompile Include="MRImmediateGL.cpp" />
     <ClCompile Include="MRStatePluginUpdate.cpp" />
     <ClCompile Include="MRSurfacePointPicker.cpp" />
+    <ClCompile Include="MRTouchpadWin32Handler.cpp" />
     <ClCompile Include="MRUIStyle.cpp" />
+    <ClCompile Include="MRViewerEventQueue.cpp" />
     <ClCompile Include="MRViewerInstance.cpp" />
-    <ClCompile Include="MRViewerIO.cpp" />
+    <ClCompile Include="MRSaveObjects.cpp" />
+    <ClCompile Include="MRViewerSettingsPlugin.cpp" />
+    <ClCompile Include="MRViewerTitle.cpp" />
     <ClCompile Include="MRViewportCamera.cpp" />
     <ClCompile Include="MRRecentFilesStore.cpp" />
     <ClCompile Include="MRRenderLinesObject.cpp" />
@@ -78,26 +115,87 @@
     <ClCompile Include="MRSetupViewer.cpp" />
     <ClCompile Include="MRViewerEventsListener.cpp" />
     <ClCompile Include="MRViewerSettingsManager.cpp" />
+    <ClCompile Include="MRViewportCornerController.cpp" />
+    <ClCompile Include="MRViewportDraw.cpp" />
     <ClCompile Include="MRViewportGL.cpp" />
     <ClCompile Include="MRVolumeShader.cpp" />
     <ClCompile Include="MRWebRequest.cpp" />
+    <ClCompile Include="MRTouchpadController.cpp" />
+    <ClCompile Include="MRSurfaceManipulationWidget.cpp" />
+    <ClCompile Include="MRImGuiMeasurementIndicators.cpp" />
+    <ClCompile Include="MRRenderFeatureObjects.cpp" />
+    <ClCompile Include="MRRenderNameObject.cpp" />
+    <ClCompile Include="MRRenderDimensions.cpp" />
+    <ClCompile Include="MRRenderMeasurementObjects.cpp" />
+    <ClCompile Include="MRUnits.cpp" />
+    <ClCompile Include="MRUnitSettings.cpp" />
+    <ClCompile Include="MRVisualSubfeatures.cpp" />
+    <ClCompile Include="MRImGuiMenuListeners.cpp" />
+    <ClCompile Include="MRUITestEngine.cpp" />
+    <ClCompile Include="MRSpaceMouseHandler3dxMacDriver.cpp" />
+    <ClCompile Include="MRUIRectAllocator.cpp" />
+    <ClCompile Include="MRUINonOverlappingLabels.cpp" />
+    <ClCompile Include="MRRenderImGuiLabelObject.cpp" />
+    <ClCompile Include="MRCPRTests.cpp" />
+    <ClCompile Include="MRSceneOperations.cpp" />
+    <ClCompile Include="SceneReorder.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MRAlphaSortGL.h" />
+    <ClInclude Include="MRAncillaryLabels.h" />
+    <ClInclude Include="MRAncillaryLines.h" />
+    <ClInclude Include="MRAncillaryMesh.h" />
+    <ClInclude Include="MRAncillaryPoints.h" />
     <ClInclude Include="MRAppendHistory.h" />
     <ClInclude Include="exports.h" />
+    <ClInclude Include="MRImGui.h" />
     <ClInclude Include="ImGuiHelpers.h" />
     <ClInclude Include="ImGuiMenu.h" />
-    <ClInclude Include="ImGuiTraits.h" />
     <ClInclude Include="imgui_fonts_droid_sans.h" />
+    <ClInclude Include="MRClipboard.h" />
+    <ClInclude Include="MRConsoleWindows.h" />
     <ClInclude Include="MRAsyncTimer.h" />
     <ClInclude Include="MRColorTheme.h" />
     <ClInclude Include="MRCommandLoop.h" />
     <ClInclude Include="MRCreateShader.h" />
     <ClInclude Include="MRCudaAccessor.h" />
+    <ClInclude Include="MRDirectionWidget.h" />
+    <ClInclude Include="MRFitData.h" />
+    <ClInclude Include="MRGLTexture.h" />
+    <ClInclude Include="MRHistoryStore.h" />
+    <ClInclude Include="MRISceneStateCheck.h" />
+    <ClInclude Include="MRLambdaRibbonItem.h" />
+    <ClInclude Include="MRMacOSOpenDocumentsHandler.h">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </ClInclude>
+    <ClInclude Include="MRMakeSlot.h" />
+    <ClInclude Include="MRMarkedVoxelSlice.h" />
+    <ClInclude Include="MRMeshBoundarySelectionWidget.h" />
+    <ClInclude Include="MRFrameCounter.h" />
+    <ClInclude Include="MRMoveObjectByMouseImpl.h" />
+    <ClInclude Include="MRNotificationType.h" />
+    <ClInclude Include="MRObjectImGuiLabel.h" />
+    <ClInclude Include="MRObjectMeshSubdivide.h" />
+    <ClInclude Include="MROpenObjects.h" />
+    <ClInclude Include="MRPointsShader.h" />
+    <ClInclude Include="MRProjectMeshAttributes.h" />
+    <ClInclude Include="MRRibbonNotification.h" />
+    <ClInclude Include="MRRibbonSceneObjectsListDrawer.h" />
+    <ClInclude Include="MRMruFormatParameters.h" />
+    <ClInclude Include="MRUISaveChangesPopup.h" />
+    <ClInclude Include="MRSceneCache.h" />
+    <ClInclude Include="MRSceneObjectsListDrawer.h" />
+    <ClInclude Include="MRSelectCurvaturePreference.h" />
     <ClInclude Include="MRFrameRedrawRequest.h" />
     <ClInclude Include="MRGetSystemInfoJson.h" />
     <ClInclude Include="MRGladGlfw.h" />
+    <ClInclude Include="MRObjectPointsHistory.h" />
+    <ClInclude Include="MRRibbonMenuSearch.h" />
+    <ClInclude Include="MRSceneTextureGL.h" />
+    <ClInclude Include="MRShowModal.h" />
+    <ClInclude Include="MRSpaceMouseParameters.h" />
+    <ClInclude Include="MRPickPointManager.h" />
     <ClInclude Include="MRToolsLibrary.h" />
     <ClInclude Include="MRLinesShader.h" />
     <ClInclude Include="MRMeshShader.h" />
@@ -134,10 +232,6 @@
     <ClInclude Include="MRStatePlugin.h" />
     <ClInclude Include="MRDemoPlugin.h" />
     <ClInclude Include="MRGLMacro.h" />
-    <ClInclude Include="MRImmediateGL.h" />
-    <ClInclude Include="MRMeshViewer.h" />
-    <ClInclude Include="MRMeshViewerPlugin.h" />
-    <ClInclude Include="MRMeshViewport.h" />
     <ClInclude Include="MRPythonAppendCommand.h" />
     <ClInclude Include="MRRecentFilesStore.h" />
     <ClInclude Include="MRRenderGLHelpers.h" />
@@ -152,11 +246,16 @@
     <ClInclude Include="MRStatePluginUpdate.h" />
     <ClInclude Include="MRSurfacePointPicker.h" />
     <ClInclude Include="MRSwapRootAction.h" />
+    <ClInclude Include="MRTouchpadParameters.h" />
+    <ClInclude Include="MRTouchpadWin32Handler.h" />
     <ClInclude Include="MRUIStyle.h" />
     <ClInclude Include="MRViewer.h" />
+    <ClInclude Include="MRViewerEventQueue.h" />
     <ClInclude Include="MRViewerFwd.h" />
     <ClInclude Include="MRViewerInstance.h" />
-    <ClInclude Include="MRViewerIO.h" />
+    <ClInclude Include="MRSaveObjects.h" />
+    <ClInclude Include="MRViewerSettingsPlugin.h" />
+    <ClInclude Include="MRViewerTitle.h" />
     <ClInclude Include="MRViewport.h" />
     <ClInclude Include="MRViewerPlugin.h" />
     <ClInclude Include="MRFileDialog.h" />
@@ -164,9 +263,36 @@
     <ClInclude Include="MRSetupViewer.h" />
     <ClInclude Include="MRViewerEventsListener.h" />
     <ClInclude Include="MRViewerSettingsManager.h" />
+    <ClInclude Include="MRViewportCornerController.h" />
     <ClInclude Include="MRViewportGL.h" />
+    <ClInclude Include="MRViewportParametersAction.h" />
     <ClInclude Include="MRVolumeShader.h" />
     <ClInclude Include="MRWebRequest.h" />
+    <ClInclude Include="MRTouchpadController.h" />
+    <ClInclude Include="MRSurfaceManipulationWidget.h" />
+    <ClInclude Include="MRPointInAllSpaces.h" />
+    <ClInclude Include="MRImGuiVectorOperators.h" />
+    <ClInclude Include="MRImGuiMeasurementIndicators.h" />
+    <ClInclude Include="MRRenderDefaultObjects.h" />
+    <ClInclude Include="MRRenderFeatureObjects.h" />
+    <ClInclude Include="MRRenderNameObject.h" />
+    <ClInclude Include="MRRenderWrapObject.h" />
+    <ClInclude Include="MRRenderDimensions.h" />
+    <ClInclude Include="MRRenderMeasurementObjects.h" />
+    <ClInclude Include="MRVectorTraits.h" />
+    <ClInclude Include="MRUnits.h" />
+    <ClInclude Include="MRUnitSettings.h" />
+    <ClInclude Include="MRUIStyle.ipp" />
+    <ClInclude Include="MRVisualSubfeatures.h" />
+    <ClInclude Include="MRSignalCombiners.h" />
+    <ClInclude Include="MRImGuiMenuListeners.h" />
+    <ClInclude Include="MRUITestEngine.h" />
+    <ClInclude Include="MRSpaceMouseHandler3dxMacDriver.h" />
+    <ClInclude Include="MRUIRectAllocator.h" />
+    <ClInclude Include="MRUINonOverlappingLabels.h" />
+    <ClInclude Include="MRRenderImGuiLabelObject.h" />
+    <ClInclude Include="MRSceneOperations.h" />
+    <ClInclude Include="SceneReorder.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\MeshLib\source\.editorconfig" />
@@ -179,6 +305,10 @@
     <CopyFileToFolders Include="MRLightTheme.json">
       <FileType>Document</FileType>
     </CopyFileToFolders>
+    <None Include="MRMacOSOpenDocumentsHandler.mm">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="..\..\thirdparty\Noto_Sans\NotoSans-Regular.ttf">
@@ -216,30 +346,74 @@
     </CopyFileToFolders>
   </ItemGroup>
   <ItemGroup>
+    <Image Include="resource\independent_icons\X1\Plane Import.png" />
+    <Image Include="resource\independent_icons\X1\Plane XY.png" />
+    <Image Include="resource\independent_icons\X1\Plane XZ.png" />
+    <Image Include="resource\independent_icons\X1\Plane YZ.png" />
+    <Image Include="resource\independent_icons\X3\Plane Import.png" />
+    <Image Include="resource\independent_icons\X3\Plane XY.png" />
+    <Image Include="resource\independent_icons\X3\Plane XZ.png" />
+    <Image Include="resource\independent_icons\X3\Plane YZ.png" />
+    <Image Include="resource\object_icons\X1\AngleMeasurementObject.png" />
+    <Image Include="resource\object_icons\X1\CircleObject.png" />
+    <Image Include="resource\object_icons\X1\ConeObject.png" />
+    <Image Include="resource\object_icons\X1\CylinderObject.png" />
+    <Image Include="resource\object_icons\X1\DistanceMeasurementObject.png" />
+    <Image Include="resource\object_icons\X1\LineObject.png" />
     <Image Include="resource\object_icons\X1\Object.png" />
     <Image Include="resource\object_icons\X1\ObjectDistanceMap.png" />
     <Image Include="resource\object_icons\X1\ObjectGcode.png" />
+    <Image Include="resource\object_icons\X1\ObjectLabel.png" />
     <Image Include="resource\object_icons\X1\ObjectLines.png" />
     <Image Include="resource\object_icons\X1\ObjectMesh.png" />
     <Image Include="resource\object_icons\X1\ObjectPoints.png" />
     <Image Include="resource\object_icons\X1\ObjectVoxels.png" />
+    <Image Include="resource\object_icons\X1\Object_open.png" />
+    <Image Include="resource\object_icons\X1\PlaneObject.png" />
+    <Image Include="resource\object_icons\X1\PointObject.png" />
+    <Image Include="resource\object_icons\X1\RadiusMeasurementObject.png" />
+    <Image Include="resource\object_icons\X1\SphereObject.png" />
+    <Image Include="resource\object_icons\X3\AngleMeasurementObject.png" />
+    <Image Include="resource\object_icons\X3\CircleObject.png" />
+    <Image Include="resource\object_icons\X3\ConeObject.png" />
+    <Image Include="resource\object_icons\X3\CylinderObject.png" />
+    <Image Include="resource\object_icons\X3\DistanceMeasurementObject.png" />
+    <Image Include="resource\object_icons\X3\LineObject.png" />
     <Image Include="resource\object_icons\X3\Object.png" />
     <Image Include="resource\object_icons\X3\ObjectDistanceMap.png" />
     <Image Include="resource\object_icons\X3\ObjectGcode.png" />
+    <Image Include="resource\object_icons\X3\ObjectLabel.png" />
     <Image Include="resource\object_icons\X3\ObjectLines.png" />
     <Image Include="resource\object_icons\X3\ObjectMesh.png" />
     <Image Include="resource\object_icons\X3\ObjectPoints.png" />
     <Image Include="resource\object_icons\X3\ObjectVoxels.png" />
+    <Image Include="resource\object_icons\X3\Object_open.png" />
+    <Image Include="resource\object_icons\X3\PlaneObject.png" />
+    <Image Include="resource\object_icons\X3\PointObject.png" />
+    <Image Include="resource\object_icons\X3\RadiusMeasurementObject.png" />
+    <Image Include="resource\object_icons\X3\SphereObject.png" />
+    <Image Include="resource\textures\controller_cube_default.png" />
+    <Image Include="resource\textures\controller_cube_edges.png" />
+    <Image Include="resource\textures\controller_cube_sides.png" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\imgui\imgui.vcxproj">
       <Project>{766f017f-ba42-484a-abb7-b667e7fa924c}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\MRIOExtras\MRIOExtras.vcxproj">
+      <Project>{99eb9674-abbf-47cd-a8d5-ee122eb5da0c}</Project>
     </ProjectReference>
     <ProjectReference Include="..\MRMesh\MRMesh.vcxproj">
       <Project>{c7780500-ca0e-4f5f-8423-d7ab06078b14}</Project>
     </ProjectReference>
     <ProjectReference Include="..\MRPch\MRPch.vcxproj">
       <Project>{36516aee-2fb9-41c0-a176-a2d49c1c26b2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\MRSymbolMesh\MRSymbolMesh.vcxproj">
+      <Project>{eaa47dfb-ecea-4d46-90be-718b190f06c4}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\MRVoxels\MRVoxels.vcxproj">
+      <Project>{7cc4f0fe-ace6-4441-9dd7-296066b6d69f}</Project>
     </ProjectReference>
   </ItemGroup>
   <PropertyGroup Label="Globals">
@@ -280,12 +454,12 @@
       <WarningLevel>EnableAllWarnings</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>MRVIEWER_EXPORT;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRViewer_EXPORTS;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <PrecompiledHeaderFile>$(SolutionDir)source\MRPch\MRPch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
-      <ForcedIncludeFiles>$(SolutionDir)source\MRPch\MRPch.h</ForcedIncludeFiles>
+      <PrecompiledHeaderFile>$(ProjectDir)..\MRPch\MRPch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>$(ProjectDir)..\MRPch\MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <PrecompiledHeaderOutputFile>$(SolutionDir)TempOutput\MRPch\$(Platform)\$(Configuration)\MRPch.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
@@ -307,13 +481,13 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>MRVIEWER_EXPORT;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRViewer_EXPORTS;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <PrecompiledHeaderFile>$(SolutionDir)source\MRPch\MRPch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile>$(ProjectDir)..\MRPch\MRPch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
-      <ForcedIncludeFiles>$(SolutionDir)source\MRPch\MRPch.h</ForcedIncludeFiles>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>$(ProjectDir)..\MRPch\MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <PrecompiledHeaderOutputFile>$(SolutionDir)TempOutput\MRPch\$(Platform)\$(Configuration)\MRPch.pch</PrecompiledHeaderOutputFile>
     </ClCompile>

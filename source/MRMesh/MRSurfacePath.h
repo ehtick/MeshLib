@@ -1,9 +1,9 @@
 #pragma once
 
-#include "MRMeshFwd.h"
+#include "MRExpected.h"
+#include "MRMeshTriPoint.h"
 #include <vector>
 #include <string>
-#include "MRExpected.h"
 
 namespace MR
 {
@@ -50,7 +50,7 @@ enum class GeodesicPathApprox : char
 /// returns intermediate points of the geodesic path from start to end, where it crosses mesh edges;
 /// It is the same as calling computeGeodesicPathApprox() then reducePath()
 MRMESH_API Expected<SurfacePath, PathError> computeGeodesicPath( const Mesh & mesh,
-    const MeshTriPoint & start, const MeshTriPoint & end, GeodesicPathApprox atype,
+    const MeshTriPoint & start, const MeshTriPoint & end, GeodesicPathApprox atype = GeodesicPathApprox::FastMarching,
     int maxGeodesicIters = 100 ); ///< the maximum number of iterations to reduce approximate path length and convert it in geodesic path
 
 /// computes by given method and returns intermediate points of approximately geodesic path from start to end,
@@ -64,12 +64,46 @@ MRMESH_API Expected<SurfacePath, PathError> computeFastMarchingPath( const MeshP
     const MeshTriPoint & start, const MeshTriPoint & end, const VertBitSet* vertRegion = nullptr,
     VertScalars * outSurfaceDistances = nullptr );
 
+struct ComputeSteepestDescentPathSettings
+{
+    /// if valid, then the descent is stopped as soon as same triangle with (end) is reached
+    MeshTriPoint end;
+    /// if not nullptr, then the descent is stopped as soon as any vertex is reached, which is written in *outVertexReached
+    VertId * outVertexReached = nullptr;
+    /// if not nullptr, then the descent is stopped as soon as any boundary point is reached, which is written in *outBdReached
+    EdgePoint * outBdReached = nullptr;
+};
+
 /// computes the path (edge points crossed by the path) staring in given point
 /// and moving in each triangle in minus gradient direction of given field;
-/// the path stops when it reaches
-/// 1) a local minimum in field or
-/// 2) same triangle with \param end (which can be omitted)
-MRMESH_API SurfacePath computeSteepestDescentPath( const Mesh & mesh, const VertScalars & field, const MeshTriPoint & start, const MeshTriPoint & end );
+/// the path stops when it reaches a local minimum in the field or one of stop conditions in settings
+[[nodiscard]] MRMESH_API SurfacePath computeSteepestDescentPath( const MeshPart & mp, const VertScalars & field,
+    const MeshTriPoint & start, const ComputeSteepestDescentPathSettings & settings = {} );
+
+/// computes the path (edge points crossed by the path) staring in given point
+/// and moving in each triangle in minus gradient direction of given field,
+/// and outputs the path in \param outPath if requested;
+/// the path stops when it reaches a local minimum in the field or one of stop conditions in settings
+MRMESH_API void computeSteepestDescentPath( const MeshPart & mp, const VertScalars & field,
+    const MeshTriPoint & start, SurfacePath * outPath, const ComputeSteepestDescentPathSettings & settings = {} );
+
+/// finds the point along minus maximal gradient on the boundary of first ring boundary around given vertex
+[[nodiscard]] MRMESH_API MeshEdgePoint findSteepestDescentPoint( const MeshPart & mp, const VertScalars & field, VertId v );
+
+/// finds the point along minus maximal gradient on the boundary of triangles around given point (the boundary of left and right edge triangles' union in case (ep) is inner edge point)
+[[nodiscard]] MRMESH_API MeshEdgePoint findSteepestDescentPoint( const MeshPart & mp, const VertScalars & field, const MeshEdgePoint & ep );
+
+/// finds the point along minus maximal gradient on the boundary of triangles around given point (the boundary of the triangle itself in case (tp) is inner triangle point)
+[[nodiscard]] MRMESH_API MeshEdgePoint findSteepestDescentPoint( const MeshPart & mp, const VertScalars & field, const MeshTriPoint & tp );
+
+enum class ExtremeEdgeType
+{
+    Ridge, // where the field not-increases both in left and right triangles
+    Gorge  // where the field not-decreases both in left and right triangles
+};
+
+/// computes all edges in the mesh, where the field not-increases both in left and right triangles
+[[nodiscard]] MRMESH_API UndirectedEdgeBitSet findExtremeEdges( const Mesh & mesh, const VertScalars & field, ExtremeEdgeType type );
 
 /// for each vertex from (starts) finds the closest vertex from (ends) in geodesic sense
 /// \param vertRegion consider paths going in this region only

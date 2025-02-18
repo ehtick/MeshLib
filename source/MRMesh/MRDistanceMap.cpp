@@ -1,8 +1,6 @@
 #include "MRDistanceMap.h"
 #include "MRMeshIntersect.h"
 #include "MRBox.h"
-#include "MRImageSave.h"
-#include "MRImageLoad.h"
 #include "MRImage.h"
 #include "MRTriangleIntersection.h"
 #include "MRLine3.h"
@@ -11,6 +9,7 @@
 #include "MRRegularGridMesh.h"
 #include "MRPolyline2Project.h"
 #include "MRBitSetParallelFor.h"
+#include "MRParallelFor.h"
 #include "MRPolyline2Intersect.h"
 #include "MRPch/MRSpdlog.h"
 #include "MRPch/MRTBB.h"
@@ -104,25 +103,27 @@ std::optional<float> DistanceMap::getInterpolated( float x, float y ) const
         y -= 0.5f;
     }
 
-    float xlowf = float( std::floor( x ) );
-    float ylowf = float( std::floor( y ) );
-    float xhighf = xlowf + 1.f;
-    float yhighf = ylowf + 1.f;
-    int xlow = int( xlowf );
-    int ylow = int( ylowf );
-    int xhigh = xlow + 1;
-    int yhigh = ylow + 1;
+    const float xlowf = std::floor( x );
+    const float ylowf = std::floor( y );
+    const int xlow = int( xlowf );
+    const int ylow = int( ylowf );
+    assert( 0 <= xlow && xlow < dims_.x );
+    assert( 0 <= ylow && ylow < dims_.y );
 
-    auto lowlow = get( xlow, ylow );
-    auto lowhigh = get( xlow, yhigh );
-    auto highlow = get( xhigh, ylow );
-    auto highhigh = get( xhigh, yhigh );
+    const auto idx = toIndex( { xlow, ylow } );
+    const auto lowlow =   get( idx );
+    const auto lowhigh =  ( ylow + 1 < dims_.y ) ? get( idx + dims_.x ) : 0.0f;
+    const auto highlow =  ( xlow + 1 < dims_.x ) ? get( idx + 1 ) : 0.0f;
+    const auto highhigh = ( ylow + 1 < dims_.y ) && ( xlow + 1 < dims_.x ) ? get( idx + dims_.x + 1 ) : 0.0f;
     if ( lowlow && lowhigh && highlow && highhigh )
     {
         // bilinear interpolation
         // https://en.wikipedia.org/wiki/Bilinear_interpolation
-        return ( ( *lowlow ) * ( yhighf - y ) + ( *lowhigh ) * ( y - ylowf ) ) * ( xhighf - x ) +
-            ( ( *highlow ) * ( yhighf - y ) + ( *highhigh ) * ( y - ylowf ) ) * ( x - xlowf );
+        const float dx = x - xlowf;
+        const float dy = y - ylowf;
+        return
+            ( ( *lowlow ) * ( 1 - dy ) + ( *lowhigh ) * dy ) * ( 1 - dx ) +
+            ( ( *highlow ) * ( 1 - dy ) + ( *highhigh ) * dy ) * dx;
     }
     else
     {
@@ -168,41 +169,30 @@ void DistanceMap::clear()
     data_.clear();
 }
 
-std::optional<Vector3f> DistanceMap::unproject( size_t x, size_t y, const DistanceMapToWorld& toWorldStruct ) const
+std::optional<Vector3f> DistanceMap::unproject( size_t x, size_t y, const AffineXf3f& toWorld ) const
 {
     auto val = get( x, y );
     if ( !val )
         return {};
-    return toWorldStruct.toWorld( x + 0.5f, y + 0.5f, *val );
+    return toWorld( { x + 0.5f, y + 0.5f, *val } );
 }
 
-std::optional<Vector3f> DistanceMap::unprojectInterpolated( float x, float y, const DistanceMapToWorld& toWorldStruct ) const
+std::optional<Vector3f> DistanceMap::unprojectInterpolated( float x, float y, const AffineXf3f& toWorld ) const
 {
     auto val = getInterpolated( x, y );
     if ( !val )
         return {};
-    return toWorldStruct.toWorld( x, y, *val );
+    return toWorld( { x, y, *val } );
 }
 
-Mesh distanceMapToMesh( const DistanceMap& distMap, const AffineXf3f& xf )
-{
-    DistanceMapToWorld toWorldParams;
-    toWorldParams.direction = xf.A.z;
-    toWorldParams.orgPoint = xf.b;
-    toWorldParams.pixelXVec = xf.A.x;
-    toWorldParams.pixelYVec = xf.A.y;
-
-    return distanceMapToMesh( distMap, toWorldParams );
-}
-
-Mesh distanceMapToMesh( const DistanceMap& distMap, const DistanceMapToWorld& toWorldStruct )
+Expected<Mesh> distanceMapToMesh( const DistanceMap& distMap, const AffineXf3f& toWorld, ProgressCallback cb )
 {
     auto resX = distMap.resX();
     auto resY = distMap.resY();
 
     if (resX < 2 || resY < 2)
     {
-        return Mesh();
+        return unexpected( "Cannot create mesh from degenerated 1x1 distance map." );
     }
 
     return makeRegularGridMesh( resX, resY, [&]( size_t x, size_t y )
@@ -211,11 +201,11 @@ Mesh distanceMapToMesh( const DistanceMap& distMap, const DistanceMapToWorld& to
     },
                                             [&]( size_t x, size_t y )
     {
-        return distMap.unproject( x, y, toWorldStruct ).value_or( Vector3f{} );
-    } );
+        return distMap.unproject( x, y, toWorld ).value_or( Vector3f{} );
+    }, {}, cb );
 }
 
-VoidOrErrStr saveDistanceMapToImage( const DistanceMap& dm, const std::filesystem::path& filename, float threshold /*= 1.f / 255*/ )
+MRMESH_API Image convertDistanceMapToImage( const DistanceMap& dm, float threshold )
 {
     threshold = std::clamp( threshold, 0.f, 1.f );
     auto size = dm.numPoints();
@@ -244,11 +234,10 @@ VoidOrErrStr saveDistanceMapToImage( const DistanceMap& dm, const std::filesyste
             Color::black();
     }
 
-    return ImageSave::toAnySupportedFormat( { pixels, { int( dm.resX() ), int( dm.resY() ) } }, filename );
+    return { std::move( pixels ), { int( dm.resX() ), int( dm.resY() ) } };
 }
 
-
-Expected<MR::DistanceMap, std::string> convertImageToDistanceMap( const Image& image, float threshold /*= 1.f / 255*/ )
+Expected<MR::DistanceMap> convertImageToDistanceMap( const Image& image, float threshold /*= 1.f / 255*/ )
 {
     threshold = std::clamp( threshold * 255, 0.f, 255.f );
     DistanceMap dm( image.resolution.x, image.resolution.y );
@@ -256,26 +245,23 @@ Expected<MR::DistanceMap, std::string> convertImageToDistanceMap( const Image& i
     for ( int i = 0; i < image.pixels.size(); ++i )
     {
         const bool monochrome = pixels[i].r == pixels[i].g && pixels[i].g == pixels[i].b;
-        assert( monochrome );
+        float value = float(pixels[i].r);
         if ( !monochrome )
-            return unexpected( "Error convert Image to DistanceMap: image isn't monochrome" );
-        if ( pixels[i].r < threshold )
+        {
+            value = 0.299f * float( pixels[i].r ) +
+                0.587f * float( pixels[i].g ) +
+                0.114f * float( pixels[i].b );
+        }
+        if ( value < threshold )
             continue;
-        dm.set( i, 255.0f - pixels[i].r );
+        dm.set( i, 255.0f - value );
     }
     return dm;
 }
 
-Expected<MR::DistanceMap, std::string> loadDistanceMapFromImage( const std::filesystem::path& filename, float threshold /*= 1.f / 255*/ )
-{
-    auto resLoad = ImageLoad::fromAnySupportedFormat( filename );
-    if ( !resLoad.has_value() )
-        return unexpected( resLoad.error() );
-    return convertImageToDistanceMap( *resLoad, threshold );
-}
-
 template <typename T = float>
-DistanceMap computeDistanceMap_( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb = {} )
+DistanceMap computeDistanceMap_( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb,
+    std::vector<MeshTriPoint> * outSamples )
 {
     DistanceMap distMap( params.resolution.x, params.resolution.y );
 
@@ -299,83 +285,36 @@ DistanceMap computeDistanceMap_( const MeshPart& mp, const MeshToDistanceMapPara
         }
     }
 
-    T xStep_1 = T( 1 ) / T( params.resolution.x );
-    T yStep_1 = T( 1 ) / T( params.resolution.y );
+    const T xStep_1 = T( 1 ) / T( params.resolution.x );
+    const T yStep_1 = T( 1 ) / T( params.resolution.y );
 
-    auto mainThreadId = std::this_thread::get_id();
-    std::atomic<bool> keepGoing{ true };
-
-    if ( params.useDistanceLimits )
+    if ( outSamples )
     {
-        tbb::parallel_for( tbb::blocked_range<size_t>( 0, params.resolution.x ),
-            [&] ( const tbb::blocked_range<size_t>& range )
+        outSamples->clear();
+        outSamples->resize( size_t( params.resolution.x ) * params.resolution.y );
+    }
+    if ( !ParallelFor( 0, params.resolution.y, [&]( int y )
+    {
+        for ( int x = 0; x < params.resolution.x; ++x )
         {
-            const auto xMin = range.begin();
-            const auto xMax = xMin + range.size();
-
-            for ( size_t x = range.begin(); x < range.end(); x++ )
+            Vector3<T> rayOri = Vector3<T>( ori ) +
+                Vector3<T>( params.xRange ) * ( ( T( x ) + T( 0.5 ) ) * xStep_1 ) +
+                Vector3<T>( params.yRange ) * ( ( T( y ) + T( 0.5 ) ) * yStep_1 );
+            if ( auto meshIntersectionRes = rayMeshIntersect( mp, Line3<T>( Vector3<T>( rayOri ), Vector3<T>( params.direction ) ),
+                -std::numeric_limits<T>::max(), std::numeric_limits<T>::max(), &prec ) )
             {
-                if ( cb && !keepGoing.load( std::memory_order_relaxed ) )
-                    break;
-
-                for ( size_t y = 0; y < params.resolution.y; y++ )
+                if ( !params.useDistanceLimits
+                    || ( meshIntersectionRes.distanceAlongLine < params.minValue )
+                    || ( meshIntersectionRes.distanceAlongLine > params.maxValue ) )
                 {
-                    Vector3<T> rayOri = Vector3<T>( ori ) +
-                        Vector3<T>( params.xRange ) * ( ( T( x ) + T( 0.5 ) ) * xStep_1 ) +
-                        Vector3<T>( params.yRange ) * ( ( T( y ) + T( 0.5 ) ) * yStep_1 );
-                    if ( auto meshIntersectionRes = rayMeshIntersect( mp, Line3<T>( Vector3<T>( rayOri ), Vector3<T>( params.direction ) ),
-                        -std::numeric_limits<T>::max(), std::numeric_limits<T>::max(), &prec ) )
-                    {
-                        if ( ( meshIntersectionRes->distanceAlongLine < params.minValue ) || ( meshIntersectionRes->distanceAlongLine > params.maxValue ) )
-                            distMap.set( x, y, meshIntersectionRes->distanceAlongLine );
-                    }
-                }
-
-                if ( cb && std::this_thread::get_id() == mainThreadId )
-                {
-                    if ( cb && !cb( float( x - xMin ) / float( xMax - xMin ) ) )
-                        keepGoing.store( false, std::memory_order_relaxed );
+                    const auto i = distMap.toIndex( { x, y } );
+                    distMap.set( i, meshIntersectionRes.distanceAlongLine );
+                    if ( outSamples )
+                        (*outSamples)[i] = meshIntersectionRes.mtp;
                 }
             }
-        }, tbb::static_partitioner() );
-    }
-    else
-    {
-        tbb::parallel_for( tbb::blocked_range<size_t>( 0, params.resolution.x ),
-            [&] ( const tbb::blocked_range<size_t>& range )
-        {
-            const auto xMin = range.begin();
-            const auto xMax = xMin + range.size();
-            for ( size_t x = range.begin(); x < range.end(); x++ )
-            //debug line
-            //for ( size_t x = 0; x < params.resX; x++ )
-            {
-                
-                if ( cb && !keepGoing.load( std::memory_order_relaxed ) )
-                    break;
-
-                for ( size_t y = 0; y < params.resolution.y; y++ )
-                {
-                    Vector3<T> rayOri = Vector3<T>( ori ) +
-                        Vector3<T>( params.xRange ) * ( ( T( x ) + T( 0.5 ) ) * xStep_1 ) +
-                        Vector3<T>( params.yRange ) * ( ( T( y ) + T( 0.5 ) ) * yStep_1 );
-                    if ( auto meshIntersectionRes = rayMeshIntersect( mp, Line3<T>( Vector3<T>( rayOri ), Vector3<T>( params.direction ) ),
-                        -std::numeric_limits<T>::max(), std::numeric_limits<T>::max(), &prec ) )
-                    {
-                        distMap.set( x, y, meshIntersectionRes->distanceAlongLine );
-                    }
-                }
-
-                if ( cb && std::this_thread::get_id() == mainThreadId )
-                {
-                    if ( cb && !cb( float( x - xMin ) / float ( xMax - xMin ) ) )
-                        keepGoing.store( false, std::memory_order_relaxed );
-                }
-            }
-        }, tbb::static_partitioner() );
-    }
-
-    if ( !keepGoing.load( std::memory_order_relaxed ) || ( cb && !cb( 1.0f ) ) )
+        }
+    }, cb, 1 ) )
         return DistanceMap{};
 
     if ( params.allowNegativeValues )
@@ -391,21 +330,25 @@ DistanceMap computeDistanceMap_( const MeshPart& mp, const MeshToDistanceMapPara
     return distMap;
 }
 
-DistanceMap computeDistanceMap( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb )
+DistanceMap computeDistanceMap( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb, std::vector<MeshTriPoint> * outSamples )
 {
-    return computeDistanceMap_<float>( mp, params, cb );
+    return computeDistanceMap_<float>( mp, params, cb, outSamples );
 }
 
-DistanceMap computeDistanceMapD( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb )
+DistanceMap computeDistanceMapD( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb, std::vector<MeshTriPoint> * outSamples )
 {
-    return computeDistanceMap_<double>( mp, params, cb );
+    return computeDistanceMap_<double>( mp, params, cb, outSamples );
 }
 
-DistanceMap distanceMapFromContours( const Polyline2& polyline, const ContourToDistanceMapParams& params,
+void distanceMapFromContours( DistanceMap & distMap, const Polyline2& polyline, const ContourToDistanceMapParams& params,
     const ContoursDistanceMapOptions& options )
 {
     MR_TIMER
     assert( polyline.topology.isConsistentlyOriented() );
+    assert( distMap.resX() == params.resolution.x );
+    assert( distMap.resY() == params.resolution.y );
+    if ( !polyline.topology.lastNotLoneEdge().valid() )
+        return;
 
     if ( options.offsetParameters )
     {
@@ -414,20 +357,16 @@ DistanceMap distanceMapFromContours( const Polyline2& polyline, const ContourToD
         {
             assert( false );
             spdlog::error( "Offset per edges should contain offset for all edges" );
-            return {};
+            return;
         }
     }
 
-    const Vector3f originPoint = Vector3f{ params.orgPoint.x, params.orgPoint.y, 0.F } +
-        Vector3f{ params.pixelSize.x / 2.F, params.pixelSize.y / 2.F, 0.F };
+    const Vector3f originPoint = Vector3f{ params.orgPoint.x, params.orgPoint.y, 0.f } +
+        Vector3f{ params.pixelSize.x / 2.f, params.pixelSize.y / 2.f, 0.f };
 
     size_t size = size_t( params.resolution.x ) * params.resolution.y;
     if ( options.outClosestEdges )
         options.outClosestEdges->resize( size );
-
-    DistanceMap distMap( params.resolution.x, params.resolution.y );
-    if ( !polyline.topology.lastNotLoneEdge().valid())
-        return distMap;
 
     const auto maxDistSq = sqr( options.maxDist );
     const auto minDistSq = sqr( options.minDist );
@@ -437,7 +376,10 @@ DistanceMap distanceMapFromContours( const Polyline2& polyline, const ContourToD
         for ( size_t i = range.begin(); i < range.end(); ++i )
         {
             if ( options.region && !options.region->test( PixelId( int( i ) ) ) )
+            {
+                distMap.set( i, NOT_VALID_VALUE );
                 continue;
+            }
             size_t x = i % params.resolution.x;
             size_t y = i / params.resolution.x;
             Vector2f p;
@@ -530,9 +472,16 @@ DistanceMap distanceMapFromContours( const Polyline2& polyline, const ContourToD
             }
             if ( !params.withSign && options.offsetParameters && options.offsetParameters->type == ContoursDistanceMapOffset::OffsetType::Shell )
                 res.dist = std::abs( res.dist );
-            distMap.set( x, y, res.dist );
+            distMap.set( i, res.dist );
         }
     } );
+}
+
+DistanceMap distanceMapFromContours( const Polyline2& polyline, const ContourToDistanceMapParams& params,
+    const ContoursDistanceMapOptions& options )
+{
+    DistanceMap distMap( params.resolution.x, params.resolution.y );
+    distanceMapFromContours( distMap, polyline, params, options );
     return distMap;
 }
 
@@ -953,23 +902,12 @@ Polyline2 distanceMapTo2DIsoPolyline( const DistanceMap& distMap, const ContourT
 }
 
 std::pair<MR::Polyline2, MR::AffineXf3f> distanceMapTo2DIsoPolyline( const DistanceMap& distMap,
-    const DistanceMapToWorld& params, float isoValue, bool useDepth /* = false */)
+    const AffineXf3f& xf, float isoValue, bool useDepth /* = false */)
 {
-    Polyline2 resContours = distanceMapTo2DIsoPolyline( distMap, isoValue );
+    const float depth = useDepth ? isoValue : 0.f;
+    const AffineXf3f resXf{ xf.A, xf( { 0.f, 0.f, depth } ) };
 
-    const float depth = useDepth ? isoValue : 0.F;
-    const Matrix3f m = Matrix3f::fromColumns( params.pixelXVec, params.pixelYVec, params.direction );
-    const AffineXf3f resXf{ m, params.toWorld( 0.F, 0.F, depth ) };
-    const AffineXf3f resInv = resXf.inverse();
-
-    BitSetParallelFor( resContours.topology.getValidVerts(), [&] ( VertId v )
-    {
-        const Vector3f p = params.toWorld( resContours.points[v].x, resContours.points[v].y, 0.F );
-        const Vector3f pInv = resInv( p );
-        resContours.points[v] = Vector2f{ pInv.x, pInv.y };
-    } );
-
-    return { resContours, resXf };
+    return { distanceMapTo2DIsoPolyline( distMap, isoValue ), resXf };
 }
 
 Polyline2 distanceMapTo2DIsoPolyline( const DistanceMap& distMap, float pixelSize, float isoValue )
@@ -992,9 +930,9 @@ void DistanceMap::negate()
 DistanceMap DistanceMap::max( const DistanceMap& rhs ) const
 {
     DistanceMap res( resX(), resY() );
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             const auto val = get( iX, iY );
             if ( iX < rhs.resX() && iY < rhs.resY() )
@@ -1028,11 +966,11 @@ DistanceMap DistanceMap::max( const DistanceMap& rhs ) const
     return res;
 }
 
-const DistanceMap& DistanceMap::mergeMax( const DistanceMap& rhs)
+const DistanceMap& DistanceMap::mergeMax( const DistanceMap& rhs )
 {
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for ( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             if ( iX < rhs.resX() && iY < rhs.resY() )
             {
@@ -1052,9 +990,9 @@ const DistanceMap& DistanceMap::mergeMax( const DistanceMap& rhs)
 DistanceMap DistanceMap::min( const DistanceMap& rhs) const
 {
     DistanceMap res( resX(), resY() );
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for ( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             const auto val = get( iX, iY );
             if ( iX < rhs.resX() && iY < rhs.resY() )
@@ -1090,9 +1028,9 @@ DistanceMap DistanceMap::min( const DistanceMap& rhs) const
 
 const DistanceMap& DistanceMap::mergeMin( const DistanceMap& rhs )
 {
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             if ( iX < rhs.resX() && iY < rhs.resY() )
             {
@@ -1112,9 +1050,9 @@ const DistanceMap& DistanceMap::mergeMin( const DistanceMap& rhs )
 DistanceMap DistanceMap::operator-( const DistanceMap& rhs) const
 {
     DistanceMap res( resX(), resY() );
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             const auto val = get( iX, iY );
             if ( val )
@@ -1139,9 +1077,9 @@ DistanceMap DistanceMap::operator-( const DistanceMap& rhs) const
 
 const DistanceMap& DistanceMap::operator-=( const DistanceMap& rhs )
 {
-    for( auto iX = 0; iX < resX(); iX++ )
+    for ( auto iY = 0; iY < resY(); iY++ )
     {
-        for( auto iY = 0; iY < resY(); iY++ )
+        for ( auto iX = 0; iX < resX(); iX++ )
         {
             const auto val = get( iX, iY );
             if ( val )
@@ -1171,47 +1109,44 @@ std::pair< DistanceMap, DistanceMap > DistanceMap::getXYDerivativeMaps() const
     auto res = std::make_pair( DistanceMap( resX(), resY() ), DistanceMap( resX(), resY() ) );
     DistanceMap& dx = res.first;
     DistanceMap& dy = res.second;
-    if (resX() < 3 || resY() < 3)
+    if ( resX() < 3 || resY() < 3 )
     {
         return res;
     }
-    tbb::parallel_for( tbb::blocked_range<size_t>( 1, resX() - 1 ),
-        [&] ( const tbb::blocked_range<size_t>& range )
-    {
-        for ( size_t x = range.begin(); x < range.end(); x++ )
-        {
-            for ( size_t y = 1; y + 1 < resY(); y++ )
-            {
-                const auto val = get( x, y );
-                if ( val )
-                {
-                    const auto valxpos = get( x + 1, y );
-                    const auto valxneg = get( x - 1, y );
-                    if ( valxpos )
-                        if ( valxneg )
-                            dx.set( x, y, ( ( *valxpos ) - ( *valxneg ) ) / 2.f );
-                        else
-                            dx.set( x, y, ( *valxpos ) - ( *val ) );
-                    else
-                        if ( valxneg )
-                            dx.set( x, y, ( *val ) - ( *valxneg ) );
-                        else
-                            dx.unset( x, y );
 
-                    const auto valypos = get( x, y + 1 );
-                    const auto valyneg = get( x, y - 1 );
-                    if ( valypos )
-                        if ( valyneg )
-                            dy.set( x, y, ( ( *valypos ) - ( *valyneg ) ) / 2.f );
-                        else
-                            dy.set( x, y, ( *valypos ) - ( *val ) );
-                    else
-                        if ( valyneg )
-                            dy.set( x, y, ( *val ) - ( *valyneg ) );
-                        else
-                            dy.unset( x, y );
-                }
-            }
+    ParallelFor( 1, (int)resY() - 1, [&] ( int y )
+    {
+        for ( auto x = 1; x < resX() - 1; ++x )
+        {
+            const auto val = get( x, y );
+            if ( !val )
+                continue;
+
+            const auto valxpos = get( x + 1, y );
+            const auto valxneg = get( x - 1, y );
+            if ( valxpos )
+                if ( valxneg )
+                    dx.set( x, y, ( ( *valxpos ) - ( *valxneg ) ) / 2.f );
+                else
+                    dx.set( x, y, ( *valxpos ) - ( *val ) );
+            else
+                if ( valxneg )
+                    dx.set( x, y, ( *val ) - ( *valxneg ) );
+                else
+                    dx.unset( x, y );
+
+            const auto valypos = get( x, y + 1 );
+            const auto valyneg = get( x, y - 1 );
+            if ( valypos )
+                if ( valyneg )
+                    dy.set( x, y, ( ( *valypos ) - ( *valyneg ) ) / 2.f );
+                else
+                    dy.set( x, y, ( *valypos ) - ( *val ) );
+            else
+                if ( valyneg )
+                    dy.set( x, y, ( *val ) - ( *valyneg ) );
+                else
+                    dy.unset( x, y );
         }
     } );
     return res;
@@ -1225,44 +1160,32 @@ DistanceMap combineXYderivativeMaps( std::pair<DistanceMap, DistanceMap> XYderiv
     DistanceMap dMap( XYderivativeMaps.first.resX(), XYderivativeMaps.second.resY() );
     const auto& dx = XYderivativeMaps.first;
     const auto& dy = XYderivativeMaps.second;
-
     if ( dx.resX() < 3 || dx.resY() < 3 )
     {
         return dMap;
     }
+
     // fill the central area
-    tbb::parallel_for( tbb::blocked_range<size_t>( 1, dx.resX() - 1 ),
-        [&] ( const tbb::blocked_range<size_t>& range )
+    ParallelFor( 1, (int)dx.resY() - 1, [&] ( int y )
     {
-        for ( size_t x = range.begin(); x < range.end(); x++ )
+        for ( auto x = 1; x < dx.resX() - 1; ++x )
         {
-            for ( size_t y = 1; y + 1 < dx.resY(); y++ )
+            const auto valX = dx.get( x, y );
+            const auto valY = dy.get( x, y );
+
+            if ( valX )
             {
-                const auto valX = dx.get( x, y );
-                const auto valY = dy.get( x, y );
-                
-                if (valX)
-                {
-                    if (valY)
-                    {
-                        dMap.set( x, y, std::sqrt( ( *valX ) * ( *valX ) + ( *valY ) * ( *valY ) ) );
-                    }
-                    else
-                    {
-                        dMap.set( x, y, *valY );
-                    }
-                }
+                if ( valY )
+                    dMap.set( x, y, std::sqrt( ( *valX ) * ( *valX ) + ( *valY ) * ( *valY ) ) );
                 else
-                {
-                    if (valY)
-                    {
-                        dMap.set( x, y, *valY );
-                    }
-                    else
-                    {
-                        dMap.unset( x, y );
-                    }
-                }
+                    dMap.set( x, y, *valY );
+            }
+            else
+            {
+                if ( valY )
+                    dMap.set( x, y, *valY );
+                else
+                    dMap.unset( x, y );
             }
         }
     } );
@@ -1487,9 +1410,9 @@ Polyline2 polylineOffset( const Polyline2& polyline, float pixelSize, float offs
 
     auto isoline = distanceMapTo2DIsoPolyline( distanceMap, offset );
 
-    DistanceMapToWorld distanceMapToWorld( params );
+    AffineXf3f xf( params );
     for ( auto& p : isoline.points )
-        p = Vector2f( distanceMapToWorld.toWorld( p.x, p.y, 0 ) );
+        p = Vector2f( xf( { p.x, p.y, 0 } ) );
 
     return isoline;
 }

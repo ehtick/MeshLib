@@ -4,7 +4,7 @@
 #include "MRRingIterator.h"
 #include "MRBitSetParallelFor.h"
 #include "MRTriMath.h"
-#include "MRPch/MRTBB.h"
+#include "MRParallelFor.h"
 
 namespace MR
 {
@@ -12,7 +12,7 @@ namespace MR
 // given a vertex, returns two edges with the origin in this vertex consecutive in the vertex ring without left faces both;
 // both edges may be the same if there is only one edge without left face;
 // or both edges can be invalid if all vertex edges have left face
-static std::pair<EdgeId, EdgeId> getTwoSeqNoLeftAtVertex( const MeshTopology & m, VertId a )
+static EdgePair getTwoSeqNoLeftAtVertex( const MeshTopology & m, VertId a )
 {
     EdgeId e0 = m.edgeWithOrg( a );
     if ( !e0.valid() )
@@ -68,7 +68,7 @@ int duplicateMultiHoleVertices( Mesh & mesh )
     return duplicates;
 }
 
-Expected<std::vector<MultipleEdge>, std::string> findMultipleEdges( const MeshTopology& topology, ProgressCallback cb )
+Expected<std::vector<MultipleEdge>> findMultipleEdges( const MeshTopology& topology, ProgressCallback cb )
 {
     MR_TIMER
     tbb::enumerable_thread_specific<std::vector<MultipleEdge>> threadData;
@@ -185,7 +185,7 @@ void fixMultipleEdges( Mesh & mesh )
     fixMultipleEdges( mesh, findMultipleEdges( mesh.topology ).value() );
 }
 
-Expected<FaceBitSet, std::string> findDegenerateFaces( const MeshPart& mp, float criticalAspectRatio, ProgressCallback cb )
+Expected<FaceBitSet> findDegenerateFaces( const MeshPart& mp, float criticalAspectRatio, ProgressCallback cb )
 {
     MR_TIMER
     FaceBitSet res( mp.mesh.topology.faceSize() );
@@ -203,7 +203,7 @@ Expected<FaceBitSet, std::string> findDegenerateFaces( const MeshPart& mp, float
     return res;
 }
 
-Expected<UndirectedEdgeBitSet, std::string> findShortEdges( const MeshPart& mp, float criticalLength, ProgressCallback cb )
+Expected<UndirectedEdgeBitSet> findShortEdges( const MeshPart& mp, float criticalLength, ProgressCallback cb )
 {
     MR_TIMER
     const auto criticalLengthSq = sqr( criticalLength );
@@ -326,6 +326,132 @@ int eliminateDegree3Vertices( MeshTopology& topology, VertBitSet & region, FaceB
         if ( res == x )
             break;
     }
+    return res;
+}
+
+EdgeId isVertexRepeatedOnHoleBd( const MeshTopology& topology, VertId v )
+{
+    for ( EdgeId e0 : orgRing( topology, v ) )
+    {
+        if ( topology.left( e0 ) )
+            continue;
+        // not very optional in case of many boundary edges, but it shall be rare
+        for ( EdgeId e1 : orgRing0( topology, e0 ) )
+        {
+            if ( topology.left( e1 ) )
+                continue;
+            if ( topology.fromSameLeftRing( e0, e1 ) )
+                return e0;
+        }
+    }
+    return {};
+}
+
+VertBitSet findRepeatedVertsOnHoleBd( const MeshTopology& topology )
+{
+    MR_TIMER
+    const auto holeRepresEdges = topology.findHoleRepresentiveEdges();
+
+    VertBitSet res;
+    if ( holeRepresEdges.empty() )
+        return res;
+
+    struct ThreadData
+    {
+        explicit ThreadData( size_t vertSize ) : repeatedVerts( vertSize ), currHole( vertSize ) {}
+
+        VertBitSet repeatedVerts;
+        VertBitSet currHole;
+    };
+
+    tbb::enumerable_thread_specific<ThreadData> tls( topology.vertSize() );
+    ParallelFor( holeRepresEdges, tls, [&]( size_t i, ThreadData & threadData )
+    {
+        const auto e0 = holeRepresEdges[i];
+        for ( auto e : leftRing( topology, e0 ) )
+        {
+            auto v = topology.org( e );
+            if ( threadData.currHole.test_set( v ) )
+                threadData.repeatedVerts.set( v );
+        }
+        for ( auto e : leftRing( topology, e0 ) )
+        {
+            auto v = topology.org( e );
+            threadData.currHole.reset( v );
+        }
+    } );
+
+    for ( const auto & threadData : tls )
+        res |= threadData.repeatedVerts;
+    return res;
+}
+
+/// adds in complicatingFaces the faces not from the wedge with largest angle of faces connected by edges incident to given vertex
+static void findHoleComplicatingFaces( const Mesh & mesh, VertId v, std::vector<FaceId> & complicatingFaces )
+{
+    EdgeId bd;
+    float bdAngle = -1;
+    
+    auto angle = [&]( EdgeId e )
+    {
+        assert( !mesh.topology.left( e ) );
+        float res = 0;
+        while ( mesh.topology.right( e ) )
+        {
+            auto d1 = mesh.edgeVector( e );
+            auto d0 = mesh.edgeVector( e = mesh.topology.prev( e ) );
+            res += MR::angle( d0, d1 );
+        }
+        return res;
+    };
+
+    auto report = [&]( EdgeId e )
+    {
+        assert( !mesh.topology.left( e ) );
+        while ( auto r = mesh.topology.right( e ) )
+        {
+            complicatingFaces.push_back( r );
+            e = mesh.topology.prev( e );
+        }
+    };
+
+    for ( EdgeId e : orgRing( mesh.topology, v ) )
+    {
+        if ( mesh.topology.left( e ) )
+            continue;
+        auto eAngle = angle( e );
+        if ( eAngle <= bdAngle )
+            report( e );
+        else
+        {
+            if ( bd )
+                report( bd );
+            bd = e;
+            bdAngle = eAngle;
+        }
+    }
+}
+
+FaceBitSet findHoleComplicatingFaces( const Mesh & mesh )
+{
+    MR_TIMER
+
+    tbb::enumerable_thread_specific<std::vector<FaceId>> threadData;
+    BitSetParallelFor( findRepeatedVertsOnHoleBd( mesh.topology ), [&]( VertId v )
+    {
+        findHoleComplicatingFaces( mesh, v, threadData.local() );
+    } );
+
+    FaceId maxFace;
+    for ( const auto & fs : threadData )
+        for ( FaceId f : fs )
+            maxFace = std::max( maxFace, f );
+
+    FaceBitSet res;
+    res.resize( maxFace + 1 );
+    for ( const auto & fs : threadData )
+        for ( FaceId f : fs )
+            res.set( f );
     return res;
 }
 

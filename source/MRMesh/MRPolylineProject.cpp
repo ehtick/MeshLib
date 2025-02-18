@@ -22,15 +22,14 @@ PolylineProjectionResult<V> findProjectionCore( const AABBTreePolyline<V> & tree
     PolylineProjectionResult<V> res;
     res.distSq = upDistLimitSq;
     if ( tree.nodes().empty() )
-    {
-        assert( false );
         return res;
-    }
 
     struct SubTask
     {
-        typename AABBTreePolyline<V>::NodeId n;
-        float distSq = 0;
+        NodeId n;
+        float distSq;
+        SubTask() : n( noInit ) {}
+        SubTask( NodeId n, float dd ) : n( n ), distSq( dd ) {}
     };
 
     constexpr int MaxStackSize = 32; // to avoid allocations
@@ -46,7 +45,7 @@ PolylineProjectionResult<V> findProjectionCore( const AABBTreePolyline<V> & tree
         }
     };
 
-    auto getSubTask = [&] ( typename AABBTreePolyline<V>::NodeId n )
+    auto getSubTask = [&] ( NodeId n )
     {
         return SubTask{ n, distSqToBox( transformed( tree.nodes()[n].box, xf ) ) };
     };
@@ -86,11 +85,17 @@ PolylineProjectionResult<V> findProjectionCore( const AABBTreePolyline<V> & tree
 
         auto s1 = getSubTask( node.l );
         auto s2 = getSubTask( node.r );
+        // add task with smaller distance last to descend there first
         if ( s1.distSq < s2.distSq )
-            std::swap( s1, s2 );
-        assert( s1.distSq >= s2.distSq );
-        addSubTask( s1 ); // larger distance to look later
-        addSubTask( s2 ); // smaller distance to look first
+        {
+            addSubTask( s2 );
+            addSubTask( s1 );
+        }
+        else
+        {
+            addSubTask( s1 );
+            addSubTask( s2 );
+        }
     }
 
     return res;
@@ -103,7 +108,7 @@ PolylineProjectionResult2 findProjectionOnPolyline2( const Vector2f& pt, const P
         a = polyline.orgPnt( ue );
         b = polyline.destPnt( ue );
     }, loDistLimitSq,
-    [pt]( const Box2f & box ) { return ( box.getBoxClosestPointTo( pt ) - pt ).lengthSq(); },
+    [pt]( const Box2f & box ) { return box.getDistanceSq( pt ); },
     [pt]( const LineSegm2f & ls ) { return LineSegm2f{ pt, closestPointOnLineSegm( pt, ls ) }; } );
 }
 
@@ -114,7 +119,7 @@ PolylineProjectionResult3 findProjectionOnPolyline( const Vector3f& pt, const Po
         a = polyline.orgPnt( ue );
         b = polyline.destPnt( ue );
     }, loDistLimitSq,
-    [pt]( const Box3f & box ) { return ( box.getBoxClosestPointTo( pt ) - pt ).lengthSq(); },
+    [pt]( const Box3f & box ) { return box.getDistanceSq( pt ); },
     [pt]( const LineSegm3f & ls ) { return LineSegm3f{ pt, closestPointOnLineSegm( pt, ls ) }; } );
 }
 
@@ -150,10 +155,7 @@ PolylineProjectionWithOffsetResult<V> findProjectionOnPolylineWithOffsetT(
     PolylineProjectionWithOffsetResult<V> res;
     res.dist = upDistLimit;
     if ( tree.nodes().empty() )
-    {
-        assert( false );
         return res;
-    }
 
     if ( offsetPerEdge.size() < polyline.topology.undirectedEdgeSize() )
     {
@@ -179,11 +181,10 @@ PolylineProjectionWithOffsetResult<V> findProjectionOnPolylineWithOffsetT(
 
     struct SubTask
     {
-        typename AABBTreePolyline<V>::NodeId n;
-        float dist = 0;
-        SubTask() = default;
-        SubTask( typename AABBTreePolyline<V>::NodeId n, float d ) : n( n ), dist( d )
-        {}
+        NodeId n;
+        float dist;
+        SubTask() : n( noInit ) {}
+        SubTask( NodeId n, float d ) : n( n ), dist( d ) {}
     };
 
     constexpr int MaxStackSize = 32; // to avoid allocations
@@ -199,9 +200,10 @@ PolylineProjectionWithOffsetResult<V> findProjectionOnPolylineWithOffsetT(
         }
     };
 
-    auto getSubTask = [&] ( typename AABBTreePolyline<V>::NodeId n )
+    auto getSubTask = [&] ( NodeId n )
     {
-        float dist = ( ( transformed( tree.nodes()[n].box, xf ).getBoxClosestPointTo( pt ) - pt ).length() - maxOffset );
+        const auto & box = tree.nodes()[n].box;
+        float dist = std::sqrt( xf ? transformed( box, *xf ).getDistanceSq( pt ) : box.getDistanceSq( pt ) ) - maxOffset;
         return SubTask( n, dist );
     };
 
@@ -241,11 +243,17 @@ PolylineProjectionWithOffsetResult<V> findProjectionOnPolylineWithOffsetT(
 
         auto s1 = getSubTask( node.l );
         auto s2 = getSubTask( node.r );
+        // add task with smaller distance last to descend there first
         if ( s1.dist < s2.dist )
-            std::swap( s1, s2 );
-        assert( s1.dist >= s2.dist );
-        addSubTask( s1 ); // larger distance to look later
-        addSubTask( s2 ); // smaller distance to look first
+        {
+            addSubTask( s2 );
+            addSubTask( s1 );
+        }
+        else
+        {
+            addSubTask( s1 );
+            addSubTask( s2 );
+        }
     }
 
     return res;
@@ -270,7 +278,7 @@ PolylineProjectionResult3 findProjectionOnMeshEdges( const Vector3f& pt, const M
         a = mesh.orgPnt( ue );
         b = mesh.destPnt( ue );
     }, loDistLimitSq,
-    [pt]( const Box3f & box ) { return ( box.getBoxClosestPointTo( pt ) - pt ).lengthSq(); },
+    [pt]( const Box3f & box ) { return box.getDistanceSq( pt ); },
     [pt]( const LineSegm3f & ls ) { return LineSegm3f{ pt, closestPointOnLineSegm( pt, ls ) }; } );
 }
 
@@ -307,12 +315,13 @@ void findEdgesInBallCore( const AABBTreePolyline<V>& tree, const V& center,
 
     const auto radiusSq = sqr( radius );
     constexpr int MaxStackSize = 32; // to avoid allocations
-    typename AABBTreePolyline<V>::NodeId subtasks[MaxStackSize];
+    NodeId subtasks[MaxStackSize];
     int stackSize = 0;
 
-    auto addSubTask = [&] ( typename AABBTreePolyline<V>::NodeId n )
+    auto addSubTask = [&] ( NodeId n )
     {
-        float distSq = ( transformed( tree.nodes()[n].box, xf ).getBoxClosestPointTo( center ) - center ).lengthSq();
+        const auto & box = tree.nodes()[n].box;
+        float distSq = xf ? transformed( box, *xf ).getDistanceSq( center ) : box.getDistanceSq( center );
         if ( distSq <= radiusSq )
             subtasks[stackSize++] = n;
     };

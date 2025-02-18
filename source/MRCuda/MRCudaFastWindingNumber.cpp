@@ -2,6 +2,7 @@
 #include "MRCudaFastWindingNumber.cuh"
 #include "MRCudaMath.cuh"
 #include "MRMesh/MRAABBTree.h"
+#include "MRMesh/MRDipole.h"
 #include "MRMesh/MRBitSetParallelFor.h"
 #include "MRMesh/MRTimer.h"
 
@@ -14,7 +15,6 @@ struct FastWindingNumberData
 {
     DynamicArray<Dipole> dipoles;
     DynamicArray<float3> cudaPoints;
-    DynamicArrayF cudaResult;
     DynamicArray<float3> cudaMeshPoints;
     DynamicArray<Node3> cudaNodes;
     DynamicArray<FaceToThreeVerts> cudaFaces;
@@ -26,93 +26,109 @@ FastWindingNumber::FastWindingNumber( const Mesh& mesh ) : mesh_( mesh )
 {
 }
 
-bool FastWindingNumber::prepareData_( ProgressCallback cb )
+Expected<void> FastWindingNumber::prepareData_( ProgressCallback cb )
 {
-    CUDA_EXEC( cudaSetDevice( 0 ) );
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaSetDevice( 0 ) );
     if ( data_ )
-        return reportProgress( cb, 1.0f );
+    {
+        if ( !reportProgress( cb, 1.0f ) )
+            return unexpectedOperationCanceled();
+        return {};
+    }
     MR_TIMER
 
     auto data = std::make_shared<FastWindingNumberData>();
 
     if ( !reportProgress( cb, 0.0f ) )
-        return false;
-    const AABBTree& tree = mesh_.getAABBTree();
-    Dipoles dipoles;
-    calcDipoles( dipoles, tree, mesh_ );
-    if ( !reportProgress( cb, 0.5f ) )
-        return false;
+        return unexpectedOperationCanceled();
 
-    data->dipoles.fromVector( dipoles.vec_ );
-    if ( !reportProgress( cb, 0.625f ) )
-        return false;
+    CUDA_LOGE_RETURN_UNEXPECTED( data->cudaMeshPoints.fromVector( mesh_.points.vec_ ) );
+    if ( !reportProgress( cb, 0.1f ) )
+        return unexpectedOperationCanceled();
+
+    CUDA_LOGE_RETURN_UNEXPECTED( data->cudaFaces.fromVector( mesh_.topology.getTriangulation().vec_ ) );
+    if ( !reportProgress( cb, 0.3f ) )
+        return unexpectedOperationCanceled();
+
+    const AABBTree& tree = mesh_.getAABBTree();
+    if ( !reportProgress( cb, 0.5f ) )
+        return unexpectedOperationCanceled();
 
     const auto& nodes = tree.nodes();
-    const auto& meshPoints = mesh_.points;
-    const auto tris = mesh_.topology.getTriangulation();
+    CUDA_LOGE_RETURN_UNEXPECTED( data->cudaNodes.fromVector( nodes.vec_ ) );
+    if ( !reportProgress( cb, 0.6f ) )
+        return unexpectedOperationCanceled();
 
-    data->cudaMeshPoints.fromVector( meshPoints.vec_ );
-    if ( !reportProgress( cb, 0.75f ) )
-        return false;
-
-    data->cudaNodes.fromVector( nodes.vec_ );
-    if ( !reportProgress( cb, 0.875f ) )
-        return false;
-
-    data->cudaFaces.fromVector( tris.vec_ );
+    CUDA_LOGE_RETURN_UNEXPECTED( data->dipoles.fromVector( mesh_.getDipoles().vec_ ) );
     if ( !reportProgress( cb, 1.0f ) )
-        return false;
+        return unexpectedOperationCanceled();
 
     data_ = std::move( data );
-    return true;
+    return {};
 }
 
-void FastWindingNumber::calcFromVector( std::vector<float>& res, const std::vector<Vector3f>& points, float beta, FaceId skipFace )
+Expected<void> FastWindingNumber::calcFromVector( std::vector<float>& res, const std::vector<Vector3f>& points, float beta, FaceId skipFace, const ProgressCallback& cb )
 {
     MR_TIMER
-    prepareData_( {} );
-
-    const size_t size = points.size();
-    res.resize( size );
-    data_->cudaPoints.fromVector( points );
-    data_->cudaResult.resize( size );
-
-    fastWindingNumberFromVector( data_->cudaPoints.data(), data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(), data_->cudaResult.data(), beta, int( skipFace ), size );
-    CUDA_EXEC( cudaGetLastError() );
-
-    data_->cudaResult.toVector( res );
-}
-
-bool FastWindingNumber::calcSelfIntersections( FaceBitSet& res, float beta, ProgressCallback cb )
-{
-    MR_TIMER
-    if ( !prepareData_( subprogress( cb, 0.0f, 0.5f ) ) )
-        return false;
-
-    const size_t size = mesh_.topology.faceSize();
-    res.resize( size );
-    data_->cudaResult.resize( size );
-
-    fastWindingNumberFromMesh(data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(), data_->cudaResult.data(), beta, size);
-    if ( CUDA_EXEC( cudaGetLastError() ) )
-        return false;
-
-    std::vector<float> wns;
-    data_->cudaResult.toVector( wns );
-    if ( !reportProgress( cb, 0.9f ) )
-        return false;
-    
-    return BitSetParallelForAll( res, [&] (FaceId f)
+    return prepareData_( subprogress( cb, 0.0, 0.5f ) ).and_then( [&]() -> Expected<void>
     {
-        if ( wns[f] < 0 || wns[f] > 1 )
-            res.set( f );
-    }, subprogress( cb, 0.9f, 1.0f ) );
+        const size_t size = points.size();
+        res.resize( size );
+        CUDA_LOGE_RETURN_UNEXPECTED( data_->cudaPoints.fromVector( points ) );
+        if ( !reportProgress( cb, 0.6f ) )
+            return unexpectedOperationCanceled();
+
+        DynamicArrayF cudaResult;
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.resize( size ) );
+        fastWindingNumberFromVector( data_->cudaPoints.data(), data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(), cudaResult.data(), beta, int( skipFace ), size );
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaGetLastError() );
+        if ( !reportProgress( cb, 0.7f ) )
+            return unexpectedOperationCanceled();
+
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.toVector( res ) );
+        if ( !reportProgress( cb, 1.0f ) )
+            return unexpectedOperationCanceled();
+        return {};
+    } );
 }
 
-VoidOrErrStr FastWindingNumber::calcFromGrid( std::vector<float>& res, const Vector3i& dims, const Vector3f& minCoord, const Vector3f& voxelSize, const AffineXf3f& gridToMeshXf, float beta, ProgressCallback cb )
+Expected<void> FastWindingNumber::calcSelfIntersections( FaceBitSet& res, float beta, const ProgressCallback& cb )
 {
     MR_TIMER
-    prepareData_( {} );
+    return prepareData_( subprogress( cb, 0.0, 0.5f ) ).and_then( [&]() -> Expected<void>
+    {
+        const size_t size = mesh_.topology.faceSize();
+        DynamicArrayF cudaResult;
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.resize( size ) );
+        if ( !reportProgress( cb, 0.6f ) )
+            return unexpectedOperationCanceled();
+
+        fastWindingNumberFromMesh(data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(), cudaResult.data(), beta, size);
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaGetLastError() );
+        if ( !reportProgress( cb, 0.7f ) )
+            return unexpectedOperationCanceled();
+
+        std::vector<float> wns;
+        CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.toVector( wns ) );
+        if ( !reportProgress( cb, 0.9f ) )
+            return unexpectedOperationCanceled();
+    
+        res.resize( size );
+        if ( !BitSetParallelForAll( res, [&] (FaceId f)
+        {
+            if ( wns[f] < 0 || wns[f] > 1 )
+                res.set( f );
+        }, subprogress( cb, 0.9f, 1.0f ) ) )
+            return unexpectedOperationCanceled();
+        return {};
+    } );
+}
+
+Expected<void> FastWindingNumber::calcFromGrid( std::vector<float>& res, const Vector3i& dims, const AffineXf3f& gridToMeshXf, float beta, const ProgressCallback& cb )
+{
+    MR_TIMER
+    if ( auto maybe = prepareData_( subprogress( cb, 0.0, 0.5f ) ); !maybe )
+        return unexpected( std::move( maybe.error() ) );
 
     const auto getCudaMatrix = [] ( const AffineXf3f& xf )
     {
@@ -127,32 +143,31 @@ VoidOrErrStr FastWindingNumber::calcFromGrid( std::vector<float>& res, const Vec
     
     const Matrix4 cudaGridToMeshXf = ( gridToMeshXf == AffineXf3f{} ) ? Matrix4{} : getCudaMatrix( gridToMeshXf );
     const size_t size = size_t( dims.x ) * dims.y * dims.z;
-    data_->cudaResult.resize( size );
-    if ( !reportProgress( cb, 0.0f ) )
+    DynamicArrayF cudaResult;
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.resize( size ) );
+    if ( !reportProgress( cb, 0.6f ) )
         return unexpectedOperationCanceled();
 
     fastWindingNumberFromGrid(
         int3{ dims.x, dims.y, dims.z },
-        float3{ minCoord.x, minCoord.y, minCoord.z },
-        float3{ voxelSize.x, voxelSize.y, voxelSize.z }, cudaGridToMeshXf,
+        cudaGridToMeshXf,
         data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(),
-        data_->cudaResult.data(), beta );
-    
-    if ( auto code = CUDA_EXEC( cudaGetLastError() ) )
-        return unexpected( Cuda::getError( code ) );
+        cudaResult.data(), beta );
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaGetLastError() );
+    if ( !reportProgress( cb, 0.7f ) )
+        return unexpectedOperationCanceled();
 
-    if ( auto code = data_->cudaResult.toVector( res ) )
-        return unexpected( Cuda::getError( code ) );
-
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.toVector( res ) );
     if ( !reportProgress( cb, 1.0f ) )
         return unexpectedOperationCanceled();
     return {};
 }
 
-VoidOrErrStr FastWindingNumber::calcFromGridWithDistances( std::vector<float>& res, const Vector3i& dims, const Vector3f& minCoord, const Vector3f& voxelSize, const AffineXf3f& gridToMeshXf, float beta, float maxDistSq, float minDistSq, ProgressCallback cb )
+Expected<void> FastWindingNumber::calcFromGridWithDistances( std::vector<float>& res, const Vector3i& dims, const AffineXf3f& gridToMeshXf, const DistanceToMeshOptions& options, const ProgressCallback& cb )
 {
     MR_TIMER
-    prepareData_( {} );
+    if ( auto maybe = prepareData_( subprogress( cb, 0.0, 0.5f ) ); !maybe )
+        return unexpected( std::move( maybe.error() ) );
 
     const auto getCudaMatrix = [] ( const AffineXf3f& xf )
     {
@@ -167,63 +182,24 @@ VoidOrErrStr FastWindingNumber::calcFromGridWithDistances( std::vector<float>& r
 
     const Matrix4 cudaGridToMeshXf = ( gridToMeshXf == AffineXf3f{} ) ? Matrix4{} : getCudaMatrix( gridToMeshXf );
     const size_t size = size_t( dims.x ) * dims.y * dims.z;
-    data_->cudaResult.resize( size );
-    if ( !reportProgress( cb, 0.0f ) )
+    DynamicArrayF cudaResult;
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.resize( size ) );
+    if ( !reportProgress( cb, 0.6f ) )
         return unexpectedOperationCanceled();
 
     signedDistance(
         int3{ dims.x, dims.y, dims.z },
-        float3{ minCoord.x, minCoord.y, minCoord.z },
-        float3{ voxelSize.x, voxelSize.y, voxelSize.z }, cudaGridToMeshXf,
+        cudaGridToMeshXf,
         data_->dipoles.data(), data_->cudaNodes.data(), data_->cudaMeshPoints.data(), data_->cudaFaces.data(),
-        data_->cudaResult.data(), beta, maxDistSq, minDistSq );
+        cudaResult.data(), options );
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaGetLastError() );
+    if ( !reportProgress( cb, 0.7f ) )
+        return unexpectedOperationCanceled();
 
-    if ( auto code = CUDA_EXEC( cudaGetLastError() ) )
-        return unexpected( Cuda::getError( code ) );
-
-    if ( auto code = data_->cudaResult.toVector( res ) )
-        return unexpected( Cuda::getError( code ) );
-
+    CUDA_LOGE_RETURN_UNEXPECTED( cudaResult.toVector( res ) );
     if ( !reportProgress( cb, 1.0f ) )
         return unexpectedOperationCanceled();
     return {};
-
-}
-
-size_t FastWindingNumber::fromVectorHeapBytes( size_t inputSize ) const
-{
-    size_t currentSize = 0;
-    if ( data_ )
-    {
-        currentSize += data_->cudaPoints.size() * sizeof( float3 );
-        currentSize += data_->cudaResult.size() * sizeof( float );
-    }
-    size_t newSize = inputSize * ( sizeof( float3 ) + sizeof( float ) );
-    if ( newSize <= currentSize )
-        return 0;
-    return newSize - currentSize;
-}
-
-size_t FastWindingNumber::selfIntersectionsHeapBytes( const Mesh& mesh ) const
-{
-    size_t currentSize = 0;
-    if ( data_ )
-        currentSize += data_->cudaResult.size() * sizeof( float );
-    size_t newSize = mesh.topology.faceSize() * sizeof( float );
-    if ( newSize <= currentSize )
-        return 0;
-    return newSize - currentSize;
-}
-
-size_t FastWindingNumber::fromGridHeapBytes( const Vector3i& dims ) const
-{
-    size_t currentSize = 0;
-    if ( data_ )
-        currentSize += data_->cudaResult.size() * sizeof( float );
-    size_t newSize = size_t( dims.x ) * dims.y * dims.z * sizeof( float );
-    if ( newSize <= currentSize )
-        return 0;
-    return newSize - currentSize;
 }
 
 } //namespace Cuda

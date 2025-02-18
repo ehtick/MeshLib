@@ -1,4 +1,6 @@
 #include "MRPickHoleBorderElement.h"
+#include "MRViewer.h"
+#include "MRViewport.h"
 #include "MRMesh/MRObjectMesh.h"
 #include "MRMesh/MRMesh.h"
 #include "MRMesh/MRVector2.h"
@@ -7,7 +9,6 @@
 #include "MRMesh/MRObjectLines.h"
 #include "MRMesh/MRPolyline.h"
 #include "MRMesh/MRPolylineEdgeIterator.h"
-#include "MRViewer.h"
 
 namespace MR
 {
@@ -18,7 +19,7 @@ bool isOnTheScreen( const std::shared_ptr<Object>& obj, const Vector3f& projPoin
     Viewport& viewport = Viewer::instanceRef().viewport();
 
     Vector2f projPoint2f = Vector2f( projPoint.x, projPoint.y );
-    auto pick = viewport.pick_render_object( projPoint2f );
+    auto pick = viewport.pickRenderObject( { .point = projPoint2f } );
     if ( pick.first && pick.first != obj )
         return false;
     auto clipPick = viewport.projectToViewportSpace( pick.second.point );
@@ -51,7 +52,7 @@ float findPixelDistSq( const Vector3f& q, const LineSegm3f& segm, Vector3f& proj
     return Vector2f( q.x - projPoint.x, q.y - projPoint.y ).lengthSq();
 }
 
-HoleEdgePoint findClosestToMouseHoleEdge( const Vector2i& mousePos, const std::shared_ptr<ObjectMesh>& objMesh,
+HoleEdgePoint findClosestToMouseHoleEdge( const Vector2i& mousePos, const std::shared_ptr<ObjectMeshHolder>& objMesh,
                                           const std::vector<EdgeId>& holeRepresentativeEdges,
                                           float accuracy /*= 5.5f*/, bool attractToVert /*= false*/, float cornerAccuracy /*= 10.5f*/ )
 {

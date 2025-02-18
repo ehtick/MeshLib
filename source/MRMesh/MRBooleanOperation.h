@@ -2,6 +2,7 @@
 
 #include "MRVector.h"
 #include "MRExpected.h"
+#include "MRId.h"
 #include <array>
 
 namespace MR
@@ -48,7 +49,7 @@ enum class BooleanOperation
 /** \struct MR::BooleanResultMapper
   * \brief Structure to map old mesh BitSets to new
   * \details Structure to easily map topology of MR::boolean input meshes to result mesh
-  * 
+  *
   * This structure allows to map faces, vertices and edges of mesh `A` and mesh `B` input of MR::boolean to result mesh topology primitives
   * \sa \ref MR::boolean
   */
@@ -58,7 +59,7 @@ struct BooleanResultMapper
     enum class MapObject { A, B, Count };
 
     BooleanResultMapper() = default;
-    
+
     /// Returns faces bitset of result mesh corresponding input one
     MRMESH_API FaceBitSet map( const FaceBitSet& oldBS, MapObject obj ) const;
     /// Returns vertices bitset of result mesh corresponding input one
@@ -67,6 +68,9 @@ struct BooleanResultMapper
     MRMESH_API EdgeBitSet map( const EdgeBitSet& oldBS, MapObject obj ) const;
     /// Returns only new faces that are created during boolean operation
     MRMESH_API FaceBitSet newFaces() const;
+
+    /// returns updated oldBS leaving only faces that has corresponding ones in result mesh
+    MRMESH_API FaceBitSet filteredOldFaceBitSet( const FaceBitSet& oldBS, MapObject obj );
 
     struct Maps
     {
@@ -83,15 +87,30 @@ struct BooleanResultMapper
         bool identity{false};
     };
     std::array<Maps, size_t( MapObject::Count )> maps;
+
+    [[nodiscard]] const Maps& getMaps( MapObject index ) const { return maps[ int( index ) ]; }
+};
+
+/// Parameters will be useful if specified
+struct BooleanInternalParameters
+{
+    /// Instance of original mesh with tree for better speed
+    const Mesh* originalMeshA{ nullptr };
+    /// Instance of original mesh with tree for better speed
+    const Mesh* originalMeshB{ nullptr };
+    /// Optional output cut edges of booleaned meshes
+    std::vector<EdgeLoop>* optionalOutCut{ nullptr };
 };
 
 /// Perform boolean operation on cut meshes
 /// \return mesh in space of meshA or error.
 /// \note: actually this function is meant to be internal, use "boolean" instead
-MRMESH_API Expected<Mesh, std::string> doBooleanOperation( Mesh&& meshACut, Mesh&& meshBCut,
-                                                               const std::vector<EdgePath>& cutEdgesA, const std::vector<EdgePath>& cutEdgesB,
-                                                               BooleanOperation operation, const AffineXf3f* rigidB2A = nullptr,
-                                                               BooleanResultMapper* mapper = nullptr );
+MRMESH_API Expected<Mesh> doBooleanOperation( Mesh&& meshACut, Mesh&& meshBCut,
+    const std::vector<EdgePath>& cutEdgesA, const std::vector<EdgePath>& cutEdgesB,
+    BooleanOperation operation, const AffineXf3f* rigidB2A = nullptr,
+    BooleanResultMapper* mapper = nullptr,
+    bool mergeAllNonIntersectingComponents = false,
+    const BooleanInternalParameters& intParams = {} );
 
 /// \}
 

@@ -3,7 +3,6 @@
   <ItemGroup>
     <ClInclude Include="MRPch.h" />
     <ClInclude Include="MREigen.h" />
-    <ClInclude Include="MROpenvdb.h" />
     <ClInclude Include="MRJson.h" />
     <ClInclude Include="MRPch.h" />
     <ClInclude Include="MRTBB.h" />
@@ -12,6 +11,10 @@
     <ClInclude Include="MRAsyncLaunchType.h" />
     <ClInclude Include="MRWasm.h" />
     <ClInclude Include="MREigenCore.h" />
+    <ClInclude Include="MRFmt.h" />
+    <ClInclude Include="MRFilesystem.h" />
+    <ClInclude Include="MRBindingMacros.h" />
+    <ClInclude Include="MRWinapi.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MRPch.cpp" />

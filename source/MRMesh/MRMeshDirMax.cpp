@@ -54,17 +54,14 @@ VertId findDirMax( const Vector3f & dir, const MeshPart & mp, UseAABBTree u )
 
     VertId res;
     if ( tree.nodes().empty() )
-    {
-        assert( false );
         return res;
-    }
 
     struct SubTask
     {
-        AABBTree::NodeId n;
-        float furthestBoxProj = 0;
-        SubTask() = default;
-        SubTask( AABBTree::NodeId n, float bp ) : n( n ), furthestBoxProj( bp ) { }
+        NodeId n;
+        float furthestBoxProj;
+        SubTask() : n( noInit ) {}
+        SubTask( NodeId n, float bp ) : n( n ), furthestBoxProj( bp ) { }
     };
 
     const Vector3f minFactor{ dir.x <= 0 ? dir.x : 0.0f, dir.y <= 0 ? dir.y : 0.0f, dir.z <= 0 ? dir.z : 0.0f };
@@ -88,7 +85,7 @@ VertId findDirMax( const Vector3f & dir, const MeshPart & mp, UseAABBTree u )
         }
     };
 
-    auto getSubTask = [&]( AABBTree::NodeId n )
+    auto getSubTask = [&]( NodeId n )
     {
         return SubTask( n, getFurthestBoxProj( tree.nodes()[n].box ) );
     };
@@ -123,11 +120,17 @@ VertId findDirMax( const Vector3f & dir, const MeshPart & mp, UseAABBTree u )
         
         auto s1 = getSubTask( node.l );
         auto s2 = getSubTask( node.r );
+        // add task with larger projection on line last to descend there first
         if ( s1.furthestBoxProj > s2.furthestBoxProj )
-            std::swap( s1, s2 );
-        assert ( s1.furthestBoxProj <= s2.furthestBoxProj );
-        addSubTask( s1 ); // smaller projection on line to look later
-        addSubTask( s2 ); // larger projection on line to look first
+        {
+            addSubTask( s2 );
+            addSubTask( s1 );
+        }
+        else
+        {
+            addSubTask( s1 );
+            addSubTask( s2 );
+        }
     }
 
     return res;

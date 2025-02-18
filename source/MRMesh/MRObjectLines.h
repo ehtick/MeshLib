@@ -26,13 +26,15 @@ public:
 
     virtual const std::shared_ptr<Polyline3>& varPolyline() { return polyline_; }
 
-    MRMESH_API virtual void setDirtyFlags( uint32_t mask ) override;
+    MRMESH_API virtual void setDirtyFlags( uint32_t mask, bool invalidateCaches = true ) override;
 
     /// \note this ctor is public only for std::make_shared used inside clone()
     ObjectLines( ProtectedStruct, const ObjectLines& obj ) : ObjectLines( obj ) {}
 
     MRMESH_API virtual std::vector<std::string> getInfoLines() const override;
-    virtual std::string getClassName() const override { return "Lines"; }
+
+    std::string getClassName() const override { return "Lines"; }
+    std::string getClassNameInPlural() const override { return "Lines"; }
 
     /// signal about lines changing, triggered in setDirtyFlag
     using LinesChangedSignal = Signal<void( uint32_t mask )>;
@@ -50,4 +52,7 @@ protected:
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const override;
 };
 
-}
+/// constructs new ObjectLines containing the union of valid data from all input objects
+[[nodiscard]] MRMESH_API std::shared_ptr<ObjectLines> merge( const std::vector<std::shared_ptr<ObjectLines>>& objsLines );
+
+} // namespace MR

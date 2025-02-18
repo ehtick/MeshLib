@@ -70,7 +70,7 @@ std::vector<FaceBitSet> separateClosedContour( const Mesh& mesh, const std::vect
     {
         const auto& mtp = projections[i];
         if ( auto mep = mtp.onEdge( mesh.topology ) )
-            addMEP( *mep );
+            addMEP( mep );
         else
             addLeft( mtp.e );
 
@@ -80,7 +80,7 @@ std::vector<FaceBitSet> separateClosedContour( const Mesh& mesh, const std::vect
 
     FaceBitSet facesForSeparation = MeshComponents::getComponents( mesh, contourFaces ) - contourFaces;
 
-    return MeshComponents::getAllComponents( {mesh,&facesForSeparation} );
+    return MeshComponents::getAllComponents( { mesh,&facesForSeparation } );
 }
 
 } //namespace MR

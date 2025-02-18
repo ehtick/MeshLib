@@ -1,12 +1,14 @@
 #include "MRAABBTreePoints.h"
 #include "MRPointCloud.h"
 #include "MRTimer.h"
-#include "MRUVSphere.h"
+#include "MRMakeSphereMesh.h"
 #include "MRMesh.h"
 #include "MRMeshToPointCloud.h"
+#include "MRBitSetParallelFor.h"
 #include "MRHeapBytes.h"
-#include "MRPch/MRTBB.h"
+#include "MRBuffer.h"
 #include "MRGTest.h"
+#include "MRPch/MRTBB.h"
 #include <stack>
 #include <thread>
 
@@ -22,13 +24,13 @@ inline int getNumNodesPoints( int numPoints )
 
 struct SubtreePoints
 {
-    SubtreePoints( AABBTreePoints::NodeId root, int f, int n ) : root( root ), firstPoint( f ), numPoints( n )
+    SubtreePoints( NodeId root, int f, int n ) : root( root ), firstPoint( f ), numPoints( n )
     {
     }
-    AABBTreePoints::NodeId root; // of subtree
+    NodeId root; // of subtree
     int firstPoint = 0;
     int numPoints = 0;
-    AABBTreePoints::NodeId lastNode() const
+    NodeId lastNode() const
     {
         return root + getNumNodesPoints( numPoints );
     }
@@ -121,6 +123,12 @@ void AABBTreePointsMaker::makeSubtree( const SubtreePoints& s, int numThreads )
         stack.pop();
         if ( x.leaf() )
         {
+            // restore original vertex ordering within each leaf
+            std::sort( orderedPoints_.data() + x.firstPoint, orderedPoints_.data() + x.firstPoint + x.numPoints,
+                [&]( const AABBTreePoints::Point& a, const AABBTreePoints::Point& b )
+            {
+                return a.id < b.id;
+            } );
             auto& node = nodes_[x.root];
             node.setLeafPointRange( x.firstPoint, x.firstPoint + x.numPoints );
             assert( !node.box.valid() );
@@ -185,11 +193,104 @@ AABBTreePoints::AABBTreePoints( const VertCoords & points, const VertBitSet * va
     orderedPoints_ = std::move( orderedPoints );
 }
 
+void AABBTreePoints::getLeafOrder( VertBMap & vertMap ) const
+{
+    MR_TIMER
+    VertId newId = 0_v;
+    for ( auto & n : nodes_ )
+    {
+        if ( !n.leaf() )
+            continue;
+        const auto [first, last] = n.getLeafPointRange();
+        for ( int i = first; i < last; ++i )
+        {
+            auto oldId = orderedPoints_[i].id;
+            vertMap.b[oldId] = newId++;
+        }
+    }
+    vertMap.tsize = int( newId );
+}
+
+void AABBTreePoints::getLeafOrderAndReset( VertBMap& vertMap )
+{
+    MR_TIMER
+        VertId newId = 0_v;
+    for ( auto& n : nodes_ )
+    {
+        if ( !n.leaf() )
+            continue;
+        const auto [first, last] = n.getLeafPointRange();
+        for ( int i = first; i < last; ++i )
+        {
+            auto & id = orderedPoints_[i].id;
+            vertMap.b[id] = newId;
+            id = newId++;
+        }
+    }
+    vertMap.tsize = int( newId );
+}
+
 size_t AABBTreePoints::heapBytes() const
 {
     return 
         nodes_.heapBytes() +
         MR::heapBytes( orderedPoints_ );
+}
+
+void AABBTreePoints::refit( const VertCoords & newCoords, const VertBitSet & changedVerts )
+{
+    MR_TIMER
+    
+    // find changed orderedPoints_ and update them
+    BitSet changedPoints( orderedPoints_.size() );
+    BitSetParallelForAll( changedPoints, [&]( size_t i )
+    {
+        auto & p = orderedPoints_[i];
+        if ( changedVerts.test( p.id ) )
+        {
+            changedPoints.set( i );
+            p.coord = newCoords[p.id];
+        }
+        else
+            assert( p.coord == newCoords[p.id] );
+    } );
+
+    // update leaf nodes
+    NodeBitSet changedNodes( nodes_.size() );
+    BitSetParallelForAll( changedNodes, [&]( NodeId nid )
+    {
+        auto & node = nodes_[nid];
+        if ( !node.leaf() )
+            return;
+        bool changed = false;
+        const auto [first, last] = node.getLeafPointRange();
+        for ( int i = first; i < last; ++i )
+            if ( changedPoints.test(i) )
+            {
+                changed = true;
+                break;
+            }
+        if ( !changed )
+            return;
+        changedNodes.set( nid );
+        Box3f box;
+        for ( int i = first; i < last; ++i )
+            box.include( orderedPoints_[i].coord );
+        node.box = box;
+    } );
+
+    //update not-leaf nodes
+    for ( auto nid = nodes_.backId(); nid; --nid )
+    {
+        auto & node = nodes_[nid];
+        if ( node.leaf() )
+            continue;
+        if ( !changedNodes.test( node.leftOrFirst ) && !changedNodes.test( node.rightOrLast ) )
+            continue;
+        changedNodes.set( nid );
+        node.box = nodes_[node.leftOrFirst].box;
+        node.box.include( nodes_[node.rightOrLast].box );
+    }
 }
 
 TEST( MRMesh, AABBTreePoints )

@@ -8,6 +8,7 @@
 #include "MRHeapBytes.h"
 #include "MRImage.h"
 #include "MRExpected.h"
+#include <cfloat>
 #include <filesystem>
 #include <vector>
 
@@ -31,14 +32,19 @@ public:
     /// make from 2d array
     [[nodiscard]] MRMESH_API DistanceMap( const MR::Matrix<float>& m );
 
-    /// checks if X,Y element is valid
+    /// checks if X,Y element is valid (i.e. not `std::numeric_limits<float>::lowest()`; passing invalid coords to this is UB)
     [[nodiscard]] MRMESH_API bool isValid( size_t x, size_t y ) const;
-    /// checks if index element is valid
+    /// checks if index element is valid (i.e. not `std::numeric_limits<float>::lowest()`; passing an invalid coord to this is UB)
     [[nodiscard]] MRMESH_API bool isValid( size_t i ) const;
 
-    /// returns value in (X,Y) element, returns nullopt if not valid
+    /// Returns true if (X,Y) coordinates are in bounds.
+    [[nodiscard]] bool isInBounds( size_t x, size_t y ) const { return x < size_t( dims_.x ) && y < size_t( dims_.y ); }
+    /// Returns true if a flattened coordinate is in bounds.
+    [[nodiscard]] bool isInBounds( size_t i ) const { return i < size_; }
+
+    /// returns value in (X,Y) element, returns nullopt if not valid (see `isValid()`), UB if out of bounds.
     [[nodiscard]] MRMESH_API std::optional<float> get( size_t x, size_t y ) const;
-    /// returns value of index element, returns nullopt if not valid
+    /// returns value of index element, returns nullopt if not valid (see `isValid()`), UB if out of bounds.
     [[nodiscard]] MRMESH_API std::optional<float> get( size_t i ) const;
     /// returns value in (X,Y) element without check on valid
     /// use this only if you sure that distance map has no invalid values or for serialization
@@ -64,26 +70,29 @@ public:
 
     /**
      * \brief finds interpolated value.
-     * \details \ref https:///en.wikipedia.org/wiki/Bilinear_interpolation
+     * \details https://en.wikipedia.org/wiki/Bilinear_interpolation
      * getInterpolated( 0.5f, 0.5f ) == get( 0, 0 )
-     * see \ref https:///docs.microsoft.com/en-us/windows/win32/direct3d10/d3d10-graphics-programming-guide-resources-coordinates for details
+     * see https://docs.microsoft.com/en-us/windows/win32/direct3d10/d3d10-graphics-programming-guide-resources-coordinates for details
      * all 4 elements around this point should be valid, returns nullopt if at least one is not valid
      * \param x,y should be in resolution range [0;resX][0;resY].
+     * If x,y are out of bounds, returns nullopt.
      */
     [[nodiscard]] MRMESH_API std::optional<float> getInterpolated( float x, float y ) const;
 
     /// finds 3d coordinates of the Point on the model surface for the (x,y) pixel
     /// Use the same params with distance map creation
-    [[nodiscard]] MRMESH_API std::optional<Vector3f> unproject( size_t x, size_t y, const DistanceMapToWorld& toWorldStruct ) const;
+    /// (x,y) must be in bounds, the behavior is undefined otherwise.
+    [[nodiscard]] MRMESH_API std::optional<Vector3f> unproject( size_t x, size_t y, const AffineXf3f& toWorld ) const;
 
     /**
      * \brief finds 3d coordinates of the Point on the model surface for the (x,y) interpolated value
      * \param x,y should be in resolution range [0;resX][0;resY].
      * \details getInterpolated( 0.5f, 0.5f ) == get( 0, 0 )
-     * see \ref https: *docs.microsoft.com/en-us/windows/win32/direct3d10/d3d10-graphics-programming-guide-resources-coordinates for details
+     * see https://docs.microsoft.com/en-us/windows/win32/direct3d10/d3d10-graphics-programming-guide-resources-coordinates for details
      * all 4 elements around this point should be valid, returns nullopt if at least one is not valid
+     * If x,y are out of bounds, returns nullopt.
      */
-    [[nodiscard]] MRMESH_API std::optional<Vector3f> unprojectInterpolated( float x, float y, const DistanceMapToWorld& toWorldStruct ) const;
+    [[nodiscard]] MRMESH_API std::optional<Vector3f> unprojectInterpolated( float x, float y, const AffineXf3f& toWorld ) const;
 
     /// replaces every valid element in the map with its negative value
     MRMESH_API void negate();
@@ -102,15 +111,15 @@ public:
     /// replaces values with cell-wise subtracted values. Invalid values remain only if both corresponding cells are invalid
     MRMESH_API const DistanceMap& operator-= ( const DistanceMap& rhs );
 
-    /// sets value in (X,Y) element
+    /// sets value in (X,Y) element (the coords must be valid, UB otherwise)
     MRMESH_API void set( size_t x, size_t y, float val );
-    /// sets value in index element
+    /// sets value in index element (the coord must be valid, UB otherwise)
     MRMESH_API void set( size_t i, float val );
     /// sets all values at one time
     MRMESH_API void set( std::vector<float> data );
-    /// invalidates value in (X,Y) element
+    /// invalidates value in (X,Y) element (the coords must be valid, UB otherwise)
     MRMESH_API void unset( size_t x, size_t y );
-    /// invalidates value in index element
+    /// invalidates value in index element (the coord must be valid, UB otherwise)
     MRMESH_API void unset( size_t i );
 
     /// invalidates all elements
@@ -164,15 +173,17 @@ private:
 };
 
 /// fill another distance map pair with gradients across X and Y axes of the argument map
-[[nodiscard]] MRMESH_API DistanceMap combineXYderivativeMaps( std::pair<DistanceMap, DistanceMap> XYderivativeMaps );
+MRMESH_API DistanceMap combineXYderivativeMaps( std::pair<DistanceMap, DistanceMap> XYderivativeMaps );
 
 /// computes distance (height) map for given projection parameters
 /// using float-precision for finding ray-mesh intersections, which is faster but less reliable
-[[nodiscard]] MRMESH_API DistanceMap computeDistanceMap( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb = {} );
+MRMESH_API DistanceMap computeDistanceMap( const MeshPart& mp, const MeshToDistanceMapParams& params,
+    ProgressCallback cb = {}, std::vector<MeshTriPoint> * outSamples = nullptr );
 
 /// computes distance (height) map for given projection parameters
 /// using double-precision for finding ray-mesh intersections, which is slower but more reliable
-[[nodiscard]] MRMESH_API DistanceMap computeDistanceMapD( const MeshPart& mp, const MeshToDistanceMapParams& params, ProgressCallback cb = {} );
+MRMESH_API DistanceMap computeDistanceMapD( const MeshPart& mp, const MeshToDistanceMapParams& params,
+    ProgressCallback cb = {}, std::vector<MeshTriPoint> * outSamples = nullptr );
 
 /// Structure with parameters for optional offset in `distanceMapFromContours` function
 struct [[nodiscard]] ContoursDistanceMapOffset
@@ -218,10 +229,18 @@ struct [[nodiscard]] ContoursDistanceMapOptions
 [[nodiscard]] MRMESH_API DistanceMap distanceMapFromContours( const Polyline2& contours, const ContourToDistanceMapParams& params,
     const ContoursDistanceMapOptions& options = {} );
 
+/**
+ * \brief Computes distance of 2d contours according ContourToDistanceMapParams
+ * \param distMap - preallocated distance map
+ * \param options - optional input and output options for distance map calculation, find more \ref ContoursDistanceMapOptions
+ */
+MRMESH_API void distanceMapFromContours( DistanceMap & distMap, const Polyline2& polyline, const ContourToDistanceMapParams& params,
+    const ContoursDistanceMapOptions& options = {} );
+
 /// Makes distance map and filter out pixels with large (>threshold) distance between closest points on contour in neighbor pixels
 /// Converts such points back in 3d space and return
 /// \note that polyline topology should be consistently oriented
-[[nodiscard]] MRMESH_API std::vector<Vector3f> edgePointsFromContours( const Polyline2& contour, float pixelSize, float threshold );
+[[nodiscard]] MRMESH_API std::vector<Vector3f> edgePointsFromContours( const Polyline2& polyline, float pixelSize, float threshold );
 
 /// converts distance map to 2d iso-lines:
 /// iso-lines are created in space DistanceMap ( plane OXY with pixelSize = (1, 1) )
@@ -231,11 +250,11 @@ struct [[nodiscard]] ContoursDistanceMapOptions
 [[nodiscard]] MRMESH_API Polyline2 distanceMapTo2DIsoPolyline( const DistanceMap& distMap,
     const ContourToDistanceMapParams& params, float isoValue );
 
-/// iso-lines are created in real space
-/// ( contours plane with parameters according DistanceMapToWorld )
-/// \return pair contours in OXY & transformation from plane OXY to real contours plane
+/// computes iso-lines of distance map corresponding to given iso-value;
+/// in second returns the transformation from 0XY plane to world;
+/// \param useDepth true - the isolines will be located on distance map surface, false - isolines for any iso-value will be located on the common plane xf(0XY)
 [[nodiscard]] MRMESH_API std::pair<Polyline2, AffineXf3f> distanceMapTo2DIsoPolyline( const DistanceMap& distMap,
-    const DistanceMapToWorld& params, float isoValue, bool useDepth = false );
+    const AffineXf3f& xf, float isoValue, bool useDepth = false );
 [[nodiscard]] MRMESH_API Polyline2 distanceMapTo2DIsoPolyline( const DistanceMap& distMap, float pixelSize, float isoValue );
 
 /// constructs an offset contour for given polyline
@@ -271,23 +290,16 @@ struct [[nodiscard]] ContoursDistanceMapOptions
 [[nodiscard]] MRMESH_API Polyline2 contourSubtract( const Polyline2& contoursA, const Polyline2& contoursB,
     const ContourToDistanceMapParams& params, float offsetInside = 0.f );
 
-/// converts distance map back to the mesh fragment with presented params
-[[nodiscard]] MRMESH_API Mesh distanceMapToMesh( const DistanceMap& distMap, const DistanceMapToWorld& toWorldStruct );
+/// converts distance map into mesh and applies a transformation to all points
+[[nodiscard]] MRMESH_API Expected<Mesh> distanceMapToMesh( const DistanceMap& distMap, const AffineXf3f& toWorld, ProgressCallback cb = {} );
 
-/// saves distance map to monochrome image in scales of gray:
-/// \param threshold - threshold of maximum values [0.; 1.]. invalid pixel set as 0. (black)
-/// minimum (close): 1.0 (white)
-/// maximum (far): threshold
-/// invalid (infinity): 0.0 (black)
-MRMESH_API VoidOrErrStr saveDistanceMapToImage( const DistanceMap& distMap, const std::filesystem::path& filename, float threshold = 1.f / 255 );
-
-/// load distance map from monochrome image in scales of gray:
+/// export distance map to a grayscale image
 /// \param threshold - threshold of valid values [0.; 1.]. pixel with color less then threshold set invalid
-[[nodiscard]] MRMESH_API Expected<DistanceMap, std::string> convertImageToDistanceMap( const Image& image, float threshold = 1.f / 255 );
+[[nodiscard]] MRMESH_API Image convertDistanceMapToImage( const DistanceMap& distMap, float threshold = 1.f / 255 );
 
-/// load distance map from monochrome image file
+/// load distance map from a grayscale image:
 /// \param threshold - threshold of valid values [0.; 1.]. pixel with color less then threshold set invalid
-[[nodiscard]] MRMESH_API Expected<DistanceMap, std::string> loadDistanceMapFromImage( const std::filesystem::path& filename, float threshold = 1.f / 255 );
+[[nodiscard]] MRMESH_API Expected<DistanceMap> convertImageToDistanceMap( const Image& image, float threshold = 1.f / 255 );
 
 /// \}
 

@@ -4,18 +4,58 @@
 #include "MREdgeIterator.h"
 #include "MREdgePaths.h"
 #include "MRBuffer.h"
-#include "MRphmap.h"
+#include "MRMapEdge.h"
 #include "MRNoDefInit.h"
 #include "MRTimer.h"
 #include "MRBitSetParallelFor.h"
+#include "MRParallelFor.h"
 #include "MRProgressReadWrite.h"
 #include "MRGridSettings.h"
+#include "MRParallelFor.h"
+#include "MRIOParsing.h"
+#include "MRGTest.h"
 #include "MRPch/MRTBB.h"
 #include <atomic>
 #include <initializer_list>
 
 namespace MR
 {
+
+void MeshTopology::vertResize( size_t newSize )
+{ 
+    if ( edgePerVertex_.size() >= newSize )
+        return;
+    edgePerVertex_.resize( newSize );
+    if ( updateValids_ )
+        validVerts_.resize( newSize );
+}
+
+void MeshTopology::vertResizeWithReserve( size_t newSize )
+{ 
+    if ( edgePerVertex_.size() >= newSize )
+        return;
+    edgePerVertex_.resizeWithReserve( newSize );
+    if ( updateValids_ )
+        validVerts_.resizeWithReserve( newSize );
+}
+
+void MeshTopology::faceResize( size_t newSize )
+{
+    if ( edgePerFace_.size() >= newSize )
+        return;
+    edgePerFace_.resize( newSize );
+    if ( updateValids_ ) 
+        validFaces_.resize( newSize );
+}
+
+void MeshTopology::faceResizeWithReserve( size_t newSize )
+{
+    if ( edgePerFace_.size() >= newSize )
+        return;
+    edgePerFace_.resizeWithReserve( newSize );
+    if ( updateValids_ ) 
+        validFaces_.resizeWithReserve( newSize );
+}
 
 EdgeId MeshTopology::makeEdge()
 {
@@ -169,6 +209,104 @@ void MeshTopology::splice( EdgeId a, EdgeId b )
         if ( !fromSameLeftRing( edgePerFace_[aData.left], a ) )
             edgePerFace_[aData.left] = a;
     }
+}
+
+EdgeId MeshTopology::collapseEdge( const EdgeId e, const std::function<void( EdgeId del, EdgeId rem )> & onEdgeDel )
+{
+    auto delEdge = [&]( EdgeId del )
+    {
+        assert( del );
+        if ( onEdgeDel )
+            onEdgeDel( del, {} );
+    };
+    auto replaceEdge = [&]( EdgeId del, EdgeId rem )
+    {
+        assert( del && rem );
+        if ( onEdgeDel )
+            onEdgeDel( del, rem );
+    };
+
+    setLeft( e, FaceId() );
+    setLeft( e.sym(), FaceId() );
+
+    delEdge( e );
+
+    if ( next( e ) == e )
+    {
+        setOrg( e, VertId() );
+        const EdgeId b = prev( e.sym() );
+        if ( b == e.sym() )
+            setOrg( e.sym(), VertId() );
+        else
+            splice( b, e.sym() );
+
+        assert( isLoneEdge( e ) );
+        return EdgeId();
+    }
+
+    setOrg( e.sym(), VertId() );
+
+    const EdgeId ePrev = prev( e );
+    const EdgeId eNext = next( e );
+    if ( ePrev != e )
+        splice( ePrev, e );
+
+    const EdgeId a = next( e.sym() );
+    if ( a == e.sym() )
+    {
+        assert( isLoneEdge( e ) );
+        return ePrev != e ? ePrev : EdgeId();
+    }
+    const EdgeId b = prev( e.sym() );
+
+    splice( b, e.sym() );
+    assert( isLoneEdge( e ) );
+
+    assert( next( b ) == a );
+    assert( next( ePrev ) == eNext );
+    splice( b, ePrev );
+    assert( next( b ) == eNext );
+    assert( next( ePrev ) == a );
+
+    if ( next( a.sym() ) == ePrev.sym() )
+    {
+        splice( ePrev, a );
+        splice( prev( a.sym() ), a.sym() );
+        assert( isLoneEdge( a ) );
+        if ( !left( ePrev ) && !right( ePrev ) )
+        {
+            splice( prev( ePrev ), ePrev );
+            splice( prev( ePrev.sym() ), ePrev.sym() );
+            setOrg( ePrev, {} );
+            setOrg( ePrev.sym(), {} );
+            assert( isLoneEdge( ePrev ) );
+            delEdge( a );
+            delEdge( ePrev );
+        }
+        else
+            replaceEdge( a, ePrev );
+    }
+
+    if ( next( eNext.sym() ) == b.sym() )
+    {
+        splice( eNext.sym(), b.sym() );
+        splice( prev( b ), b );
+        assert( isLoneEdge( b ) );
+        if ( !left( eNext ) && !right( eNext ) )
+        {
+            splice( prev( eNext ), eNext );
+            splice( prev( eNext.sym() ), eNext.sym() );
+            setOrg( eNext, {} );
+            setOrg( eNext.sym(), {} );
+            assert( isLoneEdge( eNext ) );
+            delEdge( b );
+            delEdge( eNext );
+        }
+        else
+            replaceEdge( b, eNext );
+    }
+
+    return ePrev != e ? ePrev : EdgeId();
 }
 
 bool MeshTopology::fromSameOriginRing( EdgeId a, EdgeId b ) const
@@ -394,6 +532,14 @@ void MeshTopology::setLeft( EdgeId a, FaceId f )
     }
 }
 
+bool MeshTopology::isInnerOrBdVertex( VertId v, const FaceBitSet * region ) const
+{
+    for ( auto e : orgRing( *this, v ) )
+        if ( contains( region, left( e ) ) )
+            return true;
+    return false;
+}
+
 EdgeId MeshTopology::nextLeftBd( EdgeId e, const FaceBitSet * region ) const
 {
     assert( isLeftBdEdge( e, region ) );
@@ -433,62 +579,61 @@ EdgeId MeshTopology::findEdge( VertId o, VertId d ) const
     }
 }
 
-bool MeshTopology::isClosed() const
-{
-    MR_TIMER
-    for ( EdgeId e(0); e < edges_.size(); ++e )
-    {
-        if ( !edges_[e].org.valid() )
-            continue; // skip edges without valid vertices
-        if ( !edges_[e].left.valid() )
-            return false;
-    }
-    return true;
-}
-
 bool MeshTopology::isClosed( const FaceBitSet * region ) const
 {
-    if ( !region )
-        return isClosed();
-
     MR_TIMER
-    for ( FaceId f : *region )
+    std::atomic_bool res{ true };
+    tbb::parallel_for( tbb::blocked_range( 0_ue, UndirectedEdgeId( undirectedEdgeSize() ) ),
+        [&]( const tbb::blocked_range<UndirectedEdgeId> & range )
     {
-        for ( EdgeId e : leftRing( *this, f ) )
+        for ( UndirectedEdgeId ue = range.begin(); ue < range.end(); ++ue )
         {
-            if ( !right( e ) )
-                return false;
+            if ( !res.load( std::memory_order_relaxed ) )
+                return;
+            EdgeId e( ue );
+            if ( isLoneEdge( e ) )
+                continue;
+            const auto l = left( e );
+            const auto r = right( e );
+            if ( l && r )
+                continue; // no neighboring holes
+            if ( region && !contains( *region, l ) && !contains( *region, r ) )
+                continue; // both left and right are not in the region
+            res.store( false, std::memory_order_relaxed );
+            return;
         }
-    }
-    return true;
+    } );
+    return res.load( std::memory_order_relaxed );
 }
 
-EdgeLoop MeshTopology::trackBoundaryLoop( EdgeId e0, const FaceBitSet * region ) const
+std::vector<EdgeId> MeshTopology::findHoleRepresentiveEdges( const FaceBitSet * region ) const
 {
-    return trackRightBoundaryLoop( *this, e0, region );
-}
+    MR_TIMER
 
-std::vector<EdgeLoop> MeshTopology::findBoundary( const FaceBitSet * region ) const
-{
-    return findRightBoundary( *this, region );
-}
-
-std::vector<EdgeId> MeshTopology::findHoleRepresentiveEdges() const
-{
-    auto bds = findRightBoundary( *this );
+    EdgeBitSet representativeEdges;
+    const auto num = findNumHoles( &representativeEdges );
 
     std::vector<EdgeId> res;
-    res.reserve( bds.size() );
+    if ( num <= 0 )
+        return res;
 
-    for ( const auto & bd : bds )
-        res.push_back( bd.front() );
-
+    res.reserve( num );
+    for ( EdgeId e : representativeEdges )
+        if ( !region || contains( *region, right( e ) ) )
+            res.push_back( e );
+    assert( region || res.size() == num );
     return res;
 }
 
-int MeshTopology::findNumHoles() const
+int MeshTopology::findNumHoles( EdgeBitSet * holeRepresentativeEdges ) const
 {
     MR_TIMER
+
+    if ( holeRepresentativeEdges )
+    {
+        holeRepresentativeEdges->clear();
+        holeRepresentativeEdges->resize( edgeSize(), false );
+    }
 
     auto bdEdges = findBoundaryEdges();
     std::atomic<int> res;
@@ -524,7 +669,11 @@ int MeshTopology::findNumHoles() const
                 }
                 assert( smallestHoleEdge < eEnd );
                 if ( smallestHoleEdge >= eBeg )
+                {
                     ++myHoles;
+                    if ( holeRepresentativeEdges )
+                        holeRepresentativeEdges->set( smallestHoleEdge );
+                }
             }
             res.fetch_add( myHoles, std::memory_order_relaxed );
         } );
@@ -572,12 +721,12 @@ EdgeBitSet MeshTopology::findBoundaryEdges() const
     return res;
 }
 
-FaceBitSet MeshTopology::findBoundaryFaces() const
+FaceBitSet MeshTopology::findBoundaryFaces( const FaceBitSet * region ) const
 {
     MR_TIMER
-    assert( updateValids_ );
-    FaceBitSet res( faceSize() );
-    BitSetParallelFor( validFaces_, [&]( FaceId f )
+    const auto & fs = getFaceIds( region );
+    FaceBitSet res( fs.size() );
+    BitSetParallelFor( fs, [&]( FaceId f )
     {
         for ( EdgeId e : leftRing( *this, f ) )
         {
@@ -591,12 +740,12 @@ FaceBitSet MeshTopology::findBoundaryFaces() const
     return res;
 }
 
-VertBitSet MeshTopology::findBoundaryVerts() const
+VertBitSet MeshTopology::findBoundaryVerts( const VertBitSet * region ) const
 {
     MR_TIMER
-    assert( updateValids_ );
-    VertBitSet res( vertSize() );
-    BitSetParallelFor( validVerts_, [&]( VertId v )
+    const auto & vs = getVertIds( region );
+    VertBitSet res( vs.size() );
+    BitSetParallelFor( vs, [&]( VertId v )
     {
         for ( EdgeId e : orgRing( *this, v ) )
         {
@@ -648,13 +797,7 @@ VertId MeshTopology::lastValidVert() const
     assert( updateValids_ );
     if ( numValidVerts_ <= 0 )
         return {};
-    for ( VertId i{ (int)validVerts_.size() - 1 }; i.valid(); --i )
-    {
-        if ( validVerts_.test( i ) )
-            return i;
-    }
-    assert( false );
-    return {};
+    return validVerts_.find_last();
 }
 
 EdgeId MeshTopology::sharedEdge( FaceId l, FaceId r ) const
@@ -722,16 +865,10 @@ FaceId MeshTopology::lastValidFace() const
     assert( updateValids_ );
     if ( numValidFaces_ <= 0 )
         return {};
-    for ( FaceId i{ (int)validFaces_.size() - 1 }; i.valid(); --i )
-    {
-        if ( validFaces_.test( i ) )
-            return i;
-    }
-    assert( false );
-    return {};
+    return validFaces_.find_last();
 }
 
-void MeshTopology::deleteFace( FaceId f )
+void MeshTopology::deleteFace( FaceId f, const UndirectedEdgeBitSet * keepEdges )
 {
     EdgeId e = edgeWithLeft( f );
     assert( e.valid() );
@@ -745,27 +882,32 @@ void MeshTopology::deleteFace( FaceId f )
     const int d = getLeftDegree( e );
     for ( int i = 0; i < d; ++i )
     {
-        if ( !right( e ).valid() && prev( e ) == next( e ) )
-        {
-            // only two edges from e.origin, so this vertex does not belong to any other face
-            setOrg( e, VertId{} );
-        }
         EdgeId e1 = e;
         e = prev( e.sym() );
-        if ( !left( e1.sym() ).valid() )
+        if ( !right( e1 ) && !( keepEdges && keepEdges->test( e1 ) ) )
         {
-            // no face to the right of e1, delete it
-            splice( prev( e1 ), e1 );
-            splice( prev( e1.sym() ), e1.sym() );
+            // delete e1 since it has no right face as well (and not in keepEdges);
+            // also delete any end-vertex of e1 if e1 was the last edge from it
+            if ( prev( e1 ) == e1 )
+                setOrg( e1, VertId{} );
+            else
+                splice( prev( e1 ), e1 );
+
+            if ( prev( e1.sym() ) == e1.sym() )
+                setOrg( e1.sym(), VertId{} );
+            else
+                splice( prev( e1.sym() ), e1.sym() );
+
+            assert( isLoneEdge( e1 ) );
         }
     }
 }
 
-void MeshTopology::deleteFaces( const FaceBitSet& fs )
+void MeshTopology::deleteFaces( const FaceBitSet & fs, const UndirectedEdgeBitSet * keepEdges )
 {
     MR_TIMER
     for ( auto f : fs )
-        deleteFace( f );
+        deleteFace( f, keepEdges );
 }
 
 void MeshTopology::translateNoFlip_( HalfEdgeRecord & r, const FaceMap & fmap, const VertMap & vmap, const WholeEdgeMap & emap ) const
@@ -876,7 +1018,8 @@ static inline void setNewToOld( FaceHashMap * new2Old, std::initializer_list<Fac
     {
         // fromFace is already new, find its origin
         fromFace = it->second;
-        assert( new2Old->find( fromFace ) != new2Old->end() );
+        // now fromFace is original face that must not be found among new ones (not a key in new2Old)
+        assert( new2Old->find( fromFace ) == new2Old->end() );
     }
     for ( auto newFace: newFaces )
         (*new2Old)[newFace] = fromFace;
@@ -886,19 +1029,14 @@ EdgeId MeshTopology::splitEdge( EdgeId e, FaceBitSet * region, FaceHashMap * new
 {
     FaceId l = left( e );
     if ( l.valid() )
-    {
-        assert( isLeftTri( e ) );
         setLeft_( e, FaceId{} );
-    }
     FaceId r = right( e );
     if ( r.valid() )
-    {
-        assert( isLeftTri( e.sym() ) );
         setLeft_( e.sym(), FaceId{} );
-    }
-    
+
     // disconnect edge e from its origin
-    EdgeId ePrev = prev( e );
+    const EdgeId ePrev = prev( e );
+    const EdgeId eNext = next( e );
     VertId v0;
     if ( ePrev != e )
     {
@@ -919,15 +1057,16 @@ EdgeId MeshTopology::splitEdge( EdgeId e, FaceBitSet * region, FaceHashMap * new
     else
         setOrg( e0, v0 );
 
-    // subdivide left and right triangles
-    EdgeId eSymPrev = prev( e.sym() );
-    if ( l.valid() && e.sym() != eSymPrev )
+    // subdivide left and right faces
+    if ( l.valid() && eNext != e )
     {
         EdgeId el = makeEdge();
         splice( e, el );
-        splice( prev( eSymPrev.sym() ), el.sym() );
+        splice( eNext.sym(), el.sym() );
         auto newFace = addFaceId();
         setLeft( el, newFace );
+        assert( isLeftTri( e0 ) );
+        assert( left( e0 ) == newFace );
         if ( region && region->test( l ) )
             region->autoResizeSet( newFace );
         setNewToOld( new2Old, {newFace}, l );
@@ -939,6 +1078,8 @@ EdgeId MeshTopology::splitEdge( EdgeId e, FaceBitSet * region, FaceHashMap * new
         splice( prev( ePrev.sym() ), er.sym() );
         auto newFace = addFaceId();
         setLeft( er.sym(), newFace );
+        assert( isLeftTri( e0.sym() ) );
+        assert( left( e0.sym() ) == newFace );
         if ( region && region->test( r ) )
             region->autoResizeSet( newFace );
         setNewToOld( new2Old, {newFace}, r );
@@ -1005,18 +1146,22 @@ VertId MeshTopology::splitFace( FaceId f, FaceBitSet * region, FaceHashMap * new
     return newv;
 }
 
-void MeshTopology::flipOrientation()
+void MeshTopology::flipOrientation( const UndirectedEdgeBitSet * fullComponents )
 {
     MR_TIMER
 
-    for ( auto & e : edgePerFace_ )
+    ParallelFor( edgePerFace_, [&]( FaceId f )
     {
-        if ( e.valid() )
-            e = e.sym();
-    }
+        auto e = edgePerFace_[f];
+        if ( e && contains( fullComponents, e.undirected() ) )
+            edgePerFace_[f] = e.sym();
+    } );
 
-    for ( EdgeId i{0}; i + 1 < edges_.size(); ++++i )
+    ParallelFor( 0_ue, UndirectedEdgeId( undirectedEdgeSize() ), [&]( UndirectedEdgeId ue )
     {
+        if ( fullComponents && !fullComponents->test( ue ) )
+            return;
+        EdgeId i = ue;
         auto & r0 = edges_[i];
         std::swap( r0.next, r0.prev );
 
@@ -1024,7 +1169,7 @@ void MeshTopology::flipOrientation()
         std::swap( r1.next, r1.prev );
 
         std::swap( r0.left, r1.left );
-    }
+    } );
 }
 
 void MeshTopology::addPart( const MeshTopology & from,
@@ -1263,13 +1408,14 @@ void MeshTopology::preferEdges( const UndirectedEdgeBitSet & stableEdges )
     } );
 }
 
-void MeshTopology::buildGridMesh( const GridSettings & settings )
+bool MeshTopology::buildGridMesh( const GridSettings & settings, ProgressCallback cb )
 {
     MR_TIMER
 
     stopUpdatingValids();
 
     // we use resizeNoInit because expect vertices/faces/edges to be tightly packed (no deleted elements within valid range)
+    // note: some vertices might be valid but have no edge
     edgePerVertex_.resizeNoInit( settings.vertIds.tsize );
     edgePerFace_.resizeNoInit( settings.faceIds.tsize );
     edges_.resizeNoInit( 2 * settings.uedgeIds.tsize );
@@ -1300,111 +1446,119 @@ void MeshTopology::buildGridMesh( const GridSettings & settings )
         FaceId f; //to the left of e
     };
     tbb::enumerable_thread_specific<std::vector<EdgeFace>> edgeRingPerThread;
-    tbb::parallel_for( tbb::blocked_range( 0, settings.dim.y + 1 ), [&]( const tbb::blocked_range<int> & range )
+    auto result = ParallelFor( 0, settings.dim.y + 1, edgeRingPerThread, [&]( int y, std::vector<EdgeFace> & edgeRing )
     {
-        auto & edgeRing = edgeRingPerThread.local();
         Vector2i pos;
-        for ( pos.y = range.begin(); pos.y < range.end(); ++pos.y )
-            for ( pos.x = 0; pos.x <= settings.dim.x; ++pos.x )
+        pos.y = y;
+        for ( pos.x = 0; pos.x <= settings.dim.x; ++pos.x )
+        {
+            if ( auto da = getEdgeId( pos, GridSettings::EdgeType::DiagonalA ) )
             {
-                if ( auto da = getEdgeId( pos, GridSettings::EdgeType::DiagonalA ) )
-                {
-                    if ( const auto fl = getFaceId( pos, GridSettings::TriType::Lower ) )
-                        edgePerFace_[fl] = da.sym();
-                    if ( const auto fu = getFaceId( pos, GridSettings::TriType::Upper ) )
-                        edgePerFace_[fu] = da;
-                }
-                else if ( auto db = getEdgeId( pos, GridSettings::EdgeType::DiagonalB ) )
-                {
-                    if ( const auto fl = getFaceId( pos, GridSettings::TriType::Lower ) )
-                        edgePerFace_[fl] = db;
-                    if ( const auto fu = getFaceId( pos, GridSettings::TriType::Upper ) )
-                        edgePerFace_[fu] = db.sym();
-                }
-                const auto v = getVertId( pos );
-                if ( !v )
-                    continue;
-                edgeRing.clear();
-
-                // edge (+1, 0)
-                if ( auto e = getEdgeId( pos, GridSettings::EdgeType::Horizontal ) )
-                    edgeRing.push_back( { e, getFaceId( pos, GridSettings::TriType::Lower ) } );
-
-                // edge (+1, +1)
-                if ( auto e = getEdgeId( pos, GridSettings::EdgeType::DiagonalA ) )
-                    edgeRing.push_back( { e, getFaceId( pos, GridSettings::TriType::Upper ) } );
-
-                // edge (0, +1)
-                if ( auto e = getEdgeId( pos, GridSettings::EdgeType::Vertical ) )
-                {
-                    if ( getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalA ) )
-                        edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Lower ) } );
-                    else if ( getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalB ) )
-                        edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Upper ) } );
-                    else
-                        edgeRing.push_back( { e, FaceId{} } );
-                }
-
-                // edge (-1, +1)
-                if ( auto e = getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalB ) )
-                    edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Lower ) } );
-
-                // edge (-1, 0)
-                if ( auto e = getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::Horizontal ) )
-                    edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(1, 1), GridSettings::TriType::Upper ) } );
-
-                // edge (-1, -1)
-                if ( auto e = getEdgeId( pos - Vector2i(1, 1), GridSettings::EdgeType::DiagonalA ) )
-                    edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(1, 1), GridSettings::TriType::Lower ) } );
-
-                // edge (0, -1)
-                if ( auto e = getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::Vertical ) )
-                {
-                    if ( getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalA ) )
-                        edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Upper ) } );
-                    else if ( getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalB ) )
-                        edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Lower ) } );
-                    else
-                        edgeRing.push_back( { e.sym(), FaceId{} } );
-                }
-
-                // edge (+1, -1)
-                if ( auto e = getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalB ) )
-                    edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Upper ) } );
-
-                if ( edgeRing.empty() )
-                {
-                    assert( false );
-                    continue;
-                }
-                edgePerVertex_[v] = edgeRing[0].e;
-                for ( int i = 0; i < edgeRing.size(); ++i )
-                {
-                    HalfEdgeRecord he( noInit );
-                    he.next = i + 1 < edgeRing.size() ? edgeRing[i + 1].e : edgeRing[0].e;
-                    he.prev = i > 0 ? edgeRing[i - 1].e : edgeRing.back().e;
-                    he.org = v;
-                    he.left = edgeRing[i].f;
-                    edges_[edgeRing[i].e] = he;
-                }
+                if ( const auto fl = getFaceId( pos, GridSettings::TriType::Lower ) )
+                    edgePerFace_[fl] = da.sym();
+                if ( const auto fu = getFaceId( pos, GridSettings::TriType::Upper ) )
+                    edgePerFace_[fu] = da;
             }
-    } );
+            else if ( auto db = getEdgeId( pos, GridSettings::EdgeType::DiagonalB ) )
+            {
+                if ( const auto fl = getFaceId( pos, GridSettings::TriType::Lower ) )
+                    edgePerFace_[fl] = db;
+                if ( const auto fu = getFaceId( pos, GridSettings::TriType::Upper ) )
+                    edgePerFace_[fu] = db.sym();
+            }
+            const auto v = getVertId( pos );
+            if ( !v )
+                continue;
+            edgeRing.clear();
 
-    computeValidsFromEdges();
+            // edge (+1, 0)
+            if ( auto e = getEdgeId( pos, GridSettings::EdgeType::Horizontal ) )
+                edgeRing.push_back( { e, getFaceId( pos, GridSettings::TriType::Lower ) } );
+
+            // edge (+1, +1)
+            if ( auto e = getEdgeId( pos, GridSettings::EdgeType::DiagonalA ) )
+                edgeRing.push_back( { e, getFaceId( pos, GridSettings::TriType::Upper ) } );
+
+            // edge (0, +1)
+            if ( auto e = getEdgeId( pos, GridSettings::EdgeType::Vertical ) )
+            {
+                if ( getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalA ) )
+                    edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Lower ) } );
+                else if ( getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalB ) )
+                    edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Upper ) } );
+                else
+                    edgeRing.push_back( { e, FaceId{} } );
+            }
+
+            // edge (-1, +1)
+            if ( auto e = getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::DiagonalB ) )
+                edgeRing.push_back( { e, getFaceId( pos - Vector2i(1, 0), GridSettings::TriType::Lower ) } );
+
+            // edge (-1, 0)
+            if ( auto e = getEdgeId( pos - Vector2i(1, 0), GridSettings::EdgeType::Horizontal ) )
+                edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(1, 1), GridSettings::TriType::Upper ) } );
+
+            // edge (-1, -1)
+            if ( auto e = getEdgeId( pos - Vector2i(1, 1), GridSettings::EdgeType::DiagonalA ) )
+                edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(1, 1), GridSettings::TriType::Lower ) } );
+
+            // edge (0, -1)
+            if ( auto e = getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::Vertical ) )
+            {
+                if ( getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalA ) )
+                    edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Upper ) } );
+                else if ( getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalB ) )
+                    edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Lower ) } );
+                else
+                    edgeRing.push_back( { e.sym(), FaceId{} } );
+            }
+
+            // edge (+1, -1)
+            if ( auto e = getEdgeId( pos - Vector2i(0, 1), GridSettings::EdgeType::DiagonalB ) )
+                edgeRing.push_back( { e.sym(), getFaceId( pos - Vector2i(0, 1), GridSettings::TriType::Upper ) } );
+
+            if ( edgeRing.empty() )
+            {
+                // grid has valid vertex with no connections
+                // init edgePerVertex_[v] with invalid edge to override garbage from resizeNoInit 
+                // (this is only possible case of unpacked vertices here)
+                edgePerVertex_[v] = {};
+                continue;
+            }
+            edgePerVertex_[v] = edgeRing[0].e;
+            for ( int i = 0; i < edgeRing.size(); ++i )
+            {
+                HalfEdgeRecord he( noInit );
+                he.next = i + 1 < edgeRing.size() ? edgeRing[i + 1].e : edgeRing[0].e;
+                he.prev = i > 0 ? edgeRing[i - 1].e : edgeRing.back().e;
+                he.org = v;
+                he.left = edgeRing[i].f;
+                edges_[edgeRing[i].e] = he;
+            }
+        }
+    }, subprogress( cb, 0.0f, 0.5f ) );
+
+    if ( !result )
+        return result;
+
+    return computeValidsFromEdges( subprogress( cb, 0.5f, 1.0f ) );
 }
 
-void MeshTopology::computeValidsFromEdges()
+bool MeshTopology::computeValidsFromEdges( ProgressCallback cb )
 {
     MR_TIMER
     assert( !updateValids_ );
 
     validVerts_.clear();
     validVerts_.resize( edgePerVertex_.size() );
-    BitSetParallelForAll( validVerts_, [&]( VertId v )
+    auto result = BitSetParallelForAll( validVerts_, [&]( VertId v )
     {
         if ( edgePerVertex_[v].valid() )
             validVerts_.set( v );
-    } );
+    }, subprogress( cb, 0.0f, 0.3f ) );
+
+    if ( !result )
+        return result;
 
     numValidVerts_ = parallel_reduce( tbb::blocked_range( 0_v, VertId{ vertSize() } ), 0,
     [&] ( const auto & range, int curr )
@@ -1418,11 +1572,14 @@ void MeshTopology::computeValidsFromEdges()
 
     validFaces_.clear();
     validFaces_.resize( edgePerFace_.size() );
-    BitSetParallelForAll( validFaces_, [&]( FaceId f )
+    result = BitSetParallelForAll( validFaces_, [&]( FaceId f )
     {
         if ( edgePerFace_[f].valid() )
             validFaces_.set( f );
-    } );
+    }, subprogress( cb, 0.6f, 0.9f ) );
+
+    if ( !result )
+        return result;
 
     numValidFaces_ = parallel_reduce( tbb::blocked_range( 0_f, FaceId{ faceSize() } ), 0,
     [&] ( const auto & range, int curr )
@@ -1435,6 +1592,13 @@ void MeshTopology::computeValidsFromEdges()
     [] ( auto a, auto b ) { return a + b; } );
 
     updateValids_ = true;
+
+    if ( cb && !cb( 1.0f ) )
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void MeshTopology::computeAllFromEdges_()
@@ -1514,13 +1678,7 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
     MR_TIMER
     const auto szContours = thisContours.size();
     assert( szContours == fromContours.size() );
-    
-    auto set = []( auto & map, auto key, auto val )
-    {
-        auto [it, inserted] = map.insert( std::make_pair( key, val ) );
-        if ( !inserted )
-            assert( it->second == val );
-    };
+
 
     // in all maps: from index -> to index
     FaceHashMap fmap;
@@ -1535,6 +1693,23 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
         map.tgt2srcVerts->resize( vertSize() );
     if ( map.tgt2srcFaces )
         map.tgt2srcFaces->resize( faceSize() );
+
+    VertBitSet fromVerts = from.getValidVerts();
+    auto setVmap = [&] ( VertId key, VertId val )
+    {
+        if ( fromVerts.test_set( key, false ) )
+        {
+            [[maybe_unused]] bool inserted = vmap.insert( std::make_pair( key, val ) ).second;
+            assert( inserted );
+        }
+#ifndef NDEBUG
+        else
+        {
+            auto it = vmap.find( key );
+            assert( it != vmap.end() && it->second == val );
+        }
+#endif
+    };
 
     UndirectedEdgeBitSet existingEdges; //one of fromContours' edge
     for ( int i = 0; i < szContours; ++i )
@@ -1557,14 +1732,15 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
             auto e1 = thisContour[j];
             assert( !left( e1 ) );
             assert( ( flipOrientation && !from.left( e ) ) || ( !flipOrientation && !from.right( e ) ) );
-            set( vmap, from.org( e ), org( e1 ) );
-            set( vmap, from.dest( e ), dest( e1 ) );
+            setVmap( from.org( e ), org( e1 ) );
+            setVmap( from.dest( e ), dest( e1 ) );
             [[maybe_unused]] bool eInserted = emap.insert( { e.undirected(), e.even() ? e1 : e1.sym() } ).second;
             assert( eInserted ); // all contour edges must be unique
             existingEdges.autoResizeSet( e.undirected() );
         }
     }
 
+    UndirectedEdgeBitSet fromEdges = from.findNotLoneUndirectedEdges() - existingEdges;
     // first pass: fill maps
     EdgeId firstNewEdge = edges_.endId();
     for ( ; fbegin != fend; ++fbegin )
@@ -1574,24 +1750,26 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
         for ( auto e : leftRing( from, efrom ) )
         {
             const UndirectedEdgeId ue = e.undirected();
-            if ( auto [it, inserted] = emap.insert( { ue, {} } ); inserted )
+            if ( fromEdges.test_set( ue, false ) )
             {
-                it->second = edges_.endId();
-                edges_.push_back( from.edges_[EdgeId{ue}] );
-                edges_.push_back( from.edges_[EdgeId{ue}.sym()] );
+                [[maybe_unused]] bool inserted = emap.insert( { ue, edges_.endId() } ).second;
+                assert( inserted );
+                edges_.push_back( from.edges_[EdgeId{ ue }] );
+                edges_.push_back( from.edges_[EdgeId{ ue }.sym()] );
                 if ( map.tgt2srcEdges )
                 {
-                    map.tgt2srcEdges ->push_back( EdgeId{ue} );
+                    map.tgt2srcEdges->push_back( EdgeId{ ue } );
                 }
             }
             if ( auto v = from.org( e ); v.valid() )
             {
-                if ( auto [it, inserted] = vmap.insert( { v, {} } ); inserted )
+                if ( fromVerts.test_set( v, false ) )
                 {
                     auto nv = addVertId();
+                    [[maybe_unused]] bool inserted = vmap.insert( { v, nv } ).second;
+                    assert( inserted );
                     if ( map.tgt2srcVerts )
-                        map.tgt2srcVerts ->push_back( v );
-                    it->second = nv;
+                        map.tgt2srcVerts->push_back( v );
                     edgePerVertex_[nv] = mapEdge( emap, e );
                     if ( updateValids_ )
                     {
@@ -1614,7 +1792,7 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
     }
 
     // in case of open contours, some nearby edges have to be updated
-    std::vector<std::pair<EdgeId, EdgeId>> prevNextEdges;
+    std::vector<EdgePair> prevNextEdges;
     for ( int i = 0; i < szContours; ++i )
     {
         const auto & thisContour = thisContours[i];
@@ -1625,14 +1803,28 @@ void MeshTopology::addPartBy( const MeshTopology & from, I fbegin, I fend, size_
             auto e = fromContour[j];
             auto e1 = thisContour[j];
 
-            auto eNx = flipOrientation ? from.prev( e.sym() ) : from.next( e.sym() );
+            EdgeId eNx = e.sym();
+            for ( ;;) // loop is needed in case of some ring part is not in fromPart, so find next edge in fromPart
+            {
+                eNx = flipOrientation ? from.prev( eNx ) : from.next( eNx );
+                auto cf = flipOrientation ? from.right( eNx ) : from.left( eNx );
+                if ( ( cf && fmap[cf] ) || eNx == e.sym() )
+                    break;
+            }
             if ( !existingEdges.test( eNx.undirected() ) )
             {
                 auto e1Nx = prev( e1.sym() );
                 prevNextEdges.emplace_back( e1Nx, mapEdge( emap, eNx ) );
             }
 
-            auto ePr = flipOrientation ? from.next( e ) : from.prev( e );
+            EdgeId ePr = e;
+            for ( ;;) // loop is needed in case of some ring part is not in fromPart, so find prev edge in fromPart
+            {
+                ePr = flipOrientation ? from.next( ePr ) : from.prev( ePr );
+                auto cf = flipOrientation ? from.left( ePr ) : from.right( ePr );
+                if ( ( cf && fmap[cf] ) || ePr == e )
+                    break;
+            }
             if ( !existingEdges.test( ePr.undirected() ) )
             {
                 auto e1Pr = next( e1 );
@@ -1753,6 +1945,9 @@ void MeshTopology::pack( FaceMap * outFmap, VertMap * outVmap, WholeEdgeMap * ou
     if ( rearrangeTriangles )
         rotateTriangles();
     MeshTopology packed;
+    packed.vertReserve( numValidVerts() );
+    packed.faceReserve( numValidFaces() );
+    packed.edgeReserve( 2 * computeNotLoneUndirectedEdges() );
     packed.addPart( *this, outFmap, outVmap, outEmap, rearrangeTriangles );
     *this = std::move( packed );
 }
@@ -2007,7 +2202,7 @@ void MeshTopology::write( std::ostream & s ) const
     s.write( (const char*)edgePerFace_.data(), edgePerFace_.size() * sizeof(EdgeId) );
 }
 
-VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
+Expected<void> MeshTopology::read( std::istream & s, ProgressCallback callback )
 {
     updateValids_ = false;
 
@@ -2017,11 +2212,8 @@ VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
     if ( !s )
         return unexpected( std::string( "Stream reading error" ) );
 
-    auto posCur = s.tellg();
-    s.seekg( 0, std::ios_base::end );
-    const auto posEnd = s.tellg();
-    s.seekg( posCur );
-    if ( size_t( posEnd - posCur ) < numEdges * sizeof( HalfEdgeRecord ) )
+    const auto streamSize = getStreamSize( s );
+    if ( size_t( streamSize ) < numEdges * sizeof( HalfEdgeRecord ) )
         return unexpected( std::string( "Stream reading error: stream is too short" ) ); // stream is too short
 
     edges_.resize( numEdges );
@@ -2030,7 +2222,7 @@ VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
     {
         return callback( v / 3.f );
     } : callback ) )
-        return unexpected( std::string( "Loading canceled" ) );
+        return unexpectedOperationCanceled();
 
     // read verts
     std::uint32_t numVerts;
@@ -2043,7 +2235,7 @@ VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
     {
         return callback( ( 1.f + v ) / 3.f );
     } : callback ) )
-        return unexpected( std::string( "Loading canceled" ) );
+        return unexpectedOperationCanceled();
 
     // read faces
     std::uint32_t numFaces;
@@ -2056,7 +2248,7 @@ VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
     {
         return callback( ( 2.f + v ) / 3.f );
     } : callback ) )
-        return unexpected( std::string( "Loading canceled" ) );
+        return unexpectedOperationCanceled();
 
     computeValidsFromEdges();
 
@@ -2068,7 +2260,7 @@ VoidOrErrStr MeshTopology::read( std::istream & s, ProgressCallback callback )
 }
 
 
-bool MeshTopology::checkValidity() const
+bool MeshTopology::checkValidity( ProgressCallback cb, bool allVerts ) const
 {
     MR_TIMER
 
@@ -2086,73 +2278,82 @@ bool MeshTopology::checkValidity() const
             failed.store( true, std::memory_order_relaxed );
     };
 
-    tbb::parallel_for( tbb::blocked_range( 0_e, edges_.endId() ), [&]( const tbb::blocked_range<EdgeId> & range )
+    auto result = ParallelFor( edges_, [&] (const EdgeId& e)
     {
-        for ( EdgeId e = range.begin(); e < range.end(); ++e )
-        {
-            if ( failed.load( std::memory_order_relaxed ) )
-                break;
-            parCheck( edges_[edges_[e].next].prev == e );
-            parCheck( edges_[edges_[e].prev].next == e );
-            if ( auto v = edges_[e].org )
-                parCheck( validVerts_.test( v ) );
-            if ( auto f = edges_[e].left )
-                parCheck( validFaces_.test( f ) );
-        }
-    } );
+        if ( failed.load( std::memory_order_relaxed ) )
+            return;
+        parCheck( edges_[edges_[e].next].prev == e );
+        parCheck( edges_[edges_[e].prev].next == e );
+        auto v = edges_[e].org;
+        if ( allVerts && !isLoneEdge( e ) )
+            parCheck( v.valid() );
+        if ( v )
+            parCheck( validVerts_.test( v ) );
+        if ( auto f = edges_[e].left )
+            parCheck( validFaces_.test( f ) );
+    }, subprogress( cb, 0.0f, 0.3f ) );
+
+    if ( !result )
+        return false;
     CHECK( !failed );
 
     std::atomic<int> realValidVerts{ 0 };
-    tbb::parallel_for( tbb::blocked_range( 0_v, edgePerVertex_.endId() ), [&]( const tbb::blocked_range<VertId> & range )
+
+    result = ParallelFor( edgePerVertex_, [&] (const VertId& v)
     {
         int myValidVerts = 0;
-        for ( VertId v = range.begin(); v < range.end(); ++v )
+
+        if ( failed.load( std::memory_order_relaxed ) )
+            return;
+        if ( edgePerVertex_[v].valid() )
         {
-            if ( failed.load( std::memory_order_relaxed ) )
-                break;
-            if ( edgePerVertex_[v].valid() )
-            {
-                parCheck( validVerts_.test( v ) );
-                parCheck( edgePerVertex_[v] < edges_.size() );
-                parCheck( edges_[edgePerVertex_[v]].org == v );
-                ++myValidVerts;
-                for ( EdgeId e : orgRing( *this, v ) )
-                    parCheck( org(e) == v );
-            }
-            else
-            {
-                parCheck( !validVerts_.test( v ) );
-            }
+            parCheck( validVerts_.test( v ) );
+            parCheck( edgePerVertex_[v] < edges_.size() );
+            parCheck( edges_[edgePerVertex_[v]].org == v );
+            ++myValidVerts;
+            for ( EdgeId e : orgRing( *this, v ) )
+                parCheck( org(e) == v );
+        }
+        else
+        {
+            parCheck( !validVerts_.test( v ) );
         }
         realValidVerts.fetch_add( myValidVerts, std::memory_order_relaxed );
-    } );
+    }, subprogress( cb, 0.3f, 0.6f ) );
+
+    if ( !result )
+        return false;
+
     CHECK( !failed );
     CHECK( numValidVerts_ == realValidVerts );
 
     std::atomic<int> realValidFaces{ 0 };
-    tbb::parallel_for( tbb::blocked_range( 0_f, edgePerFace_.endId() ), [&]( const tbb::blocked_range<FaceId> & range )
+
+    result = ParallelFor( edgePerFace_, [&] (const FaceId& f)
     {
         int myValidFaces = 0;
-        for ( FaceId f = range.begin(); f < range.end(); ++f )
+
+        if ( failed.load( std::memory_order_relaxed ) )
+            return;
+        if ( edgePerFace_[f].valid() )
         {
-            if ( failed.load( std::memory_order_relaxed ) )
-                break;
-            if ( edgePerFace_[f].valid() )
-            {
-                parCheck( validFaces_.test( f ) );
-                parCheck( edgePerFace_[f] < edges_.size() );
-                parCheck( edges_[edgePerFace_[f]].left == f );
-                ++myValidFaces;
-                for ( EdgeId e : leftRing( *this, f ) )
-                    parCheck( left(e) == f );
-            }
-            else
-            {
-                parCheck( !validFaces_.test( f ) );
-            }
+            parCheck( validFaces_.test( f ) );
+            parCheck( edgePerFace_[f] < edges_.size() );
+            parCheck( edges_[edgePerFace_[f]].left == f );
+            ++myValidFaces;
+            for ( EdgeId e : leftRing( *this, f ) )
+                parCheck( left(e) == f );
+        }
+        else
+        {
+            parCheck( !validFaces_.test( f ) );
         }
         realValidFaces.fetch_add( myValidFaces, std::memory_order_relaxed );
-    } );
+    }, subprogress( cb, 0.6f, 1.0f ) );
+
+    if ( !result )
+        return false;
+
     CHECK( !failed );
     CHECK( numValidFaces_ == realValidFaces );
 
@@ -2161,6 +2362,30 @@ bool MeshTopology::checkValidity() const
 
 void loadMeshDll()
 {
+}
+
+TEST( MRMesh, splitEdge )
+{
+    MeshTopology topology;
+    EdgeId a = topology.makeEdge();
+    EdgeId b = topology.makeEdge();
+    EdgeId c = topology.makeEdge();
+    EdgeId d = topology.makeEdge();
+    topology.splice( b, a.sym() );
+    topology.splice( c, b.sym() );
+    topology.splice( d, c.sym() );
+    topology.splice( a, d.sym() );
+    EXPECT_TRUE( topology.isLeftQuad( a ) );
+    EXPECT_TRUE( topology.isLeftQuad( a.sym() ) );
+    topology.setLeft( a, topology.addFaceId() );
+    EdgeId a0 = topology.splitEdge( a );
+    EXPECT_TRUE( topology.isLeftTri( a0 ) );
+    EXPECT_TRUE( topology.isLeftQuad( a ) );
+    EXPECT_EQ( topology.getLeftDegree( a.sym() ), 5 );
+    EdgeId a1 = topology.splitEdge( a.sym() );
+    EXPECT_TRUE( topology.isLeftTri( a1.sym() ) );
+    EXPECT_TRUE( topology.isLeftQuad( a ) );
+    EXPECT_EQ( topology.getLeftDegree( a.sym() ), 6 );
 }
 
 } //namespace MR

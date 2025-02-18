@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MRVector3.h"
+#include "MRPch/MRBindingMacros.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h> //SSE instructions
@@ -14,7 +15,7 @@ namespace MR
 
 /**
  * \brief finds index of maximum axis and stores it into dimZ
- * \details \ref http://jcgt.org/published/0002/01/05/paper.pdf
+ * \details http://jcgt.org/published/0002/01/05/paper.pdf
  * Example input: dir = (1,1,-2). Result: dimZ = 2, dimX = 1, dimY = 0.
  * \param[out] dimX are filled by right-hand rule from dimZ
  * \param[out] dimY are filled by right-hand rule from dimZ
@@ -153,7 +154,7 @@ template<>
 struct IntersectionPrecomputes<float>
 {
     // {1.f / dir}
-    __m128 invDir;
+    MR_BIND_IGNORE __m128 invDir;
     // [0]max, [1]next, [2]next-next
     // f.e. {1,2,-3} => {2,1,0}
     int maxDimIdxZ = 2;
@@ -171,10 +172,10 @@ struct IntersectionPrecomputes<float>
         Sy = dir[idxY] / dir[maxDimIdxZ];
         Sz = float( 1 ) / dir[maxDimIdxZ];
 
-        invDir = _mm_set_ps( 
-            ( dir.x == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.x, 
-            ( dir.y == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.y, 
-            ( dir.z == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.z, 
+        invDir = _mm_set_ps(
+            ( dir.x == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.x,
+            ( dir.y == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.y,
+            ( dir.z == 0 ) ? std::numeric_limits<float>::max() : 1 / dir.z,
             1 );
     }
 

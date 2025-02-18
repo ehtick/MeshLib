@@ -36,9 +36,6 @@
     <ClCompile Include="Basic\MRMoveObjectByMouse.cpp">
       <Filter>Basic</Filter>
     </ClCompile>
-    <ClCompile Include="Basic\MRWasmUnavailablePlugin.cpp">
-      <Filter>Basic</Filter>
-    </ClCompile>
     <ClCompile Include="Selectors\MRSelectObjectByClick.cpp">
       <Filter>Selectors</Filter>
     </ClCompile>
@@ -60,10 +57,25 @@
     <ClCompile Include="ViewerButtons\MRAddCustomTheme.cpp">
       <Filter>ViewerButtons</Filter>
     </ClCompile>
-    <ClCompile Include="ViewerButtons\MRViewerSettingsPlugin.cpp">
+    <ClCompile Include="Voxels\MROpenVoxelsFromTiffPlugin.cpp">
+      <Filter>Voxels</Filter>
+    </ClCompile>
+    <ClCompile Include="ViewerButtons\MRActiveListPlugin.cpp">
       <Filter>ViewerButtons</Filter>
     </ClCompile>
-    <ClCompile Include="Voxels\MROpenVoxelsFromTiffPlugin.cpp">
+    <ClCompile Include="Basic\MRShowGlobalBasis.cpp">
+      <Filter>Basic</Filter>
+    </ClCompile>
+    <ClCompile Include="ViewerButtons\MRRotatorPlugin.cpp">
+      <Filter>ViewerButtons</Filter>
+    </ClCompile>
+    <ClCompile Include="Basic\MRObjectInfo.cpp">
+      <Filter>Basic</Filter>
+    </ClCompile>
+    <ClCompile Include="ViewerButtons\MRInvertView.cpp">
+      <Filter>ViewerButtons</Filter>
+    </ClCompile>
+    <ClCompile Include="Voxels\MRBinaryOperationsPlugin.cpp">
       <Filter>Voxels</Filter>
     </ClCompile>
   </ItemGroup>
@@ -96,8 +108,8 @@
     <ClInclude Include="ViewerButtons\MRAddCustomTheme.h">
       <Filter>ViewerButtons</Filter>
     </ClInclude>
-    <ClInclude Include="ViewerButtons\MRViewerSettingsPlugin.h">
-      <Filter>ViewerButtons</Filter>
+    <ClInclude Include="Voxels\MRBinaryOperationsPlugin.h">
+      <Filter>Voxels</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -575,6 +587,186 @@
     </Image>
     <Image Include="resource\icons\X3\Ribbon Scene Unselect all.png">
       <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Plane.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Circle.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Cone.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Cylinder.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Line.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Point.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\BestFit Sphere.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Plane.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Circle.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Cone.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Cylinder.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Line.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Point.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\BestFit Sphere.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Plane.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Circle.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Cone.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Cylinder.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Line.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Point.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\BestFit Sphere.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Plane.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Circle.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Cone.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Cylinder.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Line.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Point.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\BestFit Sphere.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Active Plugins List.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Active Plugins List.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Active Plugins List.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Show_Hide Global Basis.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Show_Hide Global Basis.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Show_Hide Global Basis.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Active Plugins List.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Show_Hide Global Basis.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Ribbon Scene Hide all.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Ribbon Scene Show all.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Ribbon Scene Hide all.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Ribbon Scene Show all.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Ribbon Scene Hide all.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Ribbon Scene Show all.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Ribbon Scene Hide all.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Ribbon Scene Show all.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Object Info.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Rotator.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Object Info.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Rotator.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Object Info.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Rotator.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Object Info.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Rotator.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Invert View.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Invert View.png">
+      <Filter>resource\icons\X0_75</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Invert View.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Invert View.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X3\Binary Operations.png">
+      <Filter>resource\icons\X3</Filter>
+    </Image>
+    <Image Include="resource\icons\X1\Binary Operations.png">
+      <Filter>resource\icons\X1</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_5\Binary Operations.png">
+      <Filter>resource\icons\X0_5</Filter>
+    </Image>
+    <Image Include="resource\icons\X0_75\Binary Operations.png">
+      <Filter>resource\icons\X0_75</Filter>
     </Image>
   </ItemGroup>
 </Project>

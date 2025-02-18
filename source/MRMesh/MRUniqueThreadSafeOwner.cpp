@@ -2,6 +2,7 @@
 #include "MRAABBTree.h"
 #include "MRAABBTreePolyline.h"
 #include "MRAABBTreePoints.h"
+#include "MRDipole.h"
 #include "MRHeapBytes.h"
 #include "MRPch/MRTBB.h"
 #include <cassert>
@@ -70,6 +71,15 @@ void UniqueThreadSafeOwner<T>::reset()
 }
 
 template<typename T>
+void UniqueThreadSafeOwner<T>::update( const std::function<void(T&)> & updater )
+{
+    std::unique_lock lock( mutex_ );
+    assert( !construction_ ); // one thread constructs the object, and this thread updates it
+    if ( obj_ )
+        updater( *obj_ );
+}
+
+template<typename T>
 T & UniqueThreadSafeOwner<T>::getOrCreate( const std::function<T()> & creator )
 {
     /// if many parallel threads call this function simultaneously, they will join one task_group
@@ -129,5 +139,6 @@ template class UniqueThreadSafeOwner<AABBTree>;
 template class UniqueThreadSafeOwner<AABBTreePolyline2>;
 template class UniqueThreadSafeOwner<AABBTreePolyline3>;
 template class UniqueThreadSafeOwner<AABBTreePoints>;
+template class UniqueThreadSafeOwner<Dipoles>;
 
 } //namespace MR

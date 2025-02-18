@@ -12,110 +12,26 @@
 #include "MRTimer.h"
 #include "MRObjectFactory.h"
 #include "MRPointOnFace.h"
-#include "MRMeshLoad.h"
-#include "MRMeshSave.h"
 #include "MRMeshTriPoint.h"
 #include "MRMesh.h"
 #include "MRStreamOperators.h"
-#include "MRCube.h"
-#include "MRObjectMesh.h"
 #include "MRStringConvert.h"
-#include "MRGTest.h"
 #include "MRMeshTexture.h"
 #include "MRDirectory.h"
+#include "MRMeshLoad.h"
+#include "MRMeshSave.h"
+#include "MRObjectMesh.h"
+#include "MRObjectSave.h"
 #include "MRPch/MRSpdlog.h"
 #include "MRPch/MRJson.h"
-#include <filesystem>
-
-#if (defined(__APPLE__) && defined(__clang__)) || defined(__EMSCRIPTEN__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wnullability-extension"
-#endif
-
-#include <zip.h>
-
-#if (defined(__APPLE__) && defined(__clang__)) || defined(__EMSCRIPTEN__)
-#pragma clang diagnostic pop
-#endif
 
 #include <streambuf>
 
 namespace MR
 {
 
-
-UniqueTemporaryFolder::UniqueTemporaryFolder( FolderCallback onPreTempFolderDelete )
-    : onPreTempFolderDelete_( std::move( onPreTempFolderDelete ) )
+Expected<Json::Value> deserializeJsonValue( const std::string& str )
 {
-    MR_TIMER;
-    std::error_code ec;
-    const auto tmp = std::filesystem::temp_directory_path( ec );
-    if ( ec )
-    {
-        spdlog::error( "Cannot get temporary directory: {}", systemToUtf8( ec.message() ) );
-        return;
-    }
-
-    constexpr int MAX_ATTEMPTS = 32;
-    // if the process is terminated in between temporary folder creation and removal, then
-    // all 32 folders can be present, so we use current time to ignore old folders
-    auto t0 = std::time( nullptr );
-    for ( int i = 0; i < MAX_ATTEMPTS; ++i )
-    {
-        auto folder = tmp / ( "MeshInspectorScene" + std::to_string( t0 + i ) );
-        if ( create_directories( folder, ec ) )
-        {
-            folder_ = std::move( folder );
-            spdlog::info( "Temporary folder created: {}", utf8string( folder_ ) );
-            break;
-        }
-    }
-    if ( folder_.empty() )
-        spdlog::error( "Failed to create unique temporary folder" );
-}
-
-UniqueTemporaryFolder::~UniqueTemporaryFolder()
-{
-    if ( folder_.empty() )
-        return;
-    MR_TIMER;
-    if ( onPreTempFolderDelete_ )
-        onPreTempFolderDelete_( folder_ );
-    spdlog::info( "Deleting temporary folder: {}", utf8string( folder_ ) );
-    std::error_code ec;
-    if ( !std::filesystem::remove_all( folder_, ec ) )
-    {
-        spdlog::error( "Failed to remove folder: {}", systemToUtf8( ec.message() ) );
-        return;
-    }
-}
-
-const IOFilters SceneFileFilters =
-{
-    {"MeshInspector scene (.mru)","*.mru"},
-#ifndef MRMESH_NO_GLTF
-    {"glTF JSON scene (.gltf)","*.gltf"},
-    {"glTF binary scene (.glb)","*.glb"}
-#endif
-};
-
-Expected<Json::Value, std::string> deserializeJsonValue( const std::filesystem::path& path )
-{
-    if ( path.empty() )
-        return unexpected( "Cannot find parameters file" );
-
-    std::ifstream ifs( path );
-    if ( !ifs || ifs.bad() )
-        return unexpected( "Cannot open json file " + utf8string( path ) );
-
-    std::string str( ( std::istreambuf_iterator<char>( ifs ) ),
-                     std::istreambuf_iterator<char>() );
-
-    if ( !ifs || ifs.bad() )
-        return unexpected( "Cannot read json file " + utf8string( path ) );
-
-    ifs.close();
-
     Json::Value root;
     Json::CharReaderBuilder readerBuilder;
     std::unique_ptr<Json::CharReader> reader{ readerBuilder.newCharReader() };
@@ -126,358 +42,27 @@ Expected<Json::Value, std::string> deserializeJsonValue( const std::filesystem::
     return root;
 }
 
-// this object stores a handle on open zip-archive, and automatically closes it in the destructor
-class AutoCloseZip
+Expected<Json::Value> deserializeJsonValue( const std::filesystem::path& path )
 {
-public:
-    AutoCloseZip( const char* path, int flags, int* err )
-    {
-        handle_ = zip_open( path, flags, err );
-    }
-    ~AutoCloseZip()
-    {
-        close();
-    }
-    operator zip_t *() const { return handle_; }
-    explicit operator bool() const { return handle_ != nullptr; }
-    int close()
-    {
-        if ( !handle_ )
-            return 0;
-        int res = zip_close( handle_ );
-        handle_ = nullptr;
-        return res;
-    }
+    if ( path.empty() )
+        return unexpected( "Cannot find parameters file" );
 
-private:
-    zip_t * handle_ = nullptr;
-};
+    std::ifstream ifs( path );
+    if ( !ifs || ifs.bad() )
+        return unexpected( "Cannot open json file " + utf8string( path ) );
 
-VoidOrErrStr compressZip( const std::filesystem::path& zipFile, const std::filesystem::path& sourceFolder,
-    const std::vector<std::filesystem::path>& excludeFiles, const char * password, ProgressCallback cb )
-{
-    MR_TIMER
-
-    if ( !reportProgress( cb, 0.0f ) )
-        return unexpectedOperationCanceled();
-
-    std::error_code ec;
-    if ( !std::filesystem::is_directory( sourceFolder, ec ) )
-        return unexpected( "Directory '" + utf8string( sourceFolder ) + "' does not exist" );
-
-    int err;
-    AutoCloseZip zip( utf8string( zipFile ).c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err );
-    if ( !zip )
-        return unexpected( "Cannot create zip, error code: " + std::to_string( err ) );
-
-    auto goodFile = [&]( const std::filesystem::path & path )
-    {
-        if ( !is_regular_file( path, ec ) )
-            return false;
-        auto excluded = std::find_if( excludeFiles.begin(), excludeFiles.end(), [&] ( const auto& a )
-        {
-            return std::filesystem::equivalent( a, path, ec );
-        } );
-        return excluded == excludeFiles.end();
-    };
-
-    // pass #1: add directories in the archive and count the files
-    int totalFiles = 0;
-    for ( auto entry : DirectoryRecursive{ sourceFolder, ec } )
-    {
-        const auto path = entry.path();
-        if ( entry.is_directory( ec ) && path != sourceFolder )
-        {
-            auto archiveDirPath = utf8string( std::filesystem::relative( path, sourceFolder, ec ) );
-            // convert folder separators in Linux style for the latest 7-zip to open archive correctly
-            std::replace( archiveDirPath.begin(), archiveDirPath.end(), '\\', '/' );
-            if ( zip_dir_add( zip, archiveDirPath.c_str(), ZIP_FL_ENC_UTF_8 ) == -1 )
-                return unexpected( "Cannot add directory " + archiveDirPath + " to archive" );
-            continue;
-        }
-
-        if ( goodFile( path ) )
-            ++totalFiles;
-    }
-
-    // pass #2: add files in the archive
-    int compressedFiles = 0;
-    for ( auto entry : DirectoryRecursive{ sourceFolder, ec } )
-    {
-        const auto path = entry.path();
-        if ( !goodFile( path ) )
-            continue;
-
-        auto fileSource = zip_source_file( zip, utf8string( path ).c_str(), 0, 0 );
-        if ( !fileSource )
-            return unexpected( "Cannot open file " + utf8string( path ) + " for reading" );
-
-        auto archiveFilePath = utf8string( std::filesystem::relative( path, sourceFolder, ec ) );
-        // convert folder separators in Linux style for the latest 7-zip to open archive correctly
-        std::replace( archiveFilePath.begin(), archiveFilePath.end(), '\\', '/' );
-        const auto index = zip_file_add( zip, archiveFilePath.c_str(), fileSource, ZIP_FL_OVERWRITE | ZIP_FL_ENC_UTF_8 );
-        if ( index < 0 )
-        {
-            zip_source_free( fileSource );
-            return unexpected( "Cannot add file " + archiveFilePath + " to archive" );
-        }
-
-        if ( password )
-        {
-            if ( zip_file_set_encryption( zip, index, ZIP_EM_AES_256, password ) )
-                return unexpected( "Cannot encrypt file " + archiveFilePath + " in archive" );
-        }
-
-        ++compressedFiles;
-        if ( !reportProgress( cb, std::min( float( compressedFiles ) / totalFiles, 1.0f ) ) )
-            return unexpectedOperationCanceled();
-    }
-
-    if ( zip.close() == -1 )
-        return unexpected( "Cannot close zip" );
-
-    if ( !reportProgress( cb, 1.0f ) )
-        return unexpectedOperationCanceled();
-
-    return {};
+    return addFileNameInError( deserializeJsonValue( ifs ), path );
 }
 
-VoidOrErrStr serializeMesh( const Mesh& mesh, const std::filesystem::path& path, const FaceBitSet* selection /*= nullptr */ )
+Expected<Json::Value> deserializeJsonValue( std::istream& in )
 {
-    ObjectMesh obj;
-    obj.setMesh( std::make_shared<Mesh>( mesh ) );
-    if ( selection )
-        obj.selectFaces( *selection );
-    obj.setName( utf8string( path.stem() ) );
-    return serializeObjectTree( obj, path );
-}
+    std::string str( ( std::istreambuf_iterator<char>( in ) ),
+                     std::istreambuf_iterator<char>() );
 
-VoidOrErrStr decompressZip( const std::filesystem::path& zipFile, const std::filesystem::path& targetFolder, const char * password )
-{
-    std::error_code ec;
-    if ( !std::filesystem::is_directory( targetFolder, ec ) )
-        return unexpected( "Directory does not exist " + utf8string( targetFolder ) );
+    if ( !in || in.bad() )
+        return unexpected( "Cannot read json file" );
 
-    int err;
-    AutoCloseZip zip( utf8string( zipFile ).c_str(), ZIP_RDONLY, &err );
-    if ( !zip )
-        return unexpected( "Cannot open zip, error code: " + std::to_string( err ) );
-
-    if ( password )
-        zip_set_default_password( zip, password );
-
-    zip_stat_t stats;
-    zip_file_t* zfile;
-    std::vector<char> fileBufer;
-    for ( int i = 0; i < zip_get_num_entries( zip, 0 ); ++i )
-    {
-        if ( zip_stat_index( zip, i, 0, &stats ) == -1 )
-            return unexpected( "Cannot process zip content" );
-
-        std::string nameFixed = stats.name;
-        std::replace( nameFixed.begin(), nameFixed.end(), '\\', '/' );
-        std::filesystem::path relativeName = pathFromUtf8( nameFixed );
-        relativeName.make_preferred();
-        std::filesystem::path newItemPath = targetFolder / relativeName;
-        if ( !nameFixed.empty() && nameFixed.back() == '/' )
-        {
-            if ( !std::filesystem::exists( newItemPath.parent_path(), ec ) )
-                if ( !std::filesystem::create_directories( newItemPath.parent_path(), ec ) )
-                    return unexpected( "Cannot create folder " + utf8string( newItemPath.parent_path() ) );
-        }
-        else
-        {
-            zfile = zip_fopen_index(zip,i,0);
-            if ( !zfile )
-                return unexpected( "Cannot open zip file " + nameFixed );
-
-            // in some manually created zip-files there is no folder entries for files in sub-folders;
-            // so let us create directory each time before saving a file in it
-            if ( !std::filesystem::exists( newItemPath.parent_path(), ec ) )
-                if ( !std::filesystem::create_directories( newItemPath.parent_path(), ec ) )
-                    return unexpected( "Cannot create folder " + utf8string( newItemPath.parent_path() ) );
-
-            std::ofstream ofs( newItemPath, std::ios::binary );
-            if ( !ofs || ofs.bad() )
-                return unexpected( "Cannot create file " + utf8string( newItemPath ) );
-
-            fileBufer.resize(stats.size);
-            auto bitesRead = zip_fread(zfile,(void*)fileBufer.data(),fileBufer.size());
-            if ( bitesRead != (zip_int64_t)stats.size )
-                return unexpected( "Cannot read file from zip " + nameFixed );
-
-            zip_fclose(zfile);
-            if ( !ofs.write( fileBufer.data(), fileBufer.size() ) )
-                return unexpected( "Cannot write file from zip " + utf8string( newItemPath ) );
-            ofs.close();
-        }
-    }
-    return {};
-}
-
-VoidOrErrStr serializeObjectTree( const Object& object, const std::filesystem::path& path, 
-    ProgressCallback progressCb, FolderCallback preCompress )
-{
-    MR_TIMER;
-    if (path.empty())
-        return unexpected( "Cannot save to empty path" );
-
-    UniqueTemporaryFolder scenePath( {} );
-    if ( !scenePath )
-        return unexpected( "Cannot create temporary folder" );
-
-    if ( progressCb && !progressCb( 0.0f ) )
-        return unexpected( "Canceled" );
-
-    Json::Value root;
-    root["FormatVersion"] = "0.0";
-    auto saveModelFutures = object.serializeRecursive( scenePath, root, 0 );
-    if ( !saveModelFutures.has_value() )
-        return unexpected( saveModelFutures.error() );
-
-    auto paramsFile = scenePath / ( object.name() + ".json" );
-    std::ofstream ofs( paramsFile );
-    Json::StreamWriterBuilder builder;
-    std::unique_ptr<Json::StreamWriter> writer{ builder.newStreamWriter() };
-    if ( !ofs || writer->write( root, &ofs ) != 0 )
-        return unexpected( "Cannot write parameters " + utf8string( paramsFile ) );
-
-    ofs.close();
-
-#ifdef __EMSCRIPTEN__
-    for ( auto & f : saveModelFutures.value() )
-        f.get();
-#else
-    reportProgress( progressCb, 0.1f );
-
-    auto allSavesDone = [&]()
-    {
-        for ( auto & f : saveModelFutures.value() )
-            if ( f.wait_for( std::chrono::milliseconds(200) ) == std::future_status::timeout )
-                return false;
-        return true;
-    };
-    auto numFinishedSaves = [&]()
-    {
-        int num = 0;
-        for ( auto & f : saveModelFutures.value() )
-            if ( f.wait_for( std::chrono::milliseconds(0) ) != std::future_status::timeout )
-                ++num;
-        return num;
-    };
-
-    // wait for all models are saved before making compressed folder
-    while ( !allSavesDone() )
-    {
-        if ( progressCb )
-        {
-            progressCb( 0.1f + 0.8f * numFinishedSaves() / saveModelFutures.value().size() );
-        }
-    }
-
-    if ( !reportProgress( progressCb, 0.9f ) )
-        return unexpectedOperationCanceled();
-
-#endif
-    if ( preCompress )
-        preCompress( scenePath );
-
-    return compressZip( path, scenePath, {}, nullptr, subprogress( progressCb, 0.9f, 1.0f ) );
-}
-
-Expected<std::shared_ptr<Object>, std::string> deserializeObjectTree( const std::filesystem::path& path, FolderCallback postDecompress,
-                                                                          ProgressCallback progressCb )
-{
-    MR_TIMER;
-    UniqueTemporaryFolder scenePath( postDecompress );
-    if ( !scenePath )
-        return unexpected( "Cannot create temporary folder" );
-    auto res = decompressZip( path, scenePath );
-    if ( !res.has_value() )
-        return unexpected( res.error() );
-
-    return deserializeObjectTreeFromFolder( scenePath, progressCb );
-}
-
-Expected<std::shared_ptr<Object>, std::string> deserializeObjectTreeFromFolder( const std::filesystem::path& folder,
-                                                                                    ProgressCallback progressCb )
-{
-    MR_TIMER;
-
-    std::error_code ec;
-    std::filesystem::path jsonFile;
-    for ( auto entry : Directory{ folder, ec } )
-    {
-        if ( entry.path().extension() == ".json" )
-        {
-            jsonFile = entry.path();
-            break;
-        }
-    }
-
-    auto readRes = deserializeJsonValue( jsonFile );
-    if( !readRes.has_value() )
-    {
-        return unexpected( readRes.error() );
-    }
-    auto root = readRes.value();
-
-    auto typeTreeSize = root["Type"].size();
-    std::shared_ptr<Object> rootObject;
-    for (int i = typeTreeSize-1;i>=0;--i)
-    {
-        const auto& type = root["Type"][unsigned( i )];
-        if ( type.isString() )
-            rootObject = createObject( type.asString() );
-        if ( rootObject )
-            break;
-    }
-    if ( !rootObject )
-        return unexpected( "Unknown root object type" );
-
-    int modelNumber{ 0 };
-    int modelCounter{ 0 };
-    if ( progressCb )
-    {
-        std::function<int( const Json::Value& )> calculateModelNum = [&calculateModelNum] ( const Json::Value& root )
-        {
-            int res{ 1 };
-
-            if ( root["Children"].isNull() )
-                return res;
-
-            for ( const std::string& childKey : root["Children"].getMemberNames() )
-            {
-                if ( !root["Children"].isMember( childKey ) )
-                    continue;
-
-                const auto& child = root["Children"][childKey];
-                if ( child.isNull() )
-                    continue;
-                res += calculateModelNum( child );
-            }
-
-            return res;
-        };
-        modelNumber = calculateModelNum( root );
-
-        modelNumber = std::max( modelNumber, 1 );
-        progressCb = [progressCb, &modelCounter, modelNumber] ( float v )
-        {
-            return progressCb( ( modelCounter + v ) / modelNumber );
-        };
-    }
-
-    auto resDeser = rootObject->deserializeRecursive( folder, root, progressCb, &modelCounter );
-    if ( !resDeser.has_value() )
-    {
-        std::string errorStr = resDeser.error();
-        if ( errorStr != "Loading canceled" )
-            errorStr = "Cannot deserialize: " + errorStr;
-        return unexpected( errorStr );
-    }
-
-    return rootObject;
+    return deserializeJsonValue( str );
 }
 
 void serializeToJson( const Vector2i& vec, Json::Value& root )
@@ -512,6 +97,18 @@ void serializeToJson( const Vector4f& vec, Json::Value& root )
     root["y"] = vec.y;
     root["z"] = vec.z;
     root["w"] = vec.w;
+}
+
+void serializeToJson( const Box3i& box, Json::Value& root )
+{
+    serializeToJson( box.min, root["min"] );
+    serializeToJson( box.max, root["max"] );
+}
+
+void serializeToJson( const Box3f& box, Json::Value& root )
+{
+    serializeToJson( box.min, root["min"] );
+    serializeToJson( box.max, root["max"] );
 }
 
 void serializeToJson( const Color& col, Json::Value& root )
@@ -559,7 +156,7 @@ void serializeToJson( const BitSet& bitset, Json::Value& root )
 {
     std::vector<std::uint8_t> data;
     root["size"] = Json::UInt( bitset.size() );
-    root["bits"] = encode64( (const std::uint8_t*) bitset.m_bits.data(), bitset.num_blocks() * sizeof( BitSet::block_type ) );
+    root["bits"] = encode64( (const std::uint8_t*) bitset.bits().data(), bitset.num_blocks() * sizeof( BitSet::block_type ) );
 }
 
 void serializeToJson( const MeshTexture& texture, Json::Value& root )
@@ -599,14 +196,33 @@ void serializeToJson( const MeshTexture& texture, Json::Value& root )
     root["Data"] = encode64( ( const uint8_t* )texture.pixels.data(), texture.pixels.size() * sizeof( Color ) );
 }
 
+void serializeToJson( const std::vector<TextureId>& texturePerFace, Json::Value& root )
+{
+    if ( texturePerFace.empty() )
+        return;
+    root["Size"] = int( texturePerFace.size() );
+    root["Data"] = encode64( ( const uint8_t* )texturePerFace.data(), texturePerFace.size() * sizeof( TextureId ) );
+}
+
 void serializeToJson( const std::vector<UVCoord>& uvCoords, Json::Value& root )
 {
+    if ( uvCoords.empty() )
+        return;
     root["Size"] = int( uvCoords.size() );
     root["Data"] = encode64( ( const uint8_t* )uvCoords.data(), uvCoords.size() * sizeof( UVCoord ) );
 }
 
+void serializeToJson( const std::vector<Color>& colors, Json::Value& root )
+{
+    if ( colors.empty() )
+        return;
+    root["Size"] = int( colors.size() );
+    root["Data"] = encode64( ( const uint8_t* )colors.data(), colors.size() * sizeof( Color ) );
+}
+
 void serializeViaVerticesToJson( const UndirectedEdgeBitSet& edges, const MeshTopology & topology, Json::Value& root )
 {
+    MR_TIMER
     std::vector<VertId> verts;
     verts.reserve( edges.count() * 2 );
     for ( EdgeId e : edges )
@@ -620,23 +236,25 @@ void serializeViaVerticesToJson( const UndirectedEdgeBitSet& edges, const MeshTo
         }
     }
     static_assert( sizeof( VertId ) == 4 );
-    root["size"] = Json::UInt( edges.size() );
+    root["size"] = Json::UInt( edges.size() ); // saved for old versions of software before 1st July 2024
     root["vertpairs"] = encode64( (const std::uint8_t*) verts.data(), verts.size() * 4 );
 }
 
 void deserializeViaVerticesFromJson( const Json::Value& root, UndirectedEdgeBitSet& edges, const MeshTopology & topology )
 {
-    if ( !root.isObject() || !root["size"].isNumeric() || !root["vertpairs"].isString() )
+    if ( !root.isObject() || !root["vertpairs"].isString() )
     {
         deserializeFromJson( root, edges ); // deserialize from old format
         return;
     }
 
+    MR_TIMER
     edges.clear();
-    edges.resize( root["size"].asInt() );
+    // not edges.resize( root["size"].asInt() ), because edge ids can change after loading mesh from CTM
+    edges.resize( topology.undirectedEdgeSize() );
     auto bin = decode64( root["vertpairs"].asString() );
 
-    for ( size_t i = 0; i < bin.size(); i += 8 )
+    for ( size_t i = 0; i + 8 <= bin.size(); i += 8 )
     {
         VertId o, d;
         static_assert( sizeof( VertId ) == 4 );
@@ -646,18 +264,6 @@ void deserializeViaVerticesFromJson( const Json::Value& root, UndirectedEdgeBitS
         if ( e && e.undirected() < edges.size() )
             edges.set( e.undirected() );
     }
-}
-
-VoidOrErrStr serializeToJson( const Mesh& mesh, Json::Value& root )
-{
-    std::ostringstream out;
-    auto res = MeshSave::toPly( mesh, out );
-    if ( res )
-    {
-        auto binString = out.str();
-        root["ply"] = encode64( (const std::uint8_t*) binString.data(), binString.size() );
-    }
-    return res;
 }
 
 void serializeToJson( const Plane3f& plane, Json::Value& root )
@@ -841,21 +447,8 @@ void deserializeFromJson( const Json::Value& root, BitSet& bitset )
         bitset.resize( root["size"].asInt() );
         auto bin = decode64( root["bits"].asString() );
         auto bytes = std::min( bin.size(), bitset.num_blocks() * sizeof( BitSet::block_type ) );
-        std::copy( bin.begin(), bin.begin() + bytes, (std::uint8_t*) bitset.m_bits.data() );
+        std::copy( bin.begin(), bin.begin() + bytes, (std::uint8_t*) bitset.bits().data() );
     }
-}
-
-Expected<Mesh, std::string> deserializeFromJson( const Json::Value& root, VertColors* colors )
-{
-    if ( !root.isObject() )
-        return unexpected( std::string{ "deserialize mesh: json value is not an object" } );
-
-    if ( !root["ply"].isString() )
-        return unexpected( std::string{ "deserialize mesh: json value does not have 'ply' string"} );
-        
-    auto bin = decode64( root["ply"].asString() );
-    std::istringstream in( std::string( (const char *)bin.data(), bin.size() ) );
-    return MeshLoad::fromPly( in, colors );
 }
 
 void deserializeFromJson( const Json::Value& root, MeshTexture& texture )
@@ -884,7 +477,19 @@ void deserializeFromJson( const Json::Value& root, MeshTexture& texture )
     {
         texture.pixels.resize( texture.resolution.x * texture.resolution.y );
         auto bin = decode64( root["Data"].asString() );
-        std::copy( ( Color* )bin.data(), ( Color* )( bin.data() ) + texture.pixels.size(), texture.pixels.data() );
+        auto numColors = std::min( bin.size() / sizeof( Color ), texture.pixels.size() );
+        std::copy( ( Color* )bin.data(), ( Color* )( bin.data() ) + numColors, texture.pixels.data() );
+    }
+}
+
+void deserializeFromJson( const Json::Value& root, std::vector<TextureId>& texturePerFace )
+{
+    if ( root["Data"].isString() && root["Size"].isInt() )
+    {
+        const auto bin = decode64( root["Data"].asString() );
+        const auto size = std::min<size_t>( root["Size"].asUInt64(), bin.size() / sizeof( TextureId ) );
+        texturePerFace.resize( size );
+        std::copy( ( TextureId* )bin.data(), ( TextureId* )( bin.data() ) + size, texturePerFace.data() );
     }
 }
 
@@ -892,22 +497,58 @@ void deserializeFromJson( const Json::Value& root, std::vector<UVCoord>& uvCoord
 {
     if ( root["Data"].isString() && root["Size"].isInt() )
     {
-        uvCoords.resize( root["Size"].asInt() );
-        auto bin = decode64( root["Data"].asString() );
-        std::copy( ( UVCoord* )bin.data(), ( UVCoord* )( bin.data() ) + uvCoords.size(), uvCoords.data() );
+        const auto bin = decode64( root["Data"].asString() );
+        const auto size = std::min<size_t>( root["Size"].asUInt64(), bin.size() / sizeof( UVCoord ) );
+        uvCoords.resize( size );
+        std::copy( ( UVCoord* )bin.data(), ( UVCoord* )( bin.data() ) + size, uvCoords.data() );
     }
 }
 
-TEST( MRMesh, MeshToJson )
+void deserializeFromJson( const Json::Value& root, std::vector<Color>& colors )
 {
-    Json::Value root;
-    auto mesh = makeCube();
-    auto saveRes = serializeToJson( mesh, root );
-    ASSERT_TRUE( saveRes.has_value() );
-    auto loadRes = deserializeFromJson( root );
-    ASSERT_TRUE( loadRes.has_value() );
-    auto mesh1 = std::move( loadRes.value() );
-    ASSERT_EQ( mesh, mesh1 );
+    if ( root["Data"].isString() && root["Size"].isUInt64() )
+    {
+        const auto bin = decode64( root["Data"].asString() );
+        const auto size = std::min<size_t>( root["Size"].asUInt64(), bin.size() / sizeof( Color ) );
+        colors.resize( size );
+        std::copy( ( Color* )bin.data(), ( Color* )( bin.data() ) + size, colors.data() );
+    }
+}
+
+Expected<void> serializeToJson( const Mesh& mesh, Json::Value& root )
+{
+    std::ostringstream out;
+    auto res = MeshSave::toPly( mesh, out );
+    if ( res )
+    {
+        auto binString = out.str();
+        root["ply"] = encode64( (const std::uint8_t*) binString.data(), binString.size() );
+    }
+    return res;
+}
+
+Expected<Mesh> deserializeFromJson( const Json::Value& root, VertColors* colors )
+{
+    if ( !root.isObject() )
+        return unexpected( std::string{ "deserialize mesh: json value is not an object" } );
+
+    if ( !root["ply"].isString() )
+        return unexpected( std::string{ "deserialize mesh: json value does not have 'ply' string"} );
+
+    auto bin = decode64( root["ply"].asString() );
+    std::istringstream in( std::string( (const char *)bin.data(), bin.size() ) );
+    return MeshLoad::fromPly( in, { .colors = colors } );
+}
+
+Expected<void> serializeMesh( const Mesh& mesh, const std::filesystem::path& path, const FaceBitSet* selection, const char * serializeFormat )
+{
+    ObjectMesh obj;
+    obj.setSerializeFormat( serializeFormat );
+    obj.setMesh( std::make_shared<Mesh>( mesh ) );
+    if ( selection )
+        obj.selectFaces( *selection );
+    obj.setName( utf8string( path.stem() ) );
+    return serializeObjectTree( obj, path );
 }
 
 } // namespace MR

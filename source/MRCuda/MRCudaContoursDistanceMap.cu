@@ -40,7 +40,7 @@ __device__ float2 closestPointOnLineSegm( const float2& pt, const float2& a, con
 
 __global__ void kernel(
     const float2 originPoint, const int2 resolution, const float2 pixelSize,
-    const Node2* __restrict__ nodes, const float2* __restrict__ polylinePoints, const PolylineHalfEdgeRecord* __restrict__ edges,
+    const Node2* __restrict__ nodes, const float2* __restrict__ polylinePoints, const int* __restrict__ orgs,
     float* dists, const size_t size )
 {
     if ( size == 0 )
@@ -66,7 +66,7 @@ __global__ void kernel(
     struct SubTask
     {
         int n;
-        float distSq = 0;
+        float distSq;
     };
 
     constexpr int MaxStackSize = 32; // to avoid allocations
@@ -99,8 +99,8 @@ __global__ void kernel(
         if ( node.leaf() )
         {
             const auto lineId = node.leafId();
-            float2 a = polylinePoints[edges[2 * lineId].y];
-            float2 b = polylinePoints[edges[2 * lineId + 1].y];
+            float2 a = polylinePoints[orgs[2 * lineId]];
+            float2 b = polylinePoints[orgs[2 * lineId + 1]];
             auto proj = closestPointOnLineSegm( pt, a, b );
 
             float distSq = lengthSq( proj - pt );
@@ -129,16 +129,16 @@ __global__ void kernel(
 
 void contoursDistanceMapProjectionKernel( 
     const float2 originPoint, const int2 resolution, const float2 pixelSize,
-    const Node2* nodes, const float2* polylinePoints, const PolylineHalfEdgeRecord* edges, float* dists,
+    const Node2* nodes, const float2* polylinePoints, const int* orgs, float* dists,
     const size_t size )
 {
     constexpr int maxThreadsPerBlock = 640;
-    int numBlocks = ( int( size ) + maxThreadsPerBlock - 1 ) / maxThreadsPerBlock;
+    int numBlocks = int( ( size + maxThreadsPerBlock - 1 ) / maxThreadsPerBlock );
 
     // kernel
     kernel<<< numBlocks, maxThreadsPerBlock >>>(
         originPoint, resolution, pixelSize,
-        nodes, polylinePoints, edges, dists, size );
+        nodes, polylinePoints, orgs, dists, size );
 }
 
 }

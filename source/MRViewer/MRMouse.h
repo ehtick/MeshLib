@@ -10,12 +10,18 @@ enum class MouseButton
     Left = 0, // GLFW_MOUSE_BUTTON_1
     Right = 1, // GLFW_MOUSE_BUTTON_2
     Middle = 2, // GLFW_MOUSE_BUTTON_3
-    Count
+    Count,
+    NoButton = Count
 };
 
+// Standard mouse functions for camera control
 enum class MouseMode
 {
-    None, Rotation, Translation, Count
+    None,
+    Rotation,       // Rotate camera around selected point
+    Translation,    // Translate camera preserving its direction
+    Roll,           // Rotate camera around axis orthogonal to screen
+    Count
 };
 
 inline std::string getMouseModeString( MouseMode mode )
@@ -24,7 +30,8 @@ inline std::string getMouseModeString( MouseMode mode )
     {
         "None",
         "Rotation",
-        "Translation"
+        "Translation",
+        "Roll"
     };
     return names[int( mode )];
 }

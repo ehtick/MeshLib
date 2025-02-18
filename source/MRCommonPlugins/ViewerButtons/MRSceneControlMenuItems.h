@@ -1,6 +1,8 @@
 #pragma once
+
 #include "MRViewer/MRRibbonMenuItem.h"
-#include "MRMesh/MRHistoryStore.h"
+#include "MRViewer/MRHistoryStore.h"
+#include "MRViewer/MRViewerEventsListener.h"
 
 namespace MR
 {
@@ -49,7 +51,8 @@ public:
     {
         Front,
         Top,
-        Buttom = 3,
+        // 2 is skipped
+        Bottom = 3,
         Left,
         Back,
         Right,
@@ -71,12 +74,15 @@ public:
         Horizontal,
         Vertical,
         Quad,
+        Hex,
         Count
     };
    SetViewportConfigPresetMenuItem( Type type );
+   virtual void setCustomUpdateViewports( const std::function<void( const ViewportMask )>& callback ) { updateViewports_ = callback; }
    virtual bool action() override;
 private:
     Type type_;
+    std::function<void( const ViewportMask appendedViewports )> updateViewports_;
 };
 
 }

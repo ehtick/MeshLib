@@ -27,10 +27,20 @@ struct SceneColors
         BackFaces,
         Labels,
         Edges,
+        Points,
         SelectedFaces,
         SelectedEdges,
         SelectedPoints,
-        Count
+        SelectedFeatures,
+        UnselectedFeatures,
+        FeatureBackFaces,
+        SelectedFeatureDecorations,
+        UnselectedFeatureDecorations,
+        SelectedMeasurements,
+        UnselectedMeasurements,
+        SelectedTemporaryMeasurements,
+        UnselectedTemporaryMeasurements,
+        Count [[maybe_unused]],
     };
 
     MRMESH_API static const Color& get( Type type );

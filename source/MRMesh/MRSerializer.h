@@ -5,12 +5,12 @@
 #include "MRVector3.h"
 #include "MRVector4.h"
 #include "MRMatrix2.h"
-#include "MRObject.h"
 #include "MRColor.h"
 #include "MRPlane3.h"
 #include "MRIOFilters.h"
 #include "MRProgressCallback.h"
 #include "MRExpected.h"
+#include <filesystem>
 
 namespace Json
 {
@@ -24,90 +24,15 @@ namespace MR
 /// \ingroup IOGroup
 /// \{
 
-/// this callback will be called before compression on serialization and after decompression on deserialization
-using FolderCallback = std::function<void( const std::filesystem::path& tempFolderName )>;
+MRMESH_API Expected<Json::Value> deserializeJsonValue( std::istream& in );
+MRMESH_API Expected<Json::Value> deserializeJsonValue( const std::string& str );
+MRMESH_API Expected<Json::Value> deserializeJsonValue( const std::filesystem::path& path );
 
-class UniqueTemporaryFolder
-{
-public:
-    /// creates new folder in temp directory
-    MRMESH_API UniqueTemporaryFolder( FolderCallback onPreTempFolderDelete );
-    /// removes folder with all its content
-    MRMESH_API ~UniqueTemporaryFolder();
-
-    explicit operator bool() const
-    {
-        return !folder_.empty();
-    }
-    operator const std::filesystem::path& ( ) const
-    {
-        return folder_;
-    }
-    std::filesystem::path operator /( const std::filesystem::path& child ) const
-    {
-        return folder_ / child;
-    }
-
-private:
-    std::filesystem::path folder_;
-    FolderCallback onPreTempFolderDelete_;
-};
-
-MRMESH_API extern const IOFilters SceneFileFilters;
-
-MRMESH_API Expected<Json::Value, std::string> deserializeJsonValue( const std::filesystem::path& path );
-
-/**
- * \brief saves object subtree in given scene file (zip/mru)
- * \details format specification:
- *  children are saved under folder with name of their parent object
- *  all objects parameters are saved in one JSON file in the root folder
- *  
- * if preCompress is set, it is called before compression
- * saving is controlled with Object::serializeModel_ and Object::serializeFields_
- */
-MRMESH_API VoidOrErrStr serializeObjectTree( const Object& object, 
-    const std::filesystem::path& path, ProgressCallback progress = {}, FolderCallback preCompress = {} );
-/**
- * \brief loads objects tree from given scene file (zip/mru)
- * \details format specification:
- *  children are saved under folder with name of their parent object
- *  all objects parameters are saved in one JSON file in the root folder
- *  
- * if postDecompress is set, it is called after decompression
- * loading is controlled with Object::deserializeModel_ and Object::deserializeFields_
- */
-MRMESH_API Expected<std::shared_ptr<Object>, std::string> deserializeObjectTree( const std::filesystem::path& path,
-    FolderCallback postDecompress = {}, ProgressCallback progressCb = {} );
-
-/**
- * \brief loads objects tree from given scene folder
- * \details format specification:
- *  children are saved under folder with name of their parent object
- *  all objects parameters are saved in one JSON file in the root folder
- *  
- * loading is controlled with Object::deserializeModel_ and Object::deserializeFields_
- */
-MRMESH_API Expected<std::shared_ptr<Object>, std::string> deserializeObjectTreeFromFolder( const std::filesystem::path& folder,
-    ProgressCallback progressCb = {} );
-
-/**
- * \brief decompresses given zip-file into given folder
- * \param password if password is given then it will be used to decipher encrypted archive
- */
-MRMESH_API VoidOrErrStr decompressZip( const std::filesystem::path& zipFile, const std::filesystem::path& targetFolder,
-    const char * password = nullptr );
-/**
- * \brief compresses given folder in given zip-file
- * \param excludeFiles files that should not be included to result zip 
- * \param password if password is given then the archive will be encrypted
- * \param cb an option to get progress notifications and cancel the operation
- */
-MRMESH_API VoidOrErrStr compressZip( const std::filesystem::path& zipFile, const std::filesystem::path& sourceFolder, 
-    const std::vector<std::filesystem::path>& excludeFiles = {}, const char * password = nullptr, ProgressCallback cb = {} );
-
-/// saves mesh with optional selection to mru format
-MRMESH_API VoidOrErrStr serializeMesh( const Mesh& mesh, const std::filesystem::path& path, const FaceBitSet* selection = nullptr );
+/// saves mesh with optional selection to mru format;
+/// this is very convenient for saving intermediate states during algorithm debugging;
+/// ".mrmesh" save mesh format is not space efficient, but guaranties no changes in the topology after loading
+MRMESH_API Expected<void> serializeMesh( const Mesh& mesh, const std::filesystem::path& path, const FaceBitSet* selection = nullptr,
+    const char * serializeFormat = ".mrmesh" );
 
 /// saves an object into json value
 MRMESH_API void serializeToJson( const Vector2i& vec, Json::Value& root );
@@ -115,17 +40,21 @@ MRMESH_API void serializeToJson( const Vector2f& vec, Json::Value& root );
 MRMESH_API void serializeToJson( const Vector3i& vec, Json::Value& root );
 MRMESH_API void serializeToJson( const Vector3f& vec, Json::Value& root );
 MRMESH_API void serializeToJson( const Vector4f& vec, Json::Value& root );
+MRMESH_API void serializeToJson( const Box3i& box, Json::Value& root );
+MRMESH_API void serializeToJson( const Box3f& box, Json::Value& root );
 MRMESH_API void serializeToJson( const Color& col, Json::Value& root );
 MRMESH_API void serializeToJson( const Matrix2f& matrix, Json::Value& root, bool skipIdentity = true );
 MRMESH_API void serializeToJson( const Matrix3f& matrix, Json::Value& root, bool skipIdentity = true );
 MRMESH_API void serializeToJson( const AffineXf2f& xf, Json::Value& root, bool skipIdentity = true );
 MRMESH_API void serializeToJson( const AffineXf3f& xf, Json::Value& root, bool skipIdentity = true );
 MRMESH_API void serializeToJson( const BitSet& bitset, Json::Value& root );
-MRMESH_API VoidOrErrStr serializeToJson( const Mesh& mesh, Json::Value& root );
+MRMESH_API Expected<void> serializeToJson( const Mesh& mesh, Json::Value& root );
 MRMESH_API void serializeToJson( const Plane3f& plane, Json::Value& root );
 MRMESH_API void serializeToJson( const TriPointf& tp, Json::Value& root );
 MRMESH_API void serializeToJson( const MeshTexture& texture, Json::Value& root );
+MRMESH_API void serializeToJson( const std::vector<TextureId>& texturePerFace, Json::Value& root );
 MRMESH_API void serializeToJson( const std::vector<UVCoord>& uvCoords, Json::Value& root );
+MRMESH_API void serializeToJson( const std::vector<Color>& colors, Json::Value& root );
 /// this version takes topology to convert MeshTriPoint in its representation relative a face;
 /// also beware that de-serialization will work only if faces are not renumbered (so please pack mesh before saving)
 MRMESH_API void serializeToJson( const MeshTriPoint& mtp, const MeshTopology& topology, Json::Value& root );
@@ -148,11 +77,13 @@ MRMESH_API void deserializeFromJson( const Json::Value& root, Matrix3f& matrix )
 MRMESH_API void deserializeFromJson( const Json::Value& root, AffineXf2f& xf );
 MRMESH_API void deserializeFromJson( const Json::Value& root, AffineXf3f& xf );
 MRMESH_API void deserializeFromJson( const Json::Value& root, BitSet& bitset );
-MRMESH_API Expected<Mesh, std::string> deserializeFromJson( const Json::Value& root, VertColors* colors = nullptr );
+MRMESH_API Expected<Mesh> deserializeFromJson( const Json::Value& root, VertColors* colors = nullptr );
 MRMESH_API void deserializeFromJson( const Json::Value& root, Plane3f& plane );
 MRMESH_API void deserializeFromJson( const Json::Value& root, TriPointf& tp );
 MRMESH_API void deserializeFromJson( const Json::Value& root, MeshTexture& texture );
+MRMESH_API void deserializeFromJson( const Json::Value& root, std::vector<TextureId>& texturePerFace );
 MRMESH_API void deserializeFromJson( const Json::Value& root, std::vector<UVCoord>& uvCoords );
+MRMESH_API void deserializeFromJson( const Json::Value& root, std::vector<Color>& colors );
 /// this version takes topology to construct MeshTriPoint from its representation relative a face;
 /// also beware that de-serialization will work only if faces are not renumbered (so please pack mesh before saving)
 MRMESH_API void deserializeFromJson( const Json::Value& root, MeshTriPoint& mtp, const MeshTopology& topology );

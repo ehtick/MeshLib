@@ -1,13 +1,15 @@
 #pragma once
+
+#include "MRFeatureObject.h"
 #include "MRMeshFwd.h"
-#include "MRObjectPointsHolder.h"
+#include "MRVisualObject.h"
 
 namespace MR
 {
 
 /// Object to show point feature
 /// \ingroup FeaturesGroup
-class MRMESH_CLASS PointObject : public ObjectPointsHolder
+class MRMESH_CLASS PointObject : public FeatureObject
 {
 public:
     /// Creates simple point object with zero position
@@ -25,15 +27,21 @@ public:
     PointObject( ProtectedStruct, const PointObject& obj ) : PointObject( obj )
     {}
 
-    virtual std::string getClassName() const override { return "Point"; }
+    std::string getClassName() const override { return "Point"; }
+    std::string getClassNameInPlural() const override { return "Points"; }
 
     MRMESH_API virtual std::shared_ptr<Object> clone() const override;
     MRMESH_API virtual std::shared_ptr<Object> shallowClone() const override;
 
     /// calculates point from xf
-    MRMESH_API Vector3f getPoint() const;
+    [[nodiscard]] MRMESH_API Vector3f getPoint( ViewportId id = {} ) const;
     /// updates xf to fit given point
-    MRMESH_API void setPoint( const Vector3f& point );
+    MRMESH_API void setPoint( const Vector3f& point, ViewportId id = {} );
+
+    MRMESH_API virtual  std::vector<FeatureObjectSharedProperty>& getAllSharedProperties() const override;
+
+    [[nodiscard]] MRMESH_API FeatureObjectProjectPointResult projectPoint( const Vector3f& /*point*/, ViewportId id = {} ) const override;
+
 protected:
     PointObject( const PointObject& other ) = default;
 
@@ -42,14 +50,13 @@ protected:
 
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const override;
 
-    virtual Expected<std::future<void>, std::string> serializeModel_( const std::filesystem::path& ) const override
-    { return {}; }
+    virtual Expected<std::future<Expected<void>>> serializeModel_( const std::filesystem::path& ) const override
+        { return {}; }
 
-    virtual VoidOrErrStr deserializeModel_( const std::filesystem::path&, ProgressCallback ) override
-    { return {}; }
+    virtual Expected<void> deserializeModel_( const std::filesystem::path&, ProgressCallback ) override
+        { return {}; }
 
-private:
-    void constructPointCloud_();
+    MRMESH_API void setupRenderObject_() const override;
 };
 
 }

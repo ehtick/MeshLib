@@ -35,18 +35,18 @@ if [ "$EUID" -ne 0 ]; then
  RUN_AS_ROOT="NO"
 fi
 
-if [ $MR_STATE != "DOCKER_BUILD" ]; then
+if [ "$MR_STATE" != "DOCKER_BUILD" ]; then
  sudo -s printf "Root access acquired!\n" && \
- sudo dnf update && sudo dnf install ${MISSED_PACKAGES}
+ sudo dnf update && sudo dnf --setopt=install_weak_deps=False install ${MISSED_PACKAGES}
 else
- sudo dnf -y update && sudo dnf -y  install ${MISSED_PACKAGES}
+ sudo dnf -y update && sudo dnf -y --setopt=install_weak_deps=False install ${MISSED_PACKAGES}
 fi
 
 # check and upgrade python3.11 pip
-python3.11 -m ensurepip --upgrade
-python3.11 -m pip install --upgrade pip
+python3 -m ensurepip --upgrade
+python3 -m pip install --upgrade pip
 
 # install requirements for python libs
-python3.11 -m pip install -r requirements/python.txt
+python3 -m pip install -r requirements/python.txt
 
 exit 0

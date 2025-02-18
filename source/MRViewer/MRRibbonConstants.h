@@ -3,6 +3,11 @@
 #include "MRMesh/MRVector2.h"
 #include "MRMesh/MRColor.h"
 
+namespace
+{
+inline const std::string cPalettePresetKey = "palettePreset";
+}
+
 namespace MR
 {
 constexpr float cGradientButtonFramePadding = 7.5f;
@@ -17,8 +22,9 @@ constexpr float cTopPanelScrollStep = 50.0f;
 constexpr float cTopPanelScrollBtnSize = 20.0f;
 constexpr float cTopPanelAditionalButtonSize = cTabHeight - cTabYOffset;
 constexpr float cSeparateBlocksSpacing = 12.0f;
+constexpr float cSeparatorIndentMultiplier = 0.67f;
 
-constexpr float cRibbonItemInterval = 4.0f; 
+constexpr float cRibbonItemInterval = 4.0f;
 constexpr float cRibbonItemMinWidth = 86.0f;
 constexpr float cRibbonButtonWindowPaddingX = 6.0f;
 constexpr float cRibbonButtonWindowPaddingY = 4.0f;
@@ -38,7 +44,7 @@ constexpr float cHeaderQuickAccessXSpacing = 12.0f;
 constexpr float cHeaderQuickAccessIconSize = 14.0f;
 constexpr float cHeaderQuickAccessFrameSize = 24.0f;
 
-constexpr float cMiddleIconSize = 16.0f;
+constexpr float cMiddleIconSize = 15.0f;
 constexpr float cSmallIconSize = 10.0f;
 constexpr float cQuickAccessBarHeight = 40.0f;
 
@@ -49,8 +55,6 @@ constexpr int cSmallFontSize = 11;
 constexpr int cDefaultFontSize = 13;
 constexpr int cBigFontSize = 15;
 constexpr int cHeadlineFontSize = 20;
-
-constexpr float cPaletteDiscretizationScaling = 5.0f / 18.0f;
 
 constexpr float cRadioButtonSize = 20.0f;
 
@@ -90,6 +94,18 @@ namespace CustomCombo
 constexpr Vector2f framePadding{ 13, 8 };
 
 } // CustomCombo
+
+namespace Notification
+{
+constexpr float cWindowRounding = 4.f;
+constexpr float cWindowSpacing = 20.f;
+constexpr float cWindowBorderWidth = 2.f;
+constexpr float cWindowPadding = 16.f;
+constexpr float cNotificationWindowPaddingX = 10.f;
+constexpr float cNotificationWindowPaddingY = 10.f;
+constexpr float cWindowsPosY = 95.f;
+constexpr float cHistoryButtonSizeY = 28.0f;
+} // Notification
 
 } // MRStyle
 

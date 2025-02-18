@@ -1,5 +1,8 @@
 #pragma once
-#ifndef __EMSCRIPTEN__
+#include "MRViewerFwd.h"
+#ifndef MRVIEWER_NO_VOXELS
+#include "MRVoxels/MRVoxelsFwd.h"
+
 #include "MRMesh/MRIRenderObject.h"
 #include "MRMesh/MRMeshTexture.h"
 #include "MRMesh/MRBuffer.h"
@@ -8,17 +11,18 @@
 
 namespace MR
 {
-class RenderVolumeObject : public IRenderObject
+class MRVIEWER_CLASS RenderVolumeObject : public virtual IRenderObject
 {
 public:
     RenderVolumeObject( const VisualObject& visObj );
     ~RenderVolumeObject();
 
-    virtual void render( const RenderParams& params ) override;
-    virtual void renderPicker( const BaseRenderParams& params, unsigned geomId ) override;
+    virtual bool render( const ModelRenderParams& params ) override;
+    virtual void renderPicker( const ModelBaseRenderParams& params, unsigned geomId ) override;
     virtual size_t heapBytes() const override;
     virtual size_t glBytes() const override;
     virtual void forceBindAll() override;
+
 private:
     const ObjectVoxels* objVoxels_{ nullptr };
 
@@ -30,7 +34,12 @@ private:
     GlTexture3 volume_;
     GlTexture2 denseMap_;
 
-    void render_( const BaseRenderParams& params, unsigned geomId );
+    Vector2i activeVoxelsTextureSize_;
+    GlTexture2 activeVoxelsTex_;
+    int maxTexSize_{ 0 };
+
+    // When rendering for picker, `nonPickerParams` will be null and `geomId` will be zero.
+    void render_( const ModelBaseRenderParams& params, const ModelRenderParams* nonPickerParams, unsigned geomId );
     void bindVolume_( bool picker );
 
     // Create a new set of OpenGL buffer objects
@@ -40,6 +49,8 @@ private:
     void freeBuffers_();
 
     void update_();
+
+    RenderBufferRef<unsigned> loadActiveVoxelsTextureBuffer_();
 
     // Marks dirty buffers that need to be uploaded to OpenGL
     uint32_t dirty_{ 0 };

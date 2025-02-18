@@ -2,164 +2,118 @@ name: Prepare images
 
 on:
   workflow_call:
-    outputs:
-      image_tag:
-        description: "linux image for testing"
-        value: ${{ jobs.image-select.outputs.image_tag }}
-      windows_image_tag:
-        description: "windows image for testing"
-        value: ${{ jobs.image-select.outputs.windows_image_tag }}
+    inputs:
+      docker_image_tag:
+        required: true
+        type: string
+      need_linux_image_rebuild:
+        required: true
+        type: boolean
+      need_windows_vcpkg_rebuild:
+        required: true
+        type: boolean
+      vcpkg_version:
+        required: true
+        type: string
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-env:
-  VCPKG-VERSION: '2023.04.15'
-
 jobs:
-  image-select:
-    timeout-minutes: 5
+  always-success:
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.select-tag.outputs.image_tag }}
-      windows_image_tag: ${{ steps.select-tag.outputs.windows_image_tag }}
-      image_path: ${{ steps.set-path.outputs.image_path }}
-      need_linux_rebuild: ${{ steps.need-rebuild.outputs.need_linux_rebuild }}
-      need_windows_rebuild: ${{ steps.need-rebuild.outputs.need_windows_rebuild }}
-      matrix: ${{ steps.matrix-set.outputs.matrix}}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
-
-      - name: Filter Linux paths
-        uses: dorny/paths-filter@v2
-        id: linux-changes
-        with:
-          filters: |
-            src:
-              - 'docker/ubuntu**'
-              - 'docker/fedora**'
-              - 'docker/emscripten**'
-              - 'requirements/!(windows.txt|macos.txt)'              
-              - 'scripts/build_thirdparty.sh'    
-              - 'scripts/install_apt_requirements.sh'
-              - 'scripts/install_dnf_requirements.sh'
-              - 'thirdparty/!(install.bat|vcpkg/**)'
-
-      - name: Filter Windows paths
-        uses: dorny/paths-filter@v2
-        id: windows-changes
-        with:
-          filters: |
-            src:
-              - 'requirements/windows.txt'
-              - 'thirdparty/vcpkg/**'
-              - 'thirdparty/install.bat'
-
-      - name: Get branch names
-        if: ${{steps.linux-changes.outputs.src == 'true' || steps.windows-changes.outputs.src == 'true'}}
-        id: branch-name
-        uses: tj-actions/branch-names@v6.5
-
-      # if nothing to rebuild: "latest"
-      # else: $branch-name | sed -r 's/[^a-zA-Z0-9._-]+/-/
-      # example: fix/mesh -> fix-mesh
-      - name: Select image tag
-        id: select-tag
-        run: |
-          echo "image_tag=$([ ${{steps.linux-changes.outputs.src}} == 'true' ] && [ ${{github.event_name}} != 'push' ] && echo "${{steps.branch-name.outputs.current_branch}}" | sed -r 's/[^a-zA-Z0-9._-]+/-/g' || \
-          echo "latest")" >> $GITHUB_OUTPUT
-
-      - name: Set image tag base path
-        id: set-path
-        run: |
-          repo_path="MeshLib/MeshLib"
-          echo "image_path=${repo_path,,}" >> $GITHUB_OUTPUT
-
-      - name: Checking whether to start image rebuild
-        id: need-rebuild
-        run: |
-          echo "need_linux_rebuild=${{steps.linux-changes.outputs.src == 'true'}}" >> $GITHUB_OUTPUT
-          echo "need_windows_rebuild=${{steps.windows-changes.outputs.src == 'true'}}" >> $GITHUB_OUTPUT
-
-        #                    [os,     runner-label ]
-        # for MeshLib:       [ubuntu, ubuntu-latest], [fedora, ubuntu-latest], [windows, windows-2019]
-        # for MeshInspector: [ubuntu, ubuntu-latest], [fedora, ubuntu-latest], [emscripten, ubuntu-latest]
-      - name: Select matrix
-        id: matrix-set
-        if: ${{ steps.linux-changes.outputs.src == 'true' }}
-        run: |
-          echo ${{github.repository}}
-          MATRIX=" \
-          {\"include\":[ \
-          {\"dockerfile\":\"ubuntuDockerfile\",     \"image\":\"ubuntu\",         \"os\":\"ubuntu-latest\"}, \
-          {\"dockerfile\":\"ubuntu22Dockerfile\",   \"image\":\"ubuntu22\",       \"os\":\"ubuntu-latest\"}, \
-          {\"dockerfile\":\"ubuntuDockerfile\",     \"image\":\"ubuntu-arm64\",   \"os\":[\"self-hosted\", \"linux-arm64\"]}, \
-          {\"dockerfile\":\"ubuntu22Dockerfile\",   \"image\":\"ubuntu22-arm64\", \"os\":[\"self-hosted\", \"linux-arm64\"]}, \
-          {\"dockerfile\":\"fedora37Dockerfile\",   \"image\":\"fedora37\",       \"os\":\"ubuntu-latest\"}, \
-          {\"dockerfile\":\"emscriptenDockerfile\", \"image\":\"emscripten\",     \"os\":\"ubuntu-latest\"}, \
-          ]}"
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-          echo "$MATRIX"
+      - name: Do nothing
+        run: echo
 
   linux-image-build-upload:
-    needs: [image-select]
-    if: ${{ needs.image-select.outputs.need_linux_rebuild == 'true' && !contains(github.event.pull_request.labels.*.name, 'skip-image-rebuild')}}
-    timeout-minutes: 60
-    runs-on: ${{matrix.os}}
+    if: ${{ inputs.need_linux_image_rebuild }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
-      matrix: ${{fromJson(needs.image-select.outputs.matrix)}}
+      matrix:
+        distro: [ ubuntu20, ubuntu22, ubuntu24, fedora39, emscripten ]
+        arch: [ x64, arm64 ]
+        exclude:
+          - distro: fedora39
+            arch: arm64
+          - distro: emscripten
+            arch: x64
+        include:
+          - arch: x64
+            image-suffix: ''
+            os: ubuntu-latest
+          - arch: arm64
+            image-suffix: '-arm64'
+            os: [ self-hosted, linux-arm64 ]
+    runs-on: ${{ matrix.os }}
     env:
-      DOCKERHUB_BASE_PATH: ${{ needs.image-select.outputs.image_path }}
+      dockerfile: ${{ matrix.distro }}Dockerfile
+      image: meshlib/meshlib-${{ matrix.distro }}${{ matrix.image-suffix }}:${{ inputs.docker_image_tag }}
     steps:
+      - name: Work-around possible permission issues
+        shell: bash
+        run: |
+          # NOTE: {GITHUB_WORKSPACE} != {{ github.workspace }}
+          # Related issue: https://github.com/actions/runner/issues/2058
+          if test -d $GITHUB_WORKSPACE && test -n "$(find ${GITHUB_WORKSPACE} -user root)" ; then
+            mv ${GITHUB_WORKSPACE} ${GITHUB_WORKSPACE}_${RANDOM}
+            mkdir ${GITHUB_WORKSPACE}
+          fi
+
       - name: Remove unused Docker data
-        if: ${{ matrix.distribution != 'windows' }}
         run: docker system prune --force --all --volumes
 
+      - name: Work-around possible permission issues
+        shell: bash
+        run: |
+          # NOTE: {GITHUB_WORKSPACE} != {{ github.workspace }}
+          # Related issue: https://github.com/actions/runner/issues/2058
+          if test -d $GITHUB_WORKSPACE && test -n "$(find ${GITHUB_WORKSPACE} -user root)" ; then
+            mv ${GITHUB_WORKSPACE} ${GITHUB_WORKSPACE}_${RANDOM}
+            mkdir ${GITHUB_WORKSPACE}
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: meshlib
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build Linux image
-        run: docker build -f ./docker/${{matrix.dockerfile}} -t ${{env.DOCKERHUB_BASE_PATH}}-${{matrix.image}}:${{needs.image-select.outputs.image_tag}} . --progress=plain
+        run: docker build -f ./docker/${{ env.dockerfile }} -t ${{ env.image }} . --progress=plain
 
       - name: Push Linux image
-        run: docker push ${{env.DOCKERHUB_BASE_PATH}}-${{matrix.image}}:${{needs.image-select.outputs.image_tag}}
+        run: docker push ${{ env.image }}
 
       - name: Remove unused Docker data
-        if: ${{ matrix.image != 'windows' }}
         run: docker system prune --force --all --volumes
 
   windows-vcpkg-build-upload:
-    needs: [image-select]
-    if: ${{ needs.image-select.outputs.need_windows_rebuild == 'true' && !contains(github.event.pull_request.labels.*.name, 'skip-image-rebuild')}}
+    if: ${{ inputs.need_windows_vcpkg_rebuild }}
     timeout-minutes: 240
     runs-on: windows-2019
     steps:
       - name: Setup vcpkg
         working-directory: C:\vcpkg
         run: |
-          git checkout ${{env.VCPKG-VERSION}}
+          git fetch
+          git checkout ${{ inputs.vcpkg_version }}
           bootstrap-vcpkg.bat
           vcpkg.exe integrate install
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -167,19 +121,3 @@ jobs:
 
       - name: Build and cache vcpkg
         run: .\thirdparty\install.bat --write-s3
-
-      - name: Pack vcpkg
-        run: |
-          cp .\thirdparty\vcpkg\triplets\x64-windows-meshlib.cmake C:\vcpkg\triplets\
-          py -3 scripts/devops/vcpkg-package-export.py --output vcpkg-export-${{env.VCPKG-VERSION}}
-
-      - name: Upload to AWS Codeartifact
-        working-directory: C:\vcpkg
-        run: |
-          aws codeartifact login --tool dotnet --repository meshlib-vcpkg --domain meshlib --domain-owner 259351611210 --region us-east-1
-          nuget push vcpkg-export-${{env.VCPKG-VERSION}}.1.0.0.nupkg -Source meshlib/meshlib-vcpkg -SkipDuplicate
-          
-      - name: Upload to AWS s3
-        working-directory: C:\vcpkg
-        run: |
-          aws s3 cp ./vcpkg-export-${{env.VCPKG-VERSION}}.1.0.0.nupkg s3://vcpkg-export/vcpkg-export-${{env.VCPKG-VERSION}}.1.0.0.nupkg

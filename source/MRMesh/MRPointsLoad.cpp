@@ -2,6 +2,7 @@
 #include "MRTimer.h"
 #include "miniply.h"
 #include "MRColor.h"
+#include "MRIOFormatsRegistry.h"
 #include "MRStringConvert.h"
 #include "MRStreamOperators.h"
 #include "MRProgressReadWrite.h"
@@ -9,59 +10,166 @@
 #include "MRIOParsing.h"
 #include "MRParallelFor.h"
 #include "MRComputeBoundingBox.h"
+#include "MRBitSetParallelFor.h"
+
 #include <fstream>
 
-#ifndef MRMESH_NO_OPENCTM
-#include "OpenCTM/openctm.h"
-#endif
-
-namespace MR
+namespace MR::PointsLoad
 {
 
-namespace PointsLoad
-{
-
-const IOFilters Filters =
-{
-    {"All (*.*)",         "*.*"},
-    {"ASC (.asc)",        "*.asc"},
-    {"CSV (.csv)",        "*.csv"},
-    {"XYZ (.xyz)",        "*.xyz"},
-    {"OBJ (.obj)",        "*.obj"},
-    {"PLY (.ply)",        "*.ply"},
-#ifndef MRMESH_NO_OPENCTM
-    {"CTM (.ctm)",        "*.ctm"},
-#endif
-};
-
-Expected<MR::PointCloud, std::string> fromText( const std::filesystem::path& file, ProgressCallback callback /*= {} */ )
+Expected<PointCloud> fromText( const std::filesystem::path& file, const PointsLoadSettings& settings )
 {
     std::ifstream in( file, std::ifstream::binary );
     if ( !in )
         return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
 
-    return addFileNameInError( fromText( in, callback ), file );
+    return addFileNameInError( fromText( in, settings ), file );
 }
 
-Expected<MR::PointCloud, std::string> fromText( std::istream& in, ProgressCallback callback /*= {} */ )
+Expected<PointCloud> fromText( std::istream& in, const PointsLoadSettings& settings )
 {
-    // read all to buffer
+    MR_TIMER
+
+    auto buf = readCharBuffer( in );
+    if ( !buf )
+        return unexpected( std::move( buf.error() ) );
+
+    if ( !reportProgress( settings.callback, 0.50f ) )
+        return unexpectedOperationCanceled();
+
+    const auto newlines = splitByLines( buf->data(), buf->size() );
+    const auto lineCount = newlines.size() - 1;
+
+    if ( !reportProgress( settings.callback, 0.60f ) )
+        return unexpectedOperationCanceled();
+
+    PointCloud cloud;
+    cloud.points.resizeNoInit( lineCount );
+    cloud.validPoints.resize( lineCount, false );
+
+    // detect normals and colors
+    constexpr Vector3d cInvalidNormal( 0.f, 0.f, 0.f );
+    constexpr Color cInvalidColor( 0, 0, 0, 0 );
+    Vector3d firstPoint;
+    auto hasNormals = false;
+    auto hasColors = false;
+    for ( auto i = 0; i < lineCount; ++i )
+    {
+        const std::string_view line( buf->data() + newlines[i], newlines[i + 1] - newlines[i + 0] );
+        if ( line.empty() || line.starts_with( '#' ) || line.starts_with( ';' ) )
+            continue;
+
+        auto normal = cInvalidNormal;
+        auto color = cInvalidColor;
+        auto result = parseTextCoordinate( line, firstPoint, &normal, &color );
+        if ( !result )
+            return unexpected( std::move( result.error() ) );
+
+        if ( settings.outXf )
+            *settings.outXf = AffineXf3f::translation( Vector3f( firstPoint ) );
+
+        if ( normal != cInvalidNormal )
+        {
+            hasNormals = true;
+            cloud.normals.resizeNoInit( lineCount );
+        }
+        if ( settings.colors && color != cInvalidColor )
+        {
+            hasColors = true;
+            settings.colors->resizeNoInit( lineCount );
+        }
+
+        break;
+    }
+
+    std::string parseError;
+    tbb::task_group_context ctx;
+    const auto keepGoing = BitSetParallelForAll( cloud.validPoints, [&] ( VertId v )
+    {
+        const std::string_view line( buf->data() + newlines[v], newlines[v + 1] - newlines[v + 0] );
+        if ( line.empty() || line.starts_with( '#' ) || line.starts_with( ';' ) )
+            return;
+
+        Vector3d point( noInit );
+        Vector3d normal( noInit );
+        Color color( noInit );
+        auto result = parseTextCoordinate( line, point, hasNormals ? &normal : nullptr, hasColors ? &color : nullptr );
+        if ( !result )
+        {
+            if ( ctx.cancel_group_execution() )
+                parseError = std::move( result.error() );
+            return;
+        }
+
+        cloud.points[v] = Vector3f( settings.outXf ? point - firstPoint : point );
+        cloud.validPoints.set( v, true );
+        if ( hasNormals )
+            cloud.normals[v] = Vector3f( normal );
+        if ( hasColors )
+            ( *settings.colors )[v] = color;
+    }, subprogress( settings.callback, 0.60f, 1.00f ) );
+
+    if ( !keepGoing )
+        return unexpectedOperationCanceled();
+    if ( !parseError.empty() )
+        return unexpected( std::move( parseError ) );
+
+    return cloud;
+}
+
+Expected<MR::PointCloud> fromPts( const std::filesystem::path& file, const PointsLoadSettings& settings )
+{
+    std::ifstream in( file, std::ifstream::binary );
+    if ( !in )
+        return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
+
+    return addFileNameInError( fromPts( in, settings ), file );
+}
+
+Expected<MR::PointCloud> fromPts( std::istream& in, const PointsLoadSettings& settings )
+{
     MR_TIMER;
+    auto startPos = in.tellg();
+    std::string numPointsLine;
+    if ( !std::getline( in, numPointsLine ) )
+        return unexpected( "Cannot read header line" );
+
+    Vector3f testFirstLine;
+    if ( parseTextCoordinate( numPointsLine, testFirstLine ).has_value() )
+    {
+        // asc-like pts file
+        in.clear();
+        in.seekg( startPos );
+        return fromText( in, settings );
+    }
+
+    auto numPoints = std::atoll( numPointsLine.c_str() );
+    if ( numPoints == 0 )
+        return unexpected( "Empty pts file" );
+
     auto dataExp = readCharBuffer( in );
     if ( !dataExp.has_value() )
         return unexpected( dataExp.error() );
 
-    if ( callback && !callback( 0.25f ) )
-        return unexpected( "Loading canceled" );
+    if ( settings.callback && !settings.callback( 0.25f ) )
+        return unexpectedOperationCanceled();
 
     const auto& data = *dataExp;
     auto lineOffsets = splitByLines( data.data(), data.size() );
 
-    int firstLine = 0;
-    Vector3f firstLineCoord;
-    std::string_view headerLine( data.data() + lineOffsets[firstLine], lineOffsets[firstLine + 1] - lineOffsets[firstLine] );
-    if ( !parseTextCoordinate( headerLine, firstLineCoord ).has_value() )
-        firstLine = 1;
+    int firstLine = 1;
+    Vector3d firstLineCoord;
+    Color firstLineColor;
+    std::string_view shitLine( data.data() + lineOffsets[firstLine], lineOffsets[firstLine + 1] - lineOffsets[firstLine] );
+    auto shiftLineRes = parsePtsCoordinate( shitLine, firstLineCoord, firstLineColor );
+    if ( !shiftLineRes.has_value() )
+        return unexpected( shiftLineRes.error() );
+
+    if ( settings.outXf )
+        *settings.outXf = AffineXf3f::translation( Vector3f( firstLineCoord ) );
+
+    if ( settings.colors )
+        settings.colors->resize( lineOffsets.size() - firstLine - 1 );
 
     PointCloud pc;
     pc.points.resize( lineOffsets.size() - firstLine - 1 );
@@ -71,13 +179,19 @@ Expected<MR::PointCloud, std::string> fromText( std::istream& in, ProgressCallba
     auto keepGoing = ParallelFor( pc.points, [&] ( size_t i )
     {
         std::string_view line( data.data() + lineOffsets[firstLine + i], lineOffsets[firstLine + i + 1] - lineOffsets[firstLine + i] );
-        auto parseRes = parseTextCoordinate( line, pc.points[VertId( i )] );
+        Vector3d tempDoubleCoord;
+        Color tempColor;
+        auto parseRes = parsePtsCoordinate( line, tempDoubleCoord, tempColor );
         if ( !parseRes.has_value() && ctx.cancel_group_execution() )
             parseError = std::move( parseRes.error() );
-    }, subprogress( callback, 0.25f, 1.0f ) );
+
+        pc.points[VertId( i )] = Vector3f( tempDoubleCoord - firstLineCoord );
+        if ( settings.colors )
+            ( *settings.colors )[VertId( i )] = tempColor;
+    }, subprogress( settings.callback, 0.25f, 1.0f ) );
 
     if ( !keepGoing )
-        return unexpected( "Loading canceled" );
+        return unexpectedOperationCanceled();
 
     if ( !parseError.empty() )
         return unexpected( parseError );
@@ -86,120 +200,20 @@ Expected<MR::PointCloud, std::string> fromText( std::istream& in, ProgressCallba
     return pc;
 }
 
-#ifndef MRMESH_NO_OPENCTM
-Expected<MR::PointCloud, std::string> fromCtm( const std::filesystem::path& file, VertColors* colors /*= nullptr */, ProgressCallback callback )
+Expected<MR::PointCloud> fromPly( const std::filesystem::path& file, const PointsLoadSettings& settings )
 {
     std::ifstream in( file, std::ifstream::binary );
     if ( !in )
         return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
 
-    return addFileNameInError( fromCtm( in, colors, callback ), file );
+    return addFileNameInError( fromPly( in, settings ), file );
 }
 
-Expected<MR::PointCloud, std::string> fromCtm( std::istream& in, VertColors* colors /*= nullptr */, ProgressCallback callback )
+Expected<MR::PointCloud> fromPly( std::istream& in, const PointsLoadSettings& settings )
 {
     MR_TIMER;
-
-    class ScopedCtmConext
-    {
-        CTMcontext context_ = ctmNewContext( CTM_IMPORT );
-    public:
-        ~ScopedCtmConext()
-        {
-            ctmFreeContext( context_ );
-        }
-        operator CTMcontext()
-        {
-            return context_;
-        }
-    } context;
-
-    struct LoadData
-    {
-        std::function<bool( float )> callbackFn{};
-        std::istream* stream;
-        bool wasCanceled{ false };
-    } loadData;
-    loadData.stream = &in;
 
     const auto posStart = in.tellg();
-    in.seekg( 0, std::ios_base::end );
-    const auto posEnd = in.tellg();
-    in.seekg( posStart );
-
-    if ( callback )
-    {
-        loadData.callbackFn = [callback, posStart, sizeAll = float( posEnd - posStart ), &in]( float )
-        {
-            float progress = float( in.tellg() - posStart ) / sizeAll;
-            return callback( progress );
-        };
-    }
-
-    ctmLoadCustom( context, []( void* buf, CTMuint size, void* data )
-    {
-        LoadData& loadData = *reinterpret_cast< LoadData* >( data );
-        auto& stream = *loadData.stream;
-        auto pos = stream.tellg();
-        loadData.wasCanceled |= !readByBlocks( stream, (char*)buf, size, loadData.callbackFn, 1u << 12 );
-        if ( loadData.wasCanceled )
-            return 0u;
-        return ( CTMuint )( stream.tellg() - pos );
-    }, & loadData );
-
-    auto vertCount = ctmGetInteger( context, CTM_VERTEX_COUNT );
-    auto vertices = ctmGetFloatArray( context, CTM_VERTICES );
-    if ( loadData.wasCanceled )
-        return unexpected( "Loading canceled" );
-    if ( ctmGetError( context ) != CTM_NONE )
-        return unexpected( "Error reading CTM format" );
-
-    if ( colors )
-    {
-        auto colorAttrib = ctmGetNamedAttribMap( context, "Color" );
-        if ( colorAttrib != CTM_NONE )
-        {
-            auto colorArray = ctmGetFloatArray( context, colorAttrib );
-            colors->resize( vertCount );
-            for ( VertId i{ 0 }; CTMuint( i ) < vertCount; ++i )
-            {
-                auto j = 4 * i;
-                ( *colors )[i] = Color( colorArray[j], colorArray[j + 1], colorArray[j + 2], colorArray[j + 3] );
-            }
-        }
-    }
-
-    PointCloud points;
-    points.points.resize( vertCount );
-    points.validPoints.resize( vertCount, true );
-    for ( VertId i{0}; i < (int) vertCount; ++i )
-        points.points[i] = Vector3f( vertices[3 * i], vertices[3 * i + 1], vertices[3 * i + 2] );
-
-    if ( ctmGetInteger( context, CTM_HAS_NORMALS ) == CTM_TRUE )
-    {
-        auto normals = ctmGetFloatArray( context, CTM_NORMALS );
-        points.normals.resize( vertCount );
-        for ( VertId i{0}; i < (int) vertCount; ++i )
-            points.normals[i] = Vector3f( normals[3 * i], normals[3 * i + 1], normals[3 * i + 2] );
-    }
-
-    return points;
-}
-#endif
-
-Expected<MR::PointCloud, std::string> fromPly( const std::filesystem::path& file, VertColors* colors /*= nullptr */, ProgressCallback callback )
-{
-    std::ifstream in( file, std::ifstream::binary );
-    if ( !in )
-        return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
-
-    return addFileNameInError( fromPly( in, colors, callback ), file );
-}
-
-Expected<MR::PointCloud, std::string> fromPly( std::istream& in, VertColors* colors /*= nullptr */, ProgressCallback callback )
-{
-    MR_TIMER;
-
     miniply::PLYReader reader( in );
     if ( !reader.valid() )
         return unexpected( std::string( "PLY file open error" ) );
@@ -209,12 +223,8 @@ Expected<MR::PointCloud, std::string> fromPly( std::istream& in, VertColors* col
 
     std::vector<unsigned char> colorsBuffer;
     PointCloud res;
-
-    const auto posStart = in.tellg();
-    in.seekg( 0, std::ios_base::end );
-    const auto posEnd = in.tellg();
-    in.seekg( posStart );
-    const float streamSize = float( posEnd - posStart );
+    const auto posEnd = reader.get_end_pos();
+    const auto streamSize = float( posEnd - posStart );
 
     for ( int i = 0; reader.has_element() && !gotVerts; reader.next_element(), ++i )
     {
@@ -227,14 +237,20 @@ Expected<MR::PointCloud, std::string> fromPly( std::istream& in, VertColors* col
                 reader.extract_properties( indecies, 3, miniply::PLYPropertyType::Float, res.points.data() );
                 gotVerts = true;
             }
-            if ( colors && reader.find_color( indecies ) )
+            if ( reader.find_normal( indecies ) )
+            {
+                Timer t( "extractNormals" );
+                res.normals.resize( numVerts );
+                reader.extract_properties( indecies, 3, miniply::PLYPropertyType::Float, res.normals.data() );
+            }
+            if ( settings.colors && reader.find_color( indecies ) )
             {
                 colorsBuffer.resize( 3 * numVerts );
                 reader.extract_properties( indecies, 3, miniply::PLYPropertyType::UChar, colorsBuffer.data() );
             }
             const float progress = float( in.tellg() - posStart ) / streamSize;
-            if ( callback && !callback( progress ) )
-                return unexpected( std::string( "Loading canceled" ) );
+            if ( settings.callback && !settings.callback( progress ) )
+                return unexpectedOperationCanceled();
             continue;
         }
     }
@@ -246,37 +262,34 @@ Expected<MR::PointCloud, std::string> fromPly( std::istream& in, VertColors* col
         return unexpected( std::string( "PLY file does not contain vertices" ) );
 
     res.validPoints.resize( res.points.size(), true );
-    if ( colors && !colorsBuffer.empty() )
+    if ( settings.colors && !colorsBuffer.empty() )
     {
-        colors->resize( res.points.size() );
+        settings.colors->resize( res.points.size() );
         for ( VertId i{ 0 }; i < res.points.size(); ++i )
         {
             int ind = 3 * i;
-            ( *colors )[i] = Color( colorsBuffer[ind], colorsBuffer[ind + 1], colorsBuffer[ind + 2] );
+            ( *settings.colors )[i] = Color( colorsBuffer[ind], colorsBuffer[ind + 1], colorsBuffer[ind + 2] );
         }
     }
 
-    return std::move( res );
+    return res;
 }
 
-Expected<MR::PointCloud, std::string> fromObj( const std::filesystem::path& file, ProgressCallback callback )
+Expected<MR::PointCloud> fromObj( const std::filesystem::path& file, const PointsLoadSettings& settings )
 {
     std::ifstream in( file, std::ifstream::binary );
     if ( !in )
         return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
 
-    return addFileNameInError( fromObj( in, callback ), file );
+    return addFileNameInError( fromObj( in, settings ), file );
 }
 
-Expected<MR::PointCloud, std::string> fromObj( std::istream& in, ProgressCallback callback )
+Expected<MR::PointCloud> fromObj( std::istream& in, const PointsLoadSettings& settings )
 {
     PointCloud cloud;
 
     const auto posStart = in.tellg();
-    in.seekg( 0, std::ios_base::end );
-    const auto posEnd = in.tellg();
-    in.seekg( posStart );
-    const float streamSize = float( posEnd - posStart );
+    const auto streamSize = getStreamSize( in );
 
     for ( int i = 0;; ++i )
     {
@@ -299,127 +312,122 @@ Expected<MR::PointCloud, std::string> fromObj( std::istream& in, ProgressCallbac
             std::getline( in, str );
         }
 
-        if ( callback && !( i & 0x3FF ) )
+        if ( settings.callback && !( i & 0x3FF ) )
         {
-            const float progress = float( in.tellg() - posStart ) / streamSize;
-            if ( !callback( progress ) )
-                return unexpected( std::string( "Loading canceled" ) );
+            const float progress = float( in.tellg() - posStart ) / float( streamSize );
+            if ( !settings.callback( progress ) )
+                return unexpectedOperationCanceled();
         }
     }
 
     cloud.validPoints.resize( cloud.points.size(), true );
-    return std::move( cloud );
+    return cloud;
 }
 
-Expected<MR::PointCloud, std::string> fromAsc( const std::filesystem::path& file, ProgressCallback callback )
+Expected<MR::PointCloud> fromDxf( const std::filesystem::path& file, const PointsLoadSettings& settings )
 {
     std::ifstream in( file, std::ifstream::binary );
     if ( !in )
         return unexpected( std::string( "Cannot open file for reading " ) + utf8string( file ) );
 
-    return addFileNameInError( fromAsc( in, callback ), file );
+    return addFileNameInError( fromDxf( in, settings ), file );
 }
 
-Expected<MR::PointCloud, std::string> fromAsc( std::istream& in, ProgressCallback callback )
+Expected<MR::PointCloud> fromDxf( std::istream& in, const PointsLoadSettings& settings )
 {
     PointCloud cloud;
-    bool allNormalsValid = true;
 
     const auto posStart = in.tellg();
-    in.seekg( 0, std::ios_base::end );
-    const auto posEnd = in.tellg();
-    in.seekg( posStart );
-    const float streamSize = float( posEnd - posStart );
+    const auto streamSize = getStreamSize( in );
 
-    for( int i = 0; in; ++i )
+    std::string str;
+    std::getline( in, str );
+
+    int code{};
+    if ( !parseSingleNumber<int>( str, code ) )
+        return unexpected( "File is corrupted" );
+
+    bool isPointFound = false;
+
+    for ( int i = 0; !in.eof(); ++i )
     {
-        std::string str;
+        if ( i % 1024 == 0 && !reportProgress( settings.callback, float( in.tellg() - posStart ) / float( streamSize ) ) )
+            return unexpectedOperationCanceled();
+
         std::getline( in, str );
-        if ( str.empty() && in.eof() )
-            break;
-        if ( !in )
-            return unexpected( std::string( "ASC-stream read error" ) );
-        if ( str.empty() )
-            continue;
-        if ( str[0] == '#' )
-            continue; //comment line
 
-        std::istringstream is( str );
-        float x, y, z;
-        is >> x >> y >> z;
-        if ( !is )
-            return unexpected( std::string( "ASC-format parse error" ) );
-        cloud.points.emplace_back( x, y, z );
-
-        if ( allNormalsValid )
+        if ( str == "POINT" )
         {
-            is >> x >> y >> z;
-            if ( is )
-                cloud.normals.emplace_back( x, y, z );
-            else
+            cloud.points.emplace_back();
+            isPointFound = true;
+        }
+
+        if ( isPointFound )
+        {
+            const int vIdx = code % 10;
+            const int cIdx = code / 10 - 1;
+            if ( vIdx == 0 && cIdx >= 0 && cIdx < 3 )
             {
-                cloud.normals = {};
-                allNormalsValid = false;
+                if ( !parseSingleNumber<float>( str, cloud.points.back()[cIdx] ) )
+                    return unexpected( "File is corrupted" );
             }
         }
 
-        if ( callback && !( i & 0x3FF ) )
-        {
-            const float progress = float( in.tellg() - posStart ) / streamSize;
-            if ( !callback( progress ) )
-                return unexpected( std::string( "Loading canceled" ) );
-        }
+        std::getline( in, str );
+        if ( str.empty() )
+            continue;
+        
+        if ( !parseSingleNumber<int>( str, code ) )
+            return unexpected( "File is corrupted" );
+
+        if ( code == 0 )
+            isPointFound = false;
     }
 
+    if ( !reportProgress( settings.callback, 1.0f ) )
+        return unexpectedOperationCanceled();
+
+    if ( cloud.points.empty() )
+        return unexpected( "No points are found " );
+
     cloud.validPoints.resize( cloud.points.size(), true );
-    return std::move( cloud );
+    return cloud;
 }
 
-Expected<MR::PointCloud, std::string> fromAnySupportedFormat( const std::filesystem::path& file, VertColors* colors /*= nullptr */,
-                                                                  ProgressCallback callback )
+Expected<PointCloud> fromAnySupportedFormat( const std::filesystem::path& file, const PointsLoadSettings& settings )
 {
     auto ext = utf8string( file.extension() );
     for ( auto& c : ext )
         c = (char) tolower( c );
+    ext = "*" + ext;
 
-    Expected<MR::PointCloud, std::string> res = unexpected( std::string( "unsupported file extension" ) );
-    if ( ext == ".ply" )
-        res = MR::PointsLoad::fromPly( file, colors, callback );
-#ifndef MRMESH_NO_OPENCTM
-    else if ( ext == ".ctm" )
-        res = MR::PointsLoad::fromCtm( file, colors, callback );
-#endif
-    else if ( ext == ".obj" )
-        res = MR::PointsLoad::fromObj( file, callback );
-    else if ( ext == ".asc" )
-        res = MR::PointsLoad::fromAsc( file, callback );
-    else if ( ext == ".csv" || ext == ".xyz" )
-        res = MR::PointsLoad::fromText( file, callback );
-    return res;
+    auto loader = getPointsLoader( ext );
+    if ( !loader.fileLoad )
+        return unexpectedUnsupportedFileExtension();
+
+    return loader.fileLoad( file, settings );
 }
 
-Expected<MR::PointCloud, std::string> fromAnySupportedFormat( std::istream& in, const std::string& extension, VertColors* colors /*= nullptr */,
-                                                                  ProgressCallback callback )
+Expected<PointCloud> fromAnySupportedFormat( std::istream& in, const std::string& extension, const PointsLoadSettings& settings )
 {
-    auto ext = extension.substr( 1 );
+    auto ext = extension;
     for ( auto& c : ext )
         c = ( char )tolower( c );
 
-    Expected<MR::PointCloud, std::string> res = unexpected( std::string( "unsupported file extension" ) );
-    if ( ext == ".ply" )
-        res = MR::PointsLoad::fromPly( in, colors, callback );
-#ifndef MRMESH_NO_OPENCTM
-    else if ( ext == ".ctm" )
-        res = MR::PointsLoad::fromCtm( in, colors, callback );
-#endif
-    else if ( ext == ".obj" )
-        res = MR::PointsLoad::fromObj( in, callback );
-    else if ( ext == ".asc" )
-        res = MR::PointsLoad::fromAsc( in, callback );
-    else if ( ext == ".csv" || ext == ".xyz" )
-        res = MR::PointsLoad::fromText( in, callback );
-    return res;
+    auto loader = getPointsLoader( ext );
+    if ( !loader.streamLoad )
+        return unexpectedUnsupportedFileExtension();
+
+    return loader.streamLoad( in, settings );
 }
 
-}
-}
+MR_ADD_POINTS_LOADER( IOFilter( "ASC (.asc)",        "*.asc" ), fromText )
+MR_ADD_POINTS_LOADER( IOFilter( "CSV (.csv)",        "*.csv" ), fromText )
+MR_ADD_POINTS_LOADER( IOFilter( "XYZ (.xyz)",        "*.xyz" ), fromText )
+MR_ADD_POINTS_LOADER( IOFilter( "XYZ (.xyzn)",       "*.xyzn" ), fromText )
+MR_ADD_POINTS_LOADER( IOFilter( "OBJ (.obj)",        "*.obj" ), fromObj )
+MR_ADD_POINTS_LOADER( IOFilter( "PLY (.ply)",        "*.ply" ), fromPly )
+MR_ADD_POINTS_LOADER( IOFilter( "LIDAR scanner (.pts)", "*.pts" ), fromPts )
+MR_ADD_POINTS_LOADER( IOFilter( "DXF (.dxf)",        "*.dxf" ), fromDxf )
+
+} // namespace MR::PointsLoad

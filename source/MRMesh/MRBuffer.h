@@ -96,8 +96,13 @@ public:
 
     [[nodiscard]] auto data() { return data_.get(); }
     [[nodiscard]] auto data() const { return data_.get(); }
+
+    /// returns the identifier of the first element
+    [[nodiscard]] I beginId() const { return I{ size_t(0) }; }
+
     /// returns the identifier of the back() element
     [[nodiscard]] I backId() const { assert( !empty() ); return I{ size() - 1 }; }
+
     /// returns backId() + 1
     [[nodiscard]] I endId() const { return I{ size() }; }
 
@@ -111,9 +116,9 @@ private:
 
 /// given some buffer map and a key, returns the value associated with the key, or default value if key is invalid
 template <typename T, typename I>
-inline T getAt( const Buffer<T, I> & bmap, I key )
+inline T getAt( const Buffer<T, I> & bmap, I key, T def = {} )
 {
-    return key ? T{bmap[key]} : T{};
+    return key ? T{bmap[key]} : def;
 }
 
 template <typename T, typename I>
@@ -140,13 +145,29 @@ struct BMap
     size_t tsize = 0; ///< target size, all values inside b must be less than this value
 };
 
-// mapping of mesh elements: old -> new,
-// the mapping is tight (or packing) in the sense that there are no unused new elements within [0, (e/f/v).tsize)
+/// mapping of mesh elements: old -> new,
+/// the mapping is tight (or packing) in the sense that there are no unused new elements within [0, (e/f/v).tsize)
 struct PackMapping
 {
     UndirectedEdgeBMap e;
     FaceBMap f;
     VertBMap v;
 };
+
+/// computes the composition of two mappings x -> a(b(x))
+template <typename T>
+BMap<T, T> compose( const BMap<T, T> & a, const BMap<T, T> & b )
+{
+    BMap<T, T> res;
+    res.b.resize( b.b.size() );
+    res.tsize = a.tsize;
+    for ( T x( 0 ); x < b.b.size(); ++x )
+    {
+        auto bx = b.b[x];
+        if ( bx < a.b.size() ) //invalid bx (=-1) will be casted to size_t(-1)
+            res.b[x] = a.b[bx];
+    }
+    return res;
+}
 
 } // namespace MR

@@ -1,7 +1,13 @@
 #pragma once
+#include "MRMesh/MRMeshFwd.h"
+#include "MRViewer/MRStatePlugin.h"
 #include "MRViewer/MRRibbonMenuItem.h"
 #include "MRMesh/MRIOFilters.h"
 #include <filesystem>
+
+#ifndef MESHLIB_NO_VOXELS
+#include "MRVoxels/MRVoxelsFwd.h"
+#endif
 
 namespace MR
 {
@@ -11,7 +17,8 @@ class OpenDirectoryMenuItem : public RibbonMenuItem
 {
 public:
     OpenDirectoryMenuItem();
-    virtual bool action() override;
+    std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& ) const override;
+    bool action() override;
     void openDirectory( const std::filesystem::path& directory ) const;
 };
 
@@ -25,8 +32,8 @@ public:
     virtual const DropItemsList& dropItems() const override;
 private:
     virtual bool dragDrop_( const std::vector<std::filesystem::path>& paths ) override;
+    void parseLaunchParams_();
     void setupListUpdate_();
-    bool checkPaths_( const std::vector<std::filesystem::path>& paths );
 
     boost::signals2::scoped_connection recentStoreConnection_;
     FileNamesStack recentPathsCache_;
@@ -34,7 +41,7 @@ private:
     std::shared_ptr<OpenDirectoryMenuItem> openDirectoryItem_;
 };
 
-#ifndef MRMESH_NO_DICOM
+#if !defined( MESHLIB_NO_VOXELS ) && !defined( MRVOXELS_NO_DICOM )
 class OpenDICOMsMenuItem : public RibbonMenuItem
 {
 public:
@@ -43,20 +50,12 @@ public:
 };
 #endif
 
-class SaveObjectMenuItem : public RibbonMenuItem, 
-    public SceneStateOrCheck< 
-    SceneStateExactCheck<1, ObjectMesh> 
-    , SceneStateExactCheck<1, ObjectLines>
-    , SceneStateExactCheck<1, ObjectPoints>
-    , SceneStateExactCheck<1, ObjectDistanceMap>
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-    , SceneStateExactCheck<1, ObjectVoxels, NoVisualRepresentationCheck>
-#endif
-    >
+class SaveObjectMenuItem : public RibbonMenuItem
 {
 public:
     SaveObjectMenuItem();
     virtual bool action() override;
+    virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>&objs ) const override;
 };
 
 class SaveSelectedMenuItem : public RibbonMenuItem, public SceneStateAtLeastCheck<1, Object>
@@ -71,6 +70,7 @@ class SaveSceneAsMenuItem : public RibbonMenuItem
 public:
     SaveSceneAsMenuItem( const std::string& pluginName = "Save Scene As" );
     virtual bool action() override;
+    virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& ) const override;
 
 protected:
     void saveScene_( const std::filesystem::path& savePath );
@@ -83,11 +83,15 @@ public:
     virtual bool action() override;
 };
 
-class CaptureScreenshotMenuItem : public RibbonMenuItem
+class CaptureScreenshotMenuItem : public StatePlugin
 {
 public:
     CaptureScreenshotMenuItem();
-    virtual bool action() override;
+    virtual void drawDialog( float menuScaling, ImGuiContext* ) override;
+    virtual bool blocking() const override { return false; }
+private:
+    Vector2i resolution_;
+    bool transparentBg_{ true };
 };
 
 class CaptureUIScreenshotMenuItem : public RibbonMenuItem

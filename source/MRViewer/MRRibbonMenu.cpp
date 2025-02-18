@@ -1,27 +1,49 @@
 #include "MRRibbonMenu.h"
-#include "MRMesh/MRSystem.h"
-#include "MRMesh/MRStringConvert.h"
-#include "MRMesh/MRSerializer.h"
-#include "MRMesh/MRObjectsAccess.h"
 #include "MRProgressBar.h"
 #include "MRColorTheme.h"
 #include "MRAppendHistory.h"
 #include "MRCommandLoop.h"
-#include "MRMesh/MRChangeSceneObjectsOrder.h"
-#include "MRMesh/MRChangeSceneAction.h"
-#include "MRPch/MRJson.h"
-#include "MRPch/MRSpdlog.h"
-#include "MRPch/MRWasm.h"
 #include "MRRibbonIcons.h"
 #include "MRRibbonConstants.h"
 #include "ImGuiHelpers.h"
-#include "MRMesh/MRString.h"
 #include "MRImGuiImage.h"
 #include "MRFileDialog.h"
-#include "MRMesh/MRChangeXfAction.h"
+#include "MRUITestEngine.h"
+#include "MRViewerSettingsManager.h"
 #include "MRUIStyle.h"
+#include "MRViewport.h"
+#include "MRViewer.h"
+#include "MRSceneCache.h"
+#include "MRShortcutManager.h"
+#include "MRMouseController.h"
+#include "MRRibbonSceneObjectsListDrawer.h"
+#include "MRClipboard.h"
+#include "MRSceneOperations.h"
+#include "MRMesh/MRObjectsAccess.h"
+#include <MRMesh/MRString.h>
+#include <MRMesh/MRSystem.h>
+#include <MRMesh/MRStringConvert.h>
+#include <MRMesh/MRSerializer.h>
+#include <MRMesh/MRObjectsAccess.h>
+#include <MRMesh/MRChangeXfAction.h>
+#include <MRSymbolMesh/MRObjectLabel.h>
+#include <MRMesh/MRChangeSceneObjectsOrder.h>
+#include <MRMesh/MRChangeSceneAction.h>
+#include <MRMesh/MRChangeObjectFields.h>
+#include <MRMesh/MRSceneRoot.h>
+#include <MRMesh/MRObjectPoints.h>
+#include <MRMesh/MRObjectMesh.h>
+#include <MRMesh/MRObjectLines.h>
+#include <MRMesh/MRObjectDistanceMap.h>
+#include <MRMesh/MRPointCloud.h>
+#include <MRMesh/MRMesh.h>
+#include <MRMesh/MRTimer.h>
+#include <MRPch/MRJson.h>
+#include <MRPch/MRSpdlog.h>
+#include <MRPch/MRWasm.h>
 #include <imgui_internal.h> // needed here to fix items dialogs windows positions
 #include <misc/freetype/imgui_freetype.h> // for proper font loading
+#include <regex>
 
 #if defined(__APPLE__) && defined(__clang__)
 #pragma clang diagnostic push
@@ -29,68 +51,47 @@
 #endif
 
 #include <GLFW/glfw3.h>
-#include "MRMesh/MRObjectLabel.h"
 
 #if defined(__APPLE__) && defined(__clang__)
 #pragma clang diagnostic pop
 #endif
 
+// Modifier for shortcuts
+// Some shortcuts still use GLFW_MOD_CONTROL on Mac to avoid conflict with system shortcuts
+#if !defined( __APPLE__ )
+#define CONTROL_OR_SUPER GLFW_MOD_CONTROL
+#else
+#define CONTROL_OR_SUPER GLFW_MOD_SUPER
+#endif
+
 namespace MR
 {
 
-void changeSelection( bool selectNext, int mod )
+namespace
 {
-    using namespace MR;
-    const auto selectable = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selectable );
-    const auto selected = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selected );
-    if ( selectNext )
-    {
-        auto nextIt = std::find_if( selectable.rbegin(), selectable.rend(), [] ( const std::shared_ptr<Object>& obj )
-        {
-            return obj->isSelected();
-        } );
 
-        Object* next{ nullptr };
-        if ( nextIt != selectable.rend() )
-        {
-            auto dist = int( std::distance( nextIt, selectable.rend() ) );
-            if ( dist >= 0 && dist < selectable.size() )
-                next = selectable[dist].get();
-            if ( dist == selectable.size() )
-                next = selectable.back().get();
-        }
+constexpr auto cTransformContextName = "TransformContextWindow";
 
-        if ( mod == 0 ) // uncomment if want multy select holding shift
-            for ( const auto& data : selected )
-                if ( data && data.get() != next )
-                    data->select( false );
-        if ( next )
-            next->select( true );
-    }
-    else
-    {
-        auto prevIt = std::find_if( selectable.begin(), selectable.end(), [] ( const std::shared_ptr<Object>& obj )
-        {
-            return obj->isSelected();
-        } );
+auto getItemCaption( const std::string& name )->const std::string&
+{
+    auto it = RibbonSchemaHolder::schema().items.find( name );
+    if ( it == RibbonSchemaHolder::schema().items.end() )
+        return name;
+    return  it->second.caption.empty() ? name : it->second.caption;
+}
 
-        Object* prev{ nullptr };
-        if ( prevIt != selectable.end() )
-        {
-            auto dist = int( std::distance( selectable.begin(), prevIt ) ) - 1;
-            if ( dist >= 0 && dist < selectable.size() )
-                prev = selectable[dist].get();
-            if ( dist == -1 )
-                prev = selectable.front().get();
-        }
+} //anonymous namespace
 
-        if ( mod == 0 ) // uncomment if want multy select holding shift
-            for ( const auto& data : selected )
-                if ( data && data.get() != prev )
-                    data->select( false );
-        if ( prev )
-            prev->select( true );
-    }
+std::shared_ptr<RibbonMenu> RibbonMenu::instance()
+{
+    return getViewerInstance().getRibbonMenu();
+}
+
+void RibbonMenu::setCustomContextCheckbox(
+    const std::string& name,
+    CustomContextMenuCheckbox customContextMenuCheckbox )
+{
+    customCheckBox_[name] = customContextMenuCheckbox;
 }
 
 void RibbonMenu::init( MR::Viewer* _viewer )
@@ -108,28 +109,42 @@ void RibbonMenu::init( MR::Viewer* _viewer )
     // Draw additional windows
     callback_draw_custom_window = [&] ()
     {
-        prevFrameObjectsCache_ = selectedObjectsCache_;
-        selectedObjectsCache_ = getAllObjectsInTree<const Object>( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        switch ( layoutMode_ )
+        {
+        case MR::RibbonLayoutMode::All:
+            drawTopPanel_();
 
-        drawTopPanel_();
+            drawActiveBlockingDialog_();
+            drawActiveNonBlockingDialogs_();
 
-        drawActiveBlockingDialog_();
-        drawActiveNonBlockingDialogs_();
+            toolbar_.drawToolbar();
+            toolbar_.drawCustomize();
 
-        toolbar_.drawToolbar();
-        toolbar_.drawCustomize();
-        drawRibbonSceneList_();
-        drawRibbonViewportsLabels_();
+            drawRibbonSceneList_();
+            drawRibbonViewportsLabels_();
 
-        draw_helpers();
+            drawActiveList_();
+            draw_helpers();
+
+            drawNotifications_();
+
+            prevFrameSelectedObjectsCache_ = SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>();
+            break;
+        case MR::RibbonLayoutMode::SceneTree:
+            drawRibbonSceneList_();
+            draw_helpers();
+            break;
+        case MR::RibbonLayoutMode::None:
+            break;
+        }
     };
 
     buttonDrawer_.setMenu( this );
     buttonDrawer_.setShortcutManager( getShortcutManager().get() );
     buttonDrawer_.setScaling( menu_scaling() );
-    buttonDrawer_.setOnPressAction( [&] ( std::shared_ptr<RibbonMenuItem> item, bool available )
+    buttonDrawer_.setOnPressAction( [&] ( std::shared_ptr<RibbonMenuItem> item, const std::string& req )
     {
-        itemPressed_( item, available );
+        itemPressed_( item, req );
     } );
     buttonDrawer_.setGetterRequirements( [&] ( std::shared_ptr<RibbonMenuItem> item )
     {
@@ -137,6 +152,9 @@ void RibbonMenu::init( MR::Viewer* _viewer )
     } );
 
     toolbar_.setRibbonMenu( this );
+    std::shared_ptr<RibbonSceneObjectsListDrawer> ribbonObjectsSceneListDrawer = std::make_shared<RibbonSceneObjectsListDrawer>();
+    ribbonObjectsSceneListDrawer->initRibbonMenu( this );
+    sceneObjectsList_ = std::dynamic_pointer_cast< SceneObjectsListDrawer >( ribbonObjectsSceneListDrawer );
 }
 
 void RibbonMenu::shutdown()
@@ -182,6 +200,11 @@ bool RibbonMenu::isTopPannelPinned() const
     return collapseState_ == CollapseState::Pinned;
 }
 
+void RibbonMenu::setQuickAccessListVersion( int version )
+{
+    toolbar_.setItemsListVersion( version );
+}
+
 void RibbonMenu::readQuickAccessList( const Json::Value& root )
 {
     toolbar_.readItemsList( root );
@@ -213,7 +236,7 @@ void RibbonMenu::updateItemStatus( const std::string& itemName )
         {
             // disable old blocking first
             if ( activeBlockingItem_.item && activeBlockingItem_.item != item )
-                itemPressed_( activeBlockingItem_.item, true );
+                itemPressed_( activeBlockingItem_.item );
             activeBlockingItem_ = { item,false };
         }
         else
@@ -237,13 +260,9 @@ void RibbonMenu::updateItemStatus( const std::string& itemName )
         }
         else
         {
-            activeNonBlockingItems_.erase(
-                std::remove_if( activeNonBlockingItems_.begin(), activeNonBlockingItems_.end(), [&] ( const auto& it )
-            {
-                return it.item == item;
-            } ),
-                activeNonBlockingItems_.end()
-                );
+            for ( auto& it : activeNonBlockingItems_ )
+                if ( it.item == item )
+                    it.item = {}; // do not erase while we could be iterating over this item right now, it will be removed from list after it
         }
     }
 }
@@ -251,6 +270,7 @@ void RibbonMenu::updateItemStatus( const std::string& itemName )
 void RibbonMenu::drawActiveBlockingDialog_()
 {
     drawItemDialog_( activeBlockingItem_ );
+    highlightBlocking_();
 }
 
 void RibbonMenu::drawActiveNonBlockingDialogs_()
@@ -269,115 +289,7 @@ void RibbonMenu::drawActiveNonBlockingDialogs_()
 
 void RibbonMenu::drawSearchButton_()
 {
-    const auto scaling = menu_scaling();
-    auto font = fontManager_.getFontByType( RibbonFontManager::FontType::Icons );
-    font->Scale = 0.7f;
-
-    ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, cHeaderQuickAccessFrameRounding * scaling );
-    ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0.0f );
-    ImGui::PushStyleColor( ImGuiCol_Button, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrab ) );
-    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabHovered ) );
-    ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabActive ) );
-
-    auto absMinPos = ImGui::GetCurrentContext()->CurrentWindow->DC.CursorPos;
-
-    float btnSize = scaling * cTopPanelAditionalButtonSize;
-    ImGui::PushFont( font );
-    auto pressed = ImGui::Button( "\xef\x80\x82", ImVec2( btnSize, btnSize ) );
-    ImGui::PopFont();
-
-    font->Scale = 1.0f;
-
-    ImGui::PopStyleColor( 3 );
-    ImGui::PopStyleVar( 2 );
-
-    auto nameWindow = "##RibbonGlobalSearchPopup";
-    bool popupOpened = ImGui::IsPopupOpen( nameWindow );
-
-    // manage search popup
-    if ( pressed && !popupOpened )
-        ImGui::OpenPopup( nameWindow );
-
-    if ( !popupOpened )
-        return;
-
-    if ( ImGuiWindow* menuWindow = ImGui::FindWindowByName( nameWindow ) )
-        if ( menuWindow->WasActive )
-        {
-            ImRect frame;
-            frame.Min = absMinPos;
-            frame.Max = ImVec2( frame.Min.x + ImGui::GetFrameHeight(), frame.Min.y + ImGui::GetFrameHeight() );
-            ImVec2 expectedSize = ImGui::CalcWindowNextAutoFitSize( menuWindow );
-            menuWindow->AutoPosLastDirection = ImGuiDir_Down;
-            ImRect rectOuter = ImGui::GetPopupAllowedExtentRect( menuWindow );
-            ImVec2 pos = ImGui::FindBestWindowPosForPopupEx( frame.GetBL(), expectedSize, &menuWindow->AutoPosLastDirection, rectOuter, frame, ImGuiPopupPositionPolicy_ComboBox );
-            ImGui::SetNextWindowPos( pos );
-        }
-
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_Popup | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove;
-    ImGui::Begin( nameWindow, NULL, window_flags );
-    if ( popupOpened )
-    {
-        // Search line
-        if ( ImGui::IsWindowAppearing() )
-        {
-            searchLine_.clear();
-            searchResult_.clear();
-            ImGui::SetKeyboardFocusHere();
-        }
-        float minSearchSize = 300.0f * scaling;
-        ImGui::SetNextItemWidth( minSearchSize );
-        if ( ImGui::InputText( "##SearchLine", searchLine_ ) )
-            searchResult_ = RibbonSchemaHolder::search( searchLine_ );
-
-        ImGui::PushFont( fontManager_.getFontByType( RibbonFontManager::FontType::Small ) );
-        auto ySize = ( cSmallIconSize + 2 * cRibbonButtonWindowPaddingY ) * scaling;
-        ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
-        ImGui::PushStyleColor( ImGuiCol_ButtonHovered, 
-                               ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabHovered ).getUInt32() );
-        ImGui::PushStyleColor( ImGuiCol_ButtonActive,
-                               ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabActive ).getUInt32() );
-        ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0.0f );
-        int uniqueBtnCounter = 0;
-        for ( const auto& foundItem : searchResult_ )
-        {
-            if ( !foundItem.item )
-                continue;
-            auto pos = ImGui::GetCursorPos();
-            if ( foundItem.tabIndex != -1 )
-            {
-                const auto& tabName = RibbonSchemaHolder::schema().tabsOrder[foundItem.tabIndex].name;
-                auto label = "##SearchTabBtn" + tabName + std::to_string( ++uniqueBtnCounter );
-                auto labelSize = ImGui::CalcTextSize( tabName.c_str() );
-                if ( ImGui::Button( label.c_str(), ImVec2( labelSize.x + 2 * cRibbonButtonWindowPaddingX * scaling, ySize ) ) )
-                {
-                    changeTab_( foundItem.tabIndex );
-                    ImGui::CloseCurrentPopup();
-                }
-                ImVec2 textPos = pos;
-                textPos.x += cRibbonButtonWindowPaddingX * scaling;
-                textPos.y += ( ySize - labelSize.y ) * 0.5f;
-                ImGui::SetCursorPos( textPos );
-                ImGui::Text( "%s", tabName.c_str() );
-                ImGui::SameLine( 0.0f, cRibbonButtonWindowPaddingX * scaling + ImGui::GetStyle().ItemSpacing.x );
-                ImGui::SetCursorPosX( minSearchSize * 0.25f );
-                ImGui::Text( ">" );
-                ImGui::SameLine( 0.0f, cRibbonButtonWindowPaddingX * scaling + ImGui::GetStyle().ItemSpacing.x );
-            }
-            auto width = buttonDrawer_.calcItemWidth( *foundItem.item, DrawButtonParams::SizeType::SmallText );
-            DrawButtonParams params;
-            params.sizeType = DrawButtonParams::SizeType::SmallText;
-            params.iconSize = cSmallIconSize;
-            params.itemSize.y = ySize;
-            params.itemSize.x = width.baseWidth + width.additionalWidth + 2.0f * cRibbonButtonWindowPaddingX * scaling;
-            ImGui::SetCursorPosY( pos.y );
-            buttonDrawer_.drawButtonItem( *foundItem.item, params );
-        }
-        ImGui::PopStyleVar( 1 );
-        ImGui::PopStyleColor( 3 );
-        ImGui::PopFont();
-        ImGui::EndPopup();
-    }
+    searcher_.drawMenuUI( { buttonDrawer_, fontManager_, [this] ( int i ) { changeTab_( i ); }, menu_scaling() } );
 }
 
 void RibbonMenu::drawCollapseButton_()
@@ -390,12 +302,13 @@ void RibbonMenu::drawCollapseButton_()
 
     ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, cHeaderQuickAccessFrameRounding * scaling );
     ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0.0f );
-    ImGui::PushStyleColor( ImGuiCol_Button, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrab ) );
+    ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
     ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabHovered ) );
     ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabActive ) );
 
     if ( collapseState_ == CollapseState::Pinned )
     {
+        ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabText ).getUInt32() );
         ImGui::PushFont( font );
         if ( ImGui::Button( "\xef\x81\x93", ImVec2( btnSize, btnSize ) ) )
         {
@@ -407,15 +320,12 @@ void RibbonMenu::drawCollapseButton_()
 #endif
         }
         ImGui::PopFont();
-        if ( ImGui::IsItemHovered() )
-        {
-            ImGui::BeginTooltip();
-            ImGui::Text( "%s", "Unpin" );
-            ImGui::EndTooltip();
-        }
+        ImGui::PopStyleColor();
+        UI::setTooltipIfHovered( "Unpin", scaling );
     }
     else
     {
+        ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabText ).getUInt32() );
         ImGui::PushFont( font );
         if ( ImGui::Button( "\xef\x81\xb7", ImVec2( btnSize, btnSize ) ) )
         {
@@ -423,12 +333,8 @@ void RibbonMenu::drawCollapseButton_()
             fixViewportsSize_( getViewerInstance().framebufferSize.x, getViewerInstance().framebufferSize.y );
         }
         ImGui::PopFont();
-        if ( ImGui::IsItemHovered() )
-        {
-            ImGui::BeginTooltip();
-            ImGui::Text( "%s", "Pin" );
-            ImGui::EndTooltip();
-        }
+        ImGui::PopStyleColor();
+        UI::setTooltipIfHovered( "Pin", scaling );
     }
     font->Scale = 1.0f;
 
@@ -442,9 +348,6 @@ void RibbonMenu::drawCollapseButton_()
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem );
         if ( hovered && openedTimer_ <= openedMaxSecs_ )
         {
-#ifndef __EMSCRIPTEN__
-            asyncRequest_.reset();
-#endif
             openedTimer_ = openedMaxSecs_;
             collapseState_ = CollapseState::Opened;
         }
@@ -471,6 +374,77 @@ void RibbonMenu::drawCollapseButton_()
                 collapseState_ = CollapseState::Closed;
         }
     }
+}
+
+void RibbonMenu::drawHelpButton_()
+{
+    const auto scaling = menu_scaling();
+    auto font = fontManager_.getFontByType( RibbonFontManager::FontType::Icons );
+    font->Scale = 0.7f;
+
+    float btnSize = scaling * cTopPanelAditionalButtonSize;
+
+    ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, cHeaderQuickAccessFrameRounding * scaling );
+    ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0.0f );
+    ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
+    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabHovered ) );
+    ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabActive ) );
+
+    ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabText ).getUInt32() );
+    ImGui::PushFont( font );
+    if ( ImGui::Button( "\xef\x81\x99", ImVec2( btnSize, btnSize ) ) )
+        OpenLink( "https://meshinspector.com/help/en/" );
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    UI::setTooltipIfHovered( "Open help page", scaling );
+    font->Scale = 1.0f;
+
+    ImGui::PopStyleColor( 3 );
+    ImGui::PopStyleVar( 2 );
+}
+
+bool RibbonMenu::drawCustomCheckBox( const std::vector<std::shared_ptr<Object>>& selected, SelectedTypesMask selectedMask )
+{
+    bool res = false;
+    for ( auto& [name, custom] : customCheckBox_ )
+    {
+        if ( !bool( selectedMask ) || bool( ~custom.selectedMask & selectedMask ) )
+        {
+            continue;
+        }
+
+        bool atLeastOneTrue = false;
+        bool allTrue = true;
+        for ( auto& obj : selected )
+        {
+            if ( !obj )
+            {
+                continue;
+            }
+
+            bool isThisTrue = custom.getter( obj, viewer->viewport().id );
+            atLeastOneTrue = atLeastOneTrue || isThisTrue;
+            allTrue = allTrue && isThisTrue;
+        }
+
+        std::pair<bool, bool> realRes{ atLeastOneTrue, allTrue };
+
+        if ( UI::checkboxMixed( name.c_str(), &realRes.first, !realRes.second && realRes.first ) )
+        {
+            for ( auto& obj : selected )
+            {
+                if ( !obj )
+                {
+                    continue;
+                }
+
+                custom.setter( obj, viewer->viewport().id, realRes.first );
+            }
+            res = true;
+        }
+    }
+
+    return res;
 }
 
 void RibbonMenu::sortObjectsRecursive_( std::shared_ptr<Object> object )
@@ -514,6 +488,7 @@ void RibbonMenu::drawHeaderQuickAccess_()
     ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, itemSpacing );
     ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, cHeaderQuickAccessFrameRounding * menuScaling );
     ImGui::PushFont( fontManager_.getFontByType( RibbonFontManager::FontType::Small ) );
+    UI::TestEngine::pushTree( "QuickAccess" );
     for ( const auto& item : RibbonSchemaHolder::schema().headerQuickAccessList )
     {
         auto it = RibbonSchemaHolder::schema().items.find( item );
@@ -528,6 +503,7 @@ void RibbonMenu::drawHeaderQuickAccess_()
         buttonDrawer_.drawButtonItem( it->second, params );
         ImGui::SameLine();
     }
+    UI::TestEngine::popTree(); // "QuickAccess"
     ImGui::PopFont();
     ImGui::PopStyleVar( 2 );
 
@@ -550,26 +526,31 @@ void RibbonMenu::drawHeaderPannel_()
 
     ImGui::PushFont( fontManager_.getFontByType( RibbonFontManager::FontType::SemiBold ) );
     // TODO_store: this needs recalc only on scaling change, no need to calc each frame
-    std::vector<float> textSizes( RibbonSchemaHolder::schema().tabsOrder.size() );// TODO_store: add to some store at the beginning not to calc each time  
-    std::vector<float> tabSizes( RibbonSchemaHolder::schema().tabsOrder.size() );// TODO_store: add to some store at the beginning not to calc each time  
+    const auto& schema = RibbonSchemaHolder::schema();
+    std::vector<float> textSizes( schema.tabsOrder.size() );// TODO_store: add to some store at the beginning not to calc each time
+    std::vector<float> tabSizes( schema.tabsOrder.size() );// TODO_store: add to some store at the beginning not to calc each time
     auto summaryTabPannelSize = 2 * 12.0f * menuScaling - cTabsInterval * menuScaling; // init shift (by eye, not defined in current design maket)
     for ( int i = 0; i < tabSizes.size(); ++i )
     {
-        const auto& tabStr = RibbonSchemaHolder::schema().tabsOrder[i].name;
+        if ( schema.tabsOrder[i].experimental && !getViewerInstance().experimentalFeatures )
+            continue;
+        const auto& tabStr = schema.tabsOrder[i].name;
         textSizes[i] = ImGui::CalcTextSize( tabStr.c_str() ).x;
         tabSizes[i] = std::max( textSizes[i] + cTabLabelMinPadding * 2 * menuScaling, cTabMinimumWidth * menuScaling );
         summaryTabPannelSize += ( tabSizes[i] + cTabsInterval * menuScaling );
     }
     // prepare active button
-    bool hasActive = activeBlockingItem_.item || !activeNonBlockingItems_.empty();
-    float activeTextSize = ImGui::CalcTextSize( "Active" ).x;
-    float activeBtnSize = std::max( activeTextSize + cTabLabelMinPadding * 2 * menuScaling, cTabMinimumWidth * menuScaling );
-    if ( hasActive )
-        summaryTabPannelSize += ( activeBtnSize + cTabsInterval * menuScaling );
+    bool needActive = hasAnyActiveItem() && toolbar_.getCurrentToolbarWidth() == 0.0f;
+    float activeBtnSize = cTabHeight * menuScaling - 4 * menuScaling; // small offset from border
 
-    // 40 - search button size (by eye)
-    // 40 - collapse button size (by eye)
-    auto availWidth = ImGui::GetContentRegionAvail().x - 2 * 40.0f * menuScaling; 
+    // 40 - active button size (optional)
+    // 40 - help button size
+    // 40 - search button size
+    // 40 - collapse button size
+    auto availWidth = ImGui::GetContentRegionAvail().x - ( ( needActive ? 3 : 2 ) * 40.0f ) * menuScaling;
+    searcher_.setSmallUI( availWidth - summaryTabPannelSize < searcher_.getSearchStringWidth() * menuScaling );
+    const float searcherWidth = searcher_.getWidthMenuUI();
+    availWidth -= searcherWidth * menuScaling;
 
     float scrollMax = summaryTabPannelSize - availWidth;
     bool needScroll = scrollMax > 0.0f;
@@ -600,7 +581,7 @@ void RibbonMenu::drawHeaderPannel_()
     {
         ImGui::SetCursorPosX( cTabsInterval * menuScaling );
         const float btnSize = 0.5f * fontManager_.getFontSizeByType( RibbonFontManager::FontType::Icons );
-        if ( buttonDrawer_.drawCustomStyledButton( "\xef\x81\x88", ImVec2( cTopPanelScrollBtnSize * menuScaling, ( cTabYOffset + cTabHeight ) * menuScaling ), btnSize ) )
+        if ( buttonDrawer_.drawTabArrowButton( "\xef\x81\x88", ImVec2( cTopPanelScrollBtnSize * menuScaling, ( cTabYOffset + cTabHeight ) * menuScaling ), btnSize ) )
         {
             tabPanelScroll_ -= cTopPanelScrollStep * menuScaling;
             if ( tabPanelScroll_ < 0.0f )
@@ -611,6 +592,7 @@ void RibbonMenu::drawHeaderPannel_()
     ImGui::SetCursorPosX( tabsWindowPosX );
     ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2( 0, 0 ) );
     ImGui::BeginChild( "##TabsHeaderWindow", ImVec2( tabsWindowWidth, ( cTabYOffset + cTabHeight ) * menuScaling ) );
+    UI::TestEngine::pushTree( "RibbonTabs" );
     ImGui::PopStyleVar();
     auto window = ImGui::GetCurrentContext()->CurrentWindow;
 
@@ -621,9 +603,17 @@ void RibbonMenu::drawHeaderPannel_()
     }
     basePos.x += 12.0f * menuScaling;// temp hardcoded offset
     basePos.y = cTabYOffset * menuScaling - 1;// -1 due to ImGui::TabItemBackground internal offset
-    for ( int i = 0; i < RibbonSchemaHolder::schema().tabsOrder.size(); ++i )
+    for ( int i = 0; i < schema.tabsOrder.size(); ++i )
     {
-        const auto& tabStr = RibbonSchemaHolder::schema().tabsOrder[i].name;
+        if ( schema.tabsOrder[i].experimental && !getViewerInstance().experimentalFeatures )
+        {
+            if ( activeTabIndex_ == i )
+            {
+                activeTabIndex_ = ( activeTabIndex_ + 1 ) % int( schema.tabsOrder.size() );
+            }
+            continue;
+        }
+        const auto& tabStr = schema.tabsOrder[i].name;
         const auto& tabWidth = tabSizes[i];
         ImVec2 tabBbMaxPoint( basePos.x + tabWidth, basePos.y + cTabHeight * menuScaling + 2 ); // +2 due to TabItemBackground internal offset
         ImRect tabRect( basePos, tabBbMaxPoint );
@@ -632,12 +622,13 @@ void RibbonMenu::drawHeaderPannel_()
         ImGui::ItemAdd( tabRect, tabId );
         bool hovered, held;
         bool pressed = ImGui::ButtonBehavior( tabRect, tabId, &hovered, &held );
+        pressed = UI::TestEngine::createButton( tabStr ) || pressed; // Must not short-circuit.
         if ( pressed )
             changeTab_( i );
 
         if ( activeTabIndex_ == i || hovered || pressed )
         {
-            Color tabRectColor; 
+            Color tabRectColor;
             if ( activeTabIndex_ == i )
             {
                 if ( pressed )
@@ -669,19 +660,15 @@ void RibbonMenu::drawHeaderPannel_()
 
         basePos.x += ( tabWidth + cTabsInterval * menuScaling );
     }
-    if ( hasActive )
-    {
-        drawActiveListButton_( basePos, activeBtnSize, activeTextSize );
-        basePos.x += ( activeBtnSize + cTabsInterval * menuScaling );
-    }
     ImGui::Dummy( ImVec2( 0, 0 ) );
     ImGui::EndChild();
+    UI::TestEngine::popTree(); // "RibbonTabs"
     if ( needFwdBtn )
     {
         ImGui::SameLine();
         ImGui::SetCursorPosX( ImGui::GetCursorPosX() + cTabsInterval * menuScaling );
         const float btnSize = 0.5f * fontManager_.getFontSizeByType( RibbonFontManager::FontType::Icons );
-        if ( buttonDrawer_.drawCustomStyledButton( "\xef\x81\x91", ImVec2( cTopPanelScrollBtnSize * menuScaling, ( cTabYOffset + cTabHeight ) * menuScaling ), btnSize ) )
+        if ( buttonDrawer_.drawTabArrowButton( "\xef\x81\x91", ImVec2( cTopPanelScrollBtnSize * menuScaling, ( cTabYOffset + cTabHeight ) * menuScaling ), btnSize ) )
         {
             if ( !needFwdBtn )
                 tabPanelScroll_ += tabsWindowPosX * menuScaling;//size of back btn
@@ -698,102 +685,212 @@ void RibbonMenu::drawHeaderPannel_()
     ImGui::GetCurrentContext()->CurrentWindow->DrawList->AddLine( ImVec2( 0, separateLinePos ), ImVec2( float( getViewerInstance().framebufferSize.x ), separateLinePos ),
                                                                   ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::HeaderSeparator ).getUInt32() );
 
+    if ( needActive )
+    {
+        ImGui::SetCursorPos( ImVec2( float( getViewerInstance().framebufferSize.x ) -
+            ( 110 + searcherWidth ) * menuScaling, cTabYOffset * menuScaling ) );
+        drawActiveListButton_( activeBtnSize );
+    }
+
+    ImGui::SetCursorPos( ImVec2( float( getViewerInstance().framebufferSize.x ) - ( 70.f + searcherWidth ) * menuScaling, cTabYOffset * menuScaling ) );
+    drawSearchButton_();
 
     ImGui::SetCursorPos( ImVec2( float( getViewerInstance().framebufferSize.x ) - 70.0f * menuScaling, cTabYOffset* menuScaling ) );
-    drawSearchButton_();
+    drawHelpButton_();
 
     ImGui::SetCursorPos( ImVec2( float( getViewerInstance().framebufferSize.x ) - 30.0f * menuScaling, cTabYOffset * menuScaling ) );
     drawCollapseButton_();
 }
 
-void RibbonMenu::drawActiveListButton_( const ImVec2& basePos, float btnSize, float textSize )
+void RibbonMenu::drawActiveListButton_( float btnSize )
 {
-    auto scaling = menu_scaling();
-    auto windowPos = ImGui::GetCurrentContext()->CurrentWindow->Pos;
-    auto xPos = basePos.x + cTabsInterval * scaling;
-    ImGui::SetCursorPosX( xPos - windowPos.x );
-    ImGui::SetNextItemWidth( btnSize );
-
-    bool closeBlocking = false;
-    std::vector<bool> closeNonBlocking( activeNonBlockingItems_.size(), false );
-
-    ImGui::SetCursorPosY( cTabYOffset * scaling );
-
-    float fontSize = ImGui::GetFontSize();
-    auto framePaddingY = ( cTabHeight * scaling - fontSize ) * 0.5f;
-    auto framePadding = ImGui::GetStyle().FramePadding;
-    framePadding.y = framePaddingY;
-
-    ImGui::PushStyleColor( ImGuiCol_FrameBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabActive ).getUInt32() );
-    ImGui::PushStyleColor( ImGuiCol_FrameBgHovered, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabHovered ).getUInt32() );
-    ImGui::PushStyleColor( ImGuiCol_FrameBgActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabHovered ).getUInt32() );
-    ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0.0f );
-    ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, framePadding );
-    ImGui::PushFont( fontManager_.getFontByType( RibbonFontManager::FontType::Small ) );
-    if ( ImGui::BeginCombo( "##ActiveStatesComboBox", "", ImGuiComboFlags_NoArrowButton ) )
+    auto activeListIt = RibbonSchemaHolder::schema().items.find( "Active Plugins List" );
+    if ( activeListIt != RibbonSchemaHolder::schema().items.end() )
     {
-        if ( activeBlockingItem_.item )
+        setActiveListPos( ImGui::GetCursorScreenPos() );
+        CustomButtonParameters cParams;
+        cParams.iconType = RibbonIcons::IconType::RibbonItemIcon;
+        cParams.pushColorsCb = [] ( bool enabled, bool )->int
         {
-            auto caption = activeBlockingItem_.item->name();
-            closeBlocking = ImGui::SmallButton( ( "Close##" + caption ).c_str() );
-            auto activeIt = RibbonSchemaHolder::schema().items.find( caption );
-            if ( activeIt != RibbonSchemaHolder::schema().items.end() )
+            if ( !enabled )
             {
-                if ( !activeIt->second.caption.empty() )
-                    caption = activeIt->second.caption;
+                ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TextDisabled ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_Button, Color( 0, 0, 0, 0 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarHovered ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarClicked ).getUInt32() );
             }
-            ImGui::SameLine( 0, 5.0f );
-            ImGui::Text( "%s", caption.c_str() );
-        }
-        for ( int i = 0; i < activeNonBlockingItems_.size(); ++i )
-        {
-            const auto& activeNonBlock = activeNonBlockingItems_[i];
-            ImGui::SetCursorPosY( ImGui::GetCursorPosY() + 3.0f ); //spacing (ImGui::Spacing does not work here)
-            auto caption = activeNonBlock.item->name();
-            closeNonBlocking[i] = ImGui::SmallButton( ( "Close##" + caption ).c_str() );
-            auto activeIt = RibbonSchemaHolder::schema().items.find( caption );
-            if ( activeIt != RibbonSchemaHolder::schema().items.end() )
+            else
             {
-                if ( !activeIt->second.caption.empty() )
-                    caption = activeIt->second.caption;
+                ImGui::PushStyleColor( ImGuiCol_Text, Color::white().getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_Button, Color( 60, 169, 20, 255 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, Color( 60, 169, 20, 200 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonActive, Color( 60, 169, 20, 255 ).getUInt32() );
             }
-            ImGui::SameLine( 0, 5.0f );
-            ImGui::Text( "%s", caption.c_str() );
-
-        }
-        ImGui::EndCombo();
+            return 4;
+        };
+        const ImVec2 itemSize = { btnSize, btnSize };
+        DrawButtonParams params{ DrawButtonParams::SizeType::Small, itemSize, cMiddleIconSize,DrawButtonParams::RootType::Toolbar };
+        buttonDrawer_.drawCustomButtonItem( activeListIt->second, cParams, params );
     }
-    if ( closeBlocking )
-        itemPressed_( activeBlockingItem_.item, true );
-    for ( int i = 0; i < activeNonBlockingItems_.size(); ++i )
-        if ( closeNonBlocking[i] )
-            itemPressed_( activeNonBlockingItems_[i].item, true );
-
-    ImGui::PopFont();
-    const char* text = "Active";
-    ImGui::SetCursorPosX( xPos + ( btnSize - textSize ) * 0.5f );
-    ImGui::SetCursorPosY( 2 * cTabYOffset * scaling + 4.0f * menu_scaling() );
-    ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TabActiveText ).getUInt32() );
-    ImGui::RenderText( ImGui::GetCursorPos(), text, text + 6, false );
-    ImGui::PopStyleVar( 2 );
-    ImGui::PopStyleColor( 4 );
 }
 
-bool RibbonMenu::drawGroupUngroupButton_( const std::vector<std::shared_ptr<Object>>& selected )
+
+void RibbonMenu::drawActiveList_()
+{
+    auto pressed = activeListPressed_;
+    activeListPressed_ = false;
+
+    auto nameWindow = "##ActiveList";
+    bool popupOpened = ImGui::IsPopupOpen( nameWindow );
+
+    // manage search popup
+    if ( pressed && !popupOpened )
+        ImGui::OpenPopup( nameWindow );
+
+    if ( !popupOpened )
+        return;
+    auto scaling = menu_scaling();
+    if ( ImGuiWindow* menuWindow = ImGui::FindWindowByName( nameWindow ) )
+        if ( menuWindow->WasActive )
+        {
+            ImRect frame;
+            frame.Min = activeListPos_;
+            frame.Min.x -= 6 * scaling;
+            frame.Min.y += 10 * scaling;
+            frame.Max = ImVec2( frame.Min.x + ImGui::GetFrameHeight(), frame.Min.y + ImGui::GetFrameHeight() );
+            ImVec2 expectedSize = ImGui::CalcWindowNextAutoFitSize( menuWindow );
+            menuWindow->AutoPosLastDirection = ImGuiDir_Down;
+            ImRect rectOuter = ImGui::GetPopupAllowedExtentRect( menuWindow );
+            ImVec2 pos = ImGui::FindBestWindowPosForPopupEx( frame.GetBL(), expectedSize, &menuWindow->AutoPosLastDirection, rectOuter, frame, ImGuiPopupPositionPolicy_ComboBox );
+            ImGui::SetNextWindowPos( pos );
+        }
+
+    ImGuiWindowFlags window_flags =
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_Popup |
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoMove;
+    ImGui::PushStyleVar( ImGuiStyleVar_PopupBorderSize, 0.0f );
+    ImGui::PushStyleColor( ImGuiCol_PopupBg, ImVec4( 0, 0, 0, 0 ) );
+    ImGui::Begin( nameWindow, NULL, window_flags );
+    if ( popupOpened )
+    {
+        bool closeBlocking = false;
+        std::vector<bool> closeNonBlocking( activeNonBlockingItems_.size(), false );
+
+        auto winPadding = ImVec2( 6 * scaling, 4 * scaling );
+        auto itemSpacing = ImVec2( 10 * scaling, 4 * scaling );
+        ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, winPadding );
+        ImGui::PushStyleVar( ImGuiStyleVar_ChildRounding, 4 * scaling );
+        ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, itemSpacing );
+
+        ImVec2 btnSize = ImVec2( 56.0f * scaling, 24.0f * scaling );
+        float maxSize = 0.0f;
+
+        auto sbFont = RibbonFontManager::getFontByTypeStatic( RibbonFontManager::FontType::SemiBold );
+        if ( sbFont )
+            ImGui::PushFont( sbFont );
+        if ( activeBlockingItem_.item )
+            maxSize = ImGui::CalcTextSize( getItemCaption( activeBlockingItem_.item->name() ).c_str() ).x;
+        for ( const auto& nonBlockItem : activeNonBlockingItems_ )
+        {
+            auto size = ImGui::CalcTextSize( getItemCaption( nonBlockItem.item->name() ).c_str() ).x;
+            if ( size > maxSize )
+                maxSize = size;
+        }
+        if ( sbFont )
+            ImGui::PopFont();
+
+        auto blockSize = ImVec2( 2 * winPadding.x + maxSize + 2 * ImGui::GetStyle().ItemSpacing.x + btnSize.x,
+            btnSize.y + winPadding.y * 2 );
+        auto dotShift = ( blockSize.y - 2 * scaling ) * 0.5f;
+        blockSize.x = blockSize.x - winPadding.x + dotShift;
+
+        auto drawItem = [&] ( const std::shared_ptr<RibbonMenuItem>& item, bool& close )
+        {
+            if ( !item )
+                return;
+            const auto& name = getItemCaption( item->name() );
+            auto childName = "##CloseItemBlock" + item->name();
+
+            ImGui::PushStyleColor( ImGuiCol_ChildBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
+            ImGui::BeginChild( childName.c_str(), blockSize, true,
+                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
+            ImGui::PopStyleColor();
+            if ( sbFont )
+                ImGui::PushFont( sbFont );
+            auto center = ImGui::GetCursorScreenPos();
+            center.x += dotShift - winPadding.x;
+            center.y += dotShift - winPadding.y;
+            ImGui::GetWindowDrawList()->AddCircleFilled( center, 2 * scaling, Color( 60, 169, 20, 255 ).getUInt32() );
+
+            ImGui::SetCursorPosX( dotShift + 2 * scaling + itemSpacing.x );
+            auto savedPos = ImGui::GetCursorPosY();
+            ImGui::SetCursorPosY( 0.5f * ( blockSize.y - ImGui::GetFontSize() ) );
+            ImGui::Text( "%s", name.c_str() );
+            if ( sbFont )
+                ImGui::PopFont();
+            ImGui::SameLine( blockSize.x - btnSize.x - winPadding.x );
+            ImGui::SetCursorPosY( savedPos );
+            if ( UI::button( "Close", btnSize ) )
+                close = true;
+            ImGui::EndChild();
+        };
+
+        drawItem( activeBlockingItem_.item, closeBlocking );
+        for ( int i = 0; i < activeNonBlockingItems_.size(); ++i )
+        {
+            bool close{ false };
+            drawItem( activeNonBlockingItems_[i].item, close );
+            closeNonBlocking[i] = close;
+        }
+
+        if ( !activeBlockingItem_.item && activeNonBlockingItems_.empty() )
+            ImGui::CloseCurrentPopup();
+
+        ImGui::PopStyleVar( 3 );
+        ImGui::EndPopup();
+
+        if ( closeBlocking )
+            itemPressed_( activeBlockingItem_.item );
+        for ( int i = 0; i < activeNonBlockingItems_.size(); ++i )
+            if ( closeNonBlocking[i] )
+                itemPressed_( activeNonBlockingItems_[i].item );
+    }
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
+void RibbonMenu::drawNotifications_()
+{
+    auto scaling = menu_scaling();
+    Box2i limitRect( Vector2i(), getViewerInstance().framebufferSize );
+    limitRect.min.x = int( sceneSize_.x );
+    limitRect.max.y -= int( currentTopPanelHeight_ * scaling );
+    limitRect.min.y = int( ( StyleConsts::Notification::cWindowsPosY - StyleConsts::Notification::cWindowPadding - StyleConsts::Notification::cHistoryButtonSizeY ) * scaling );
+    notifier_.draw( scaling, limitRect );
+}
+
+void RibbonMenu::setLayoutMode( RibbonLayoutMode mode )
+{
+    layoutMode_ = mode;
+    fixViewportsSize_( Viewer::instanceRef().framebufferSize.x, Viewer::instanceRef().framebufferSize.y );
+}
+
+bool RibbonMenu::drawGroupUngroupButton( const std::vector<std::shared_ptr<Object>>& selected )
 {
     bool someChanges = false;
     if ( selected.empty() )
         return someChanges;
 
     Object* parentObj = selected[0]->parent();
-    bool canGroup = parentObj != nullptr;
-    for ( int i = 1; i < selected.size(); ++i )
+    bool canGroup = parentObj != nullptr && selected.size() >= 2;
+    for ( int i = 1; canGroup && i < selected.size(); ++i )
     {
         if ( selected[i]->parent() != parentObj )
-        {
             canGroup = false;
-            break;
-        }
     }
 
     if ( canGroup && UI::button( "Group", Vector2f( -1, 0 ) ) )
@@ -803,7 +900,7 @@ bool RibbonMenu::drawGroupUngroupButton_( const std::vector<std::shared_ptr<Obje
         group->setAncillary( false );
         group->setName( "Group" );
 
-        SCOPED_HISTORY( "Group objects" );
+        SCOPED_HISTORY( "Group" );
         AppendHistory<ChangeSceneAction>( "Add object", group, ChangeSceneAction::Type::AddObject );
         parentObj->addChild( group );
         group->select( true );
@@ -831,33 +928,212 @@ bool RibbonMenu::drawGroupUngroupButton_( const std::vector<std::shared_ptr<Obje
             }
         }
     }
-        canUngroup = !selected[0]->children().empty();
+    canUngroup = std::all_of( selected.begin(), selected.end(),
+        []( const std::shared_ptr<Object>& selObj ) { return !selObj->children().empty(); } );
     if ( canUngroup && UI::button( "Ungroup", Vector2f( -1, 0 ) ) )
     {
         someChanges |= true;
-        auto children = selected[0]->children();
-        SCOPED_HISTORY( "Ungroup objects" );
-        selected[0]->select( false );
-        for ( int i = 0; i < children.size(); ++i )
+        SCOPED_HISTORY( "Ungroup" );
+        for ( const auto& selObj : selected )
         {
-            if ( children[i]->isAncillary() )
-                continue;
-            // for now do it by one object
-            AppendHistory<ChangeSceneAction>( "Remove object", children[i], ChangeSceneAction::Type::RemoveObject );
-            children[i]->detachFromParent();
-            AppendHistory<ChangeSceneAction>( "Add object", children[i], ChangeSceneAction::Type::AddObject );
-            parentObj->addChild( children[i] );
-            children[i]->select( true );
-        }
-        auto ptr = std::dynamic_pointer_cast< VisualObject >( selected[0] );
-        if ( !ptr && selected[0]->children().empty() )
-        {
-            AppendHistory<ChangeSceneAction>( "Remove object", selected[0], ChangeSceneAction::Type::RemoveObject );
-            selected[0]->detachFromParent();
+            selObj->select( false );
+            SceneReorder task
+            {
+                .to = parentObj
+            };
+            for ( const auto& child : selObj->children() )
+            {
+                if ( child->isAncillary() )
+                    continue;
+                task.who.push_back( child.get() );
+                child->select( true );
+            }
+            [[maybe_unused]] bool reorderDone = sceneReorderWithUndo( task );
+            assert( reorderDone );
+            // remove group folder (now empty)
+            auto ptr = std::dynamic_pointer_cast< VisualObject >( selObj );
+            if ( !ptr && selObj->children().empty() )
+            {
+                AppendHistory<ChangeSceneAction>( "Remove object", selObj, ChangeSceneAction::Type::RemoveObject );
+                selObj->detachFromParent();
+            }
         }
     }
 
     return someChanges;
+}
+
+void RibbonMenu::pushNotification( const RibbonNotification& notification )
+{
+    notifier_.pushNotification( notification );
+}
+
+void RibbonMenu::cloneTree( const std::vector<std::shared_ptr<Object>>& selectedObjects )
+{
+    const std::regex pattern( R"(.* Clone(?:| \([0-9]+\))$)" );
+    SCOPED_HISTORY( "Clone" );
+    for ( const auto& obj : selectedObjects )
+    {
+        if ( !obj )
+            continue;
+        auto cloneObj = obj->cloneTree();
+        AppendHistory<ChangeObjectSelectedAction>( "unselect base obj", obj );
+        obj->select( false );
+        AppendHistory<ChangeObjectVisibilityAction>( "make base obj invisible", obj );
+        obj->setVisible( false );
+        auto name = obj->name();
+        if ( std::regex_match( name, pattern ) )
+        {
+            auto endBracPos = name.rfind( ')' );
+            if ( endBracPos != int( name.length() ) - 1 )
+            {
+                name += " (2)";
+            }
+            else
+            {
+                auto startNumPos = name.rfind( '(' ) + 1;
+                auto numStr = name.substr( startNumPos, endBracPos - startNumPos );
+                int num = std::atoi( numStr.c_str() );
+                name = name.substr( 0, startNumPos - 1 ) + "(" + std::to_string( num + 1 ) + ")";
+            }
+        }
+        else
+        {
+            name += " Clone";
+        }
+        cloneObj->setName( name );
+        AppendHistory<ChangeSceneAction>( "Add cloned obj", cloneObj, ChangeSceneAction::Type::AddObject );
+        obj->parent()->addChild( cloneObj );
+    }
+}
+
+void RibbonMenu::cloneSelectedPart( const std::shared_ptr<Object>& object )
+{
+    std::shared_ptr<VisualObject> newObj;
+    std::string name;
+    if ( auto selectedMesh = std::dynamic_pointer_cast< ObjectMesh >( object ) )
+    {
+        if ( !selectedMesh->mesh() )
+            return;
+        newObj = cloneRegion( selectedMesh, selectedMesh->getSelectedFaces() );
+        name = "ObjectMesh";
+    }
+    else if ( auto selectedPoints = std::dynamic_pointer_cast< ObjectPoints >( object ) )
+    {
+        if ( !selectedPoints->pointCloud() )
+            return;
+        newObj = cloneRegion( selectedPoints, selectedPoints->getSelectedPoints() );
+        name = "ObjectPoints";
+    }
+
+    newObj->setName( object->name() + " Partial" );
+    newObj->setXf( object->xf() );
+    AppendHistory<ChangeSceneAction>( "Selection to New object: add " + name, newObj, ChangeSceneAction::Type::AddObject );
+    object->parent()->addChild( newObj );
+}
+
+bool RibbonMenu::drawCloneButton( const std::vector<std::shared_ptr<Object>>& selected )
+{
+    bool someChanges = false;
+    if ( selected.empty() )
+        return someChanges;
+
+    if ( UI::button( "Clone", Vector2f( -1, 0 ) ) )
+    {
+        cloneTree( selected );
+        someChanges = true;
+    }
+
+    return someChanges;
+}
+
+bool RibbonMenu::drawSelectSubtreeButton( const std::vector<std::shared_ptr<Object>>& selected )
+{
+    bool someChanges = false;
+    const bool subtreeExists = std::any_of( selected.begin(), selected.end(), [] ( std::shared_ptr<Object> obj )
+    {
+        return obj && objectHasSelectableChildren( *obj );
+    } );
+
+    if ( selected.empty() || !subtreeExists )
+        return someChanges;
+
+    if ( UI::button( "Select Subtree", { -1, 0 } ) )
+    {
+        for ( auto selectedObject : selected )
+        {
+            std::stack<std::shared_ptr<Object>> objects;
+            objects.push( selectedObject );
+            while ( !objects.empty() )
+            {
+                auto object = objects.top();
+                objects.pop();
+
+                if ( !object )
+                    continue;
+
+                object->select( true );
+                if ( sceneObjectsList_->getShowNewSelectedObjects() )
+                    object->setGlobalVisibility( true );
+
+                for ( auto child : object->children() )
+                    objects.push( child );
+            }
+        }
+        someChanges = true;
+    }
+
+    return someChanges;
+}
+
+bool RibbonMenu::drawCloneSelectionButton( const std::vector<std::shared_ptr<Object>>& selected )
+{
+    bool someChanges = false;
+    if ( selected.size() != 1 )
+        return someChanges;
+    auto objMesh = selected[0]->asType<ObjectMesh>();
+    auto objPoints = selected[0]->asType<ObjectPoints>();
+    if ( ( objMesh && objMesh->getSelectedFaces().any() ) ||
+         ( objPoints && objPoints->getSelectedPoints().any() ) )
+    {
+        if ( UI::button( "Clone Selection", Vector2f( -1, 0 ) ) )
+        {
+            cloneSelectedPart( selected[0] );
+            someChanges = true;
+        }
+    }
+
+    return someChanges;
+}
+
+bool RibbonMenu::drawMergeSubtreeButton( const std::vector<std::shared_ptr<Object>>& selected )
+{
+    std::vector<TypedFlatTree> subtrees;
+    for ( const auto& subtree : getFlatSubtrees( selected ) )
+        subtrees.emplace_back( TypedFlatTree::fromFlatTree( subtree ) );
+    if ( subtrees.empty() )
+        return false;
+
+    bool needToMerge = false;
+    for ( const auto& subtree : subtrees )
+    {
+        const auto& rootObj = subtree.root;
+        needToMerge = needToMerge
+            || ( subtree.objsMesh.size() + int( rootObj->asType<ObjectMesh>() != nullptr ) > 1 )
+            || ( subtree.objsLines.size() + int( rootObj->asType<ObjectLines>() != nullptr ) > 1 )
+            || ( subtree.objsPoints.size() + int( rootObj->asType<ObjectPoints>() != nullptr ) > 1 );
+    }
+    if ( !needToMerge )
+        return false;
+
+    if ( !UI::button( "Merge Subtree", Vector2f( -1, 0 ) ) )
+        return false;
+
+    SCOPED_HISTORY( "Merge" );
+    for ( auto& subtree : subtrees )
+        mergeSubtree( std::move( subtree ) );
+
+    return true;
 }
 
 void RibbonMenu::drawBigButtonItem_( const MenuItemInfo& item )
@@ -869,7 +1145,7 @@ void RibbonMenu::drawBigButtonItem_( const MenuItemInfo& item )
     const auto& style = ImGui::GetStyle();
     ImVec2 itemSize = ImVec2( width.baseWidth, availReg.y - 2 * style.WindowPadding.y );
 
-    ImGui::SetCursorPosY( ImGui::GetCursorPosY() + availReg.y * 0.5f - itemSize.y * 0.5f - ImGui::GetStyle().CellPadding.y * 0.5f );
+    ImGui::SetCursorPosY( ImGui::GetCursorPosY() + availReg.y * 0.5f - itemSize.y * 0.5f );
 
     buttonDrawer_.drawButtonItem( item, { DrawButtonParams::SizeType::Big,itemSize,cBigIconSize } );
 }
@@ -933,7 +1209,7 @@ void RibbonMenu::drawSmallButtonsSet_( const std::vector<std::string>& group, in
 
 
 RibbonMenu::DrawTabConfig RibbonMenu::setupItemsGroupConfig_( const std::vector<std::string>& groupsInTab,
-                                                              const std::string& tabName )
+                                                              const std::string& tabName, bool centerItems )
 {
     DrawTabConfig res( groupsInTab.size() );
     const auto& style = ImGui::GetStyle();
@@ -1005,7 +1281,7 @@ RibbonMenu::DrawTabConfig RibbonMenu::setupItemsGroupConfig_( const std::vector<
         std::vector<int> resizableGroups;
         resizableGroups.reserve( groupWidths.size() );
         for ( int i = 0; i < res.size(); ++i )
-            if ( res[i].numBig + res[i].numSmallText > 0 )
+            if ( ( res[i].numBig + res[i].numSmallText > 0 ) && ( res[i].numBig + res[i].numSmallText + res[i].numSmall != 1 ) )
                 resizableGroups.push_back( i );
         if ( resizableGroups.empty() )
             break;
@@ -1043,23 +1319,28 @@ RibbonMenu::DrawTabConfig RibbonMenu::setupItemsGroupConfig_( const std::vector<
             sumWidth += groupWidths[i];
         }
     }
+
+    if ( centerItems && sumWidth < screenWidth )
+        ImGui::SetCursorPosX( 0.5f * ( screenWidth - sumWidth ) );
+
     return res;
 }
 
-void RibbonMenu::setupItemsGroup_( const std::vector<std::string>& groupsInTab, const std::string& tabName )
+void RibbonMenu::setupItemsGroup_( const std::vector<std::string>& groupsInTab, const std::string& tabName, bool centerItems )
 {
     for ( const auto& g : groupsInTab )
     {
         ImGui::TableSetupColumn( ( g + "##" + tabName ).c_str(), 0 );
     }
-    ImGui::TableSetupColumn( ( "##fictiveGroup" + tabName ).c_str(), 0 );
+    if ( !centerItems )
+        ImGui::TableSetupColumn( ( "##fictiveGroup" + tabName ).c_str(), 0 );
 }
 
 void RibbonMenu::drawItemsGroup_( const std::string& tabName, const std::string& groupName,
                                   DrawGroupConfig config ) // copy here for easier usage
 {
     auto itemSpacing = ImGui::GetStyle().ItemSpacing;
-    itemSpacing.y = menu_scaling();
+    itemSpacing.y = 3.0f * menu_scaling();
     ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, itemSpacing );
     ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding,
                          ImVec2( cRibbonButtonWindowPaddingX * menu_scaling(), cRibbonButtonWindowPaddingY * menu_scaling() ) );
@@ -1107,19 +1388,102 @@ void RibbonMenu::drawItemsGroup_( const std::string& tabName, const std::string&
     ImGui::PopStyleVar( 2 );
 }
 
-void RibbonMenu::itemPressed_( const std::shared_ptr<RibbonMenuItem>& item, bool available )
+bool RibbonMenu::itemPressed_( const std::shared_ptr<RibbonMenuItem>& item, const std::string& requiremetnsHint )
 {
+    bool available = requiremetnsHint.empty();
     bool wasActive = item->isActive();
-    if ( !wasActive && !available )
-        return;
-    ImGui::CloseCurrentPopup();
     // take name before, because item can become invalid during `action`
     auto name = item->name();
+    if ( !wasActive && available && ( activeBlockingItem_.item && item->blocking() ) )
+    {
+        const auto blockingItemName = activeBlockingItem_.item->name();
+        bool closed = true;
+        if ( autoCloseBlockingPlugins_ )
+            closed = activeBlockingItem_.item->action();
+
+        if ( !closed )
+        {
+            blockingHighlightTimer_ = 2.0f;
+            pushNotification( {
+                .text = "Unable to close this plugin",
+                .type = NotificationType::Warning } );
+            return false;
+        }
+
+        if ( !autoCloseBlockingPlugins_ )
+        {
+            blockingHighlightTimer_ = 2.0f;
+            spdlog::info( "Cannot activate item: \"{}\", Active: \"{}\"", name, blockingItemName );
+            static bool alreadyShown = false;
+            if ( alreadyShown )
+                return false;
+
+            alreadyShown = true;
+            pushNotification( {
+                .onButtonClick = []
+                {
+                    auto viewerSettingsIt = RibbonSchemaHolder::schema().items.find( "Viewer settings" );
+                    if ( viewerSettingsIt == RibbonSchemaHolder::schema().items.end() )
+                        return;
+                    if ( viewerSettingsIt->second.item && !viewerSettingsIt->second.item->isActive() )
+                        viewerSettingsIt->second.item->action();
+                },
+                .buttonName = "Open Settings",
+                .text = "Unable to activate this tool because another blocking tool is already active.\nIt can be changed in the Settings.",
+                .type = NotificationType::Info } );
+            return false;
+        }
+        else
+        {
+            static bool alreadyShown = false;
+            spdlog::info( "Activated item: \"{}\", Closed item: \"{}\"", name, blockingItemName );
+            if ( !alreadyShown )
+            {
+                alreadyShown = true;
+
+                pushNotification( {
+                .onButtonClick = []
+                {
+                    auto viewerSettingsIt = RibbonSchemaHolder::schema().items.find( "Viewer settings" );
+                    if ( viewerSettingsIt == RibbonSchemaHolder::schema().items.end() )
+                        return;
+                    if ( viewerSettingsIt->second.item && !viewerSettingsIt->second.item->isActive() )
+                        viewerSettingsIt->second.item->action();
+                },
+                .buttonName = "Open Settings",
+                .text = "That tool was closed due to other tool start.\nIt can be changed in the Settings.",
+                .type = NotificationType::Info } );
+            }
+        }
+    }
+    if ( !wasActive && !available )
+    {
+        if ( !requiremetnsHint.empty() )
+            showModal( requiremetnsHint, NotificationType::Info );
+        return false;
+    }
+    ImGui::CloseCurrentPopup();
+    int conflicts = getViewerInstance().mouseController().getMouseConflicts();
     bool stateChanged = item->action();
     if ( !stateChanged )
         spdlog::info( "Action item: \"{}\"", name );
     else
         spdlog::info( "{} item: \"{}\"", wasActive ? std::string( "Deactivated" ) : std::string( "Activated" ), name );
+
+    if ( !wasActive )
+    {
+        searcher_.pushRecentItem( item );
+        if ( stateChanged && getViewerInstance().mouseController().getMouseConflicts() > conflicts )
+        {
+            pushNotification( {
+                .text = "Camera operations that are controlled by left mouse button "
+                        "may not work while this tool is active\n"
+                        "Hold Alt additionally to control camera",
+                .type = NotificationType::Info,
+                .lifeTimeSec = 3.0f } );
+        }
+    }
+    return true;
 }
 
 void RibbonMenu::changeTab_( int newTab )
@@ -1136,30 +1500,23 @@ void RibbonMenu::changeTab_( int newTab )
 
 std::string RibbonMenu::getRequirements_( const std::shared_ptr<RibbonMenuItem>& item ) const
 {
-    std::string requirements;
-    if ( !activeBlockingItem_.item || !item->blocking() )
-    {
-        requirements = item->isAvailable( selectedObjectsCache_ );
-    }
-    else
-    {
-        if ( activeBlockingItem_.item != item )
-            requirements = "Other state is active";
-    }
-    return requirements;
+    return item->isAvailable( SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>() );
 }
 
 void RibbonMenu::drawSceneListButtons_()
 {
     auto menuScaling = menu_scaling();
-    const float size = ( cMiddleIconSize + 8.f ) * menuScaling;
+    const float size = ( cMiddleIconSize + 9.f ) * menuScaling;
     const ImVec2 smallItemSize = { size, size };
 
     const DrawButtonParams params{ DrawButtonParams::SizeType::Small, smallItemSize, cMiddleIconSize,DrawButtonParams::RootType::Toolbar };
 
+    ImGui::SetCursorPosY( ImGui::GetCursorPosY() - 2 * menuScaling );
+    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, ImVec2( 6 * menuScaling, 5 * menuScaling ) );
     auto font = fontManager_.getFontByType( RibbonFontManager::FontType::Small );
     //font->Scale = 0.75f;
     ImGui::PushFont( font );
+    UI::TestEngine::pushTree( "RibbonSceneButtons" );
     for ( const auto& item : RibbonSchemaHolder::schema().sceneButtonsList )
     {
         auto it = RibbonSchemaHolder::schema().items.find( item );
@@ -1174,12 +1531,15 @@ void RibbonMenu::drawSceneListButtons_()
         buttonDrawer_.drawButtonItem( it->second, params );
         ImGui::SameLine();
     }
+    UI::TestEngine::popTree(); // "RibbonSceneButtons"
     ImGui::NewLine();
     ImGui::PopFont();
     const float separateLinePos = ImGui::GetCursorScreenPos().y;
+
+    ImGui::PopStyleVar();
     ImGui::GetCurrentContext()->CurrentWindow->DrawList->AddLine( ImVec2( 0, separateLinePos ), ImVec2( float( sceneSize_.x ), separateLinePos ),
                                                                   ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Borders ).getUInt32() );
-    ImGui::SetCursorPosY( ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y + 1.0f );
+    ImGui::SetCursorPosY( ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y + 1.0f * menuScaling );
 }
 
 void RibbonMenu::readMenuItemsStructure_()
@@ -1208,47 +1568,65 @@ void RibbonMenu::postRescale_( float x, float y )
 
 void RibbonMenu::drawItemDialog_( DialogItemPtr& itemPtr )
 {
-    if ( itemPtr.item )
+    if ( !itemPtr.item )
+        return;
+
+    auto statePlugin = std::dynamic_pointer_cast< StateBasePlugin >( itemPtr.item );
+    if ( !statePlugin || !statePlugin->isEnabled() )
+        return;
+    statePlugin->preDrawUpdate();
+
+    // check before drawDialog to avoid calling something like:
+    // ImGui::Image( textId ) // with removed texture in deferred render calls
+    if ( !statePlugin->dialogIsOpen() )
     {
-        auto statePlugin = std::dynamic_pointer_cast< StateBasePlugin >( itemPtr.item );
-        if ( statePlugin && statePlugin->isEnabled() )
+        itemPressed_( itemPtr.item );
+        if ( !itemPtr.item )
+            return; // do not proceed if we closed dialog in this call
+    }
+
+    statePlugin->drawDialog( menu_scaling(), ImGui::GetCurrentContext() );
+
+    if ( !itemPtr.item ) // if it was closed in drawDialog
+        return;
+
+    if ( !itemPtr.dialogPositionFixed )
+    {
+        itemPtr.dialogPositionFixed = true;
+        auto* window = ImGui::FindWindowByName( itemPtr.item->name().c_str() ); // this function is hidden in imgui_internal.h
+        // viewer->framebufferSize.x here because ImGui use screen space
+        if ( window )
         {
-            statePlugin->preDrawUpdate();
-            statePlugin->drawDialog( menu_scaling(), ImGui::GetCurrentContext() );
-
-            if ( !itemPtr.dialogPositionFixed )
-            {
-                itemPtr.dialogPositionFixed = true;
-                auto* window = ImGui::FindWindowByName( itemPtr.item->name().c_str() ); // this function is hidden in imgui_internal.h
-                // viewer->framebufferSize.x here because ImGui use screen space
-                if ( window )
-                {
-                    ImVec2 pos = ImVec2( viewer->framebufferSize.x - window->Size.x, float( topPanelOpenedHeight_ - 1.0f ) * menu_scaling() );
-                    ImGui::SetWindowPos( window, pos, ImGuiCond_Always );
-                }
-            }
-
-            if ( !statePlugin->dialogIsOpen() )
-                itemPressed_( itemPtr.item, true );
-            else if ( prevFrameObjectsCache_ != selectedObjectsCache_ )
-                statePlugin->updateSelection( selectedObjectsCache_ );
+            ImVec2 pos = ImVec2( viewer->framebufferSize.x - window->Size.x, float( topPanelOpenedHeight_ - 1.0f ) * menu_scaling() );
+            ImGui::SetWindowPos( window, pos, ImGuiCond_Always );
         }
     }
+
+    if ( !statePlugin->dialogIsOpen() ) // still need to check here we ordered to close dialog in `drawDialog`
+        itemPressed_( itemPtr.item );
+    else if ( prevFrameSelectedObjectsCache_ != SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>() )
+        statePlugin->updateSelection( SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>() );
 }
 
 void RibbonMenu::drawRibbonSceneList_()
 {
-    const auto allObj = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selectable );
-    auto selectedObjs = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selected );
+    const auto& selectedObjs = SceneCache::getAllObjects<Object, ObjectSelectivityType::Selected>();
 
     const auto scaling = menu_scaling();
     // Define next window position + size
     auto& viewerRef = Viewer::instanceRef();
-    ImGui::SetWindowPos( "RibbonScene", ImVec2( 0.f, float( currentTopPanelHeight_ ) * scaling - 1 ), ImGuiCond_Always );
-    sceneSize_.x = std::round( std::min( sceneSize_.x, viewerRef.framebufferSize.x - 100 * scaling ) );
-    sceneSize_.y = std::round( viewerRef.framebufferSize.y - float( currentTopPanelHeight_ - 2.0f ) * scaling );
+
+    float topShift = 0.0f;
+    if ( layoutMode_ == RibbonLayoutMode::All )
+        topShift = float( currentTopPanelHeight_ );
+
+    ImGui::SetWindowPos( "RibbonScene", ImVec2( 0.f, topShift * scaling - 1 ), ImGuiCond_Always );
+    const float cMinSceneWidth = 100 * scaling;
+    const float cMaxSceneWidth = std::max( cMinSceneWidth, std::round( viewerRef.framebufferSize.x * 0.5f ) );
+    sceneSize_.x = std::max( sceneSize_.x, cMinSceneWidth );
+    sceneSize_.y = std::round( viewerRef.framebufferSize.y - ( topShift - 2.0f ) * scaling );
     ImGui::SetWindowSize( "RibbonScene", sceneSize_, ImGuiCond_Always );
-    ImGui::SetNextWindowSizeConstraints( ImVec2( 100 * scaling, -1.f ), ImVec2( viewerRef.framebufferSize.x / 2.f, -1.f ) ); // TODO take out limits to special place
+    ImGui::SetNextWindowSizeConstraints( ImVec2( cMinSceneWidth, -1.f ), ImVec2( cMaxSceneWidth, -1.f ) ); // TODO take out limits to special place
     ImGui::PushStyleVar( ImGuiStyleVar_Alpha, 1.f );
     auto colorBg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
     colorBg.w = 1.f;
@@ -1259,7 +1637,9 @@ void RibbonMenu::drawRibbonSceneList_()
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoResize
     );
-    drawRibbonSceneListContent_( selectedObjs, allObj );
+    if ( layoutMode_ == RibbonLayoutMode::All )
+        drawSceneListButtons_();
+    sceneObjectsList_->draw( -( informationHeight_ + transformHeight_ ), menu_scaling() );
     drawRibbonSceneInformation_( selectedObjs );
 
     const auto newSize = drawRibbonSceneResizeLine_();// ImGui::GetWindowSize();
@@ -1289,32 +1669,6 @@ void RibbonMenu::drawRibbonSceneList_()
         firstTime = false;
 }
 
-void RibbonMenu::drawRibbonSceneListContent_( std::vector<std::shared_ptr<Object>>& selected, const std::vector<std::shared_ptr<Object>>& all )
-{
-    drawSceneListButtons_();
-    ImGui::BeginChild( "Meshes", ImVec2( -1, -( informationHeight_ + transformHeight_ ) ), false );
-    updateSceneWindowScrollIfNeeded_();
-    auto children = SceneRoot::get().children();
-    for ( const auto& child : children )
-        draw_object_recurse_( *child, selected, all );
-    makeDragDropTarget_( SceneRoot::get(), false, true, "" );
-
-    // any click on empty space below Scene Tree removes object selection
-    ImGui::BeginChild( "EmptySpace" );
-    if ( ImGui::IsWindowHovered() && ImGui::IsMouseClicked( 0 ) )
-    {
-        for ( const auto& s : selected )
-            if ( s )
-                s->select( false );
-    }
-    ImGui::EndChild();
-
-    ImGui::EndChild();
-    sceneOpenCommands_.clear();
-
-    reorderSceneIfNeeded_();
-}
-
 Vector2f RibbonMenu::drawRibbonSceneResizeLine_()
 {
     auto size = sceneSize_;
@@ -1334,7 +1688,7 @@ Vector2f RibbonMenu::drawRibbonSceneResizeLine_()
     rectHover.Min.x += size.x - 3.5f * scaling;
     rectHover.Max.x += size.x + 3.5f * scaling;
     rectHover.Max.y += size.y;
-    
+
     rectDraw = rectHover;
     rectDraw.Min.x += 1.5f * scaling;
     rectDraw.Max.x -= 1.5f * scaling;
@@ -1372,8 +1726,11 @@ void RibbonMenu::drawRibbonViewportsLabels_()
         constexpr std::array<const char*, 2> cProjModeString = { "Orthographic" , "Perspective" };
         std::string windowName = "##ProjectionMode" + std::to_string( vp.id.value() );
         std::string text;
-        if ( viewer->viewport_list.size() > 1 )
-            text = fmt::format( "Viewport Id: {}, {}", vp.id.value(), cProjModeString[int( !vp.getParameters().orthographic )] );
+        std::string label = vp.getParameters().label;
+        if ( viewer->viewport_list.size() > 1 && label.empty() )
+            label = fmt::format( "Viewport Id : {}", vp.id.value() );
+        if ( !label.empty() )
+            text = fmt::format( "{}, {}", label, cProjModeString[int( !vp.getParameters().orthographic )] );
         else
             text = fmt::format( "{}", cProjModeString[int( !vp.getParameters().orthographic )] );
         auto textSize = ImGui::CalcTextSize( text.c_str() );
@@ -1390,51 +1747,111 @@ void RibbonMenu::drawRibbonViewportsLabels_()
     ImGui::PopStyleVar();
 }
 
-void RibbonMenu::drawRibbonSceneInformation_( std::vector<std::shared_ptr<Object>>& /*selected*/ )
+void RibbonMenu::drawRibbonSceneInformation_( const std::vector<std::shared_ptr<Object>>& /*selected*/ )
 {
-    informationHeight_ = drawSelectionInformation_();
+    const float newInfoHeight = std::ceil( drawSelectionInformation_() );
 
-    transformHeight_ = drawTransform_();
+    const float newXfHeight = std::ceil( drawTransform_() );
+    if ( newInfoHeight != informationHeight_ || newXfHeight != transformHeight_ )
+    {
+        informationHeight_ = newInfoHeight;
+        transformHeight_ = newXfHeight;
+        getViewerInstance().incrementForceRedrawFrames(1, true);
+    }
 }
 
-void RibbonMenu::drawSceneContextMenu_( const std::vector<std::shared_ptr<Object>>& selected )
+bool RibbonMenu::drawCollapsingHeaderTransform_()
 {
-    const auto selectedVisualObjs = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Selected );
-    if ( ImGui::BeginPopupContextItem() )
+    auto res = drawCollapsingHeader_( "Transform", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap );
+
+    const float scaling = menu_scaling();
+    ImVec2 smallBtnSize = ImVec2( 22 * scaling, 22 * scaling );
+    float numButtons = ( sceneSize_.x - 100 * scaling - ImGui::GetStyle().WindowPadding.x * 0.5f ) / smallBtnSize.x;
+    if ( numButtons < 1.0f )
+        return res;
+
+    auto startPos = ImGui::GetCursorPos();
+    auto contextBtnPos = startPos;
+    contextBtnPos.x += ( ImGui::GetContentRegionAvail().x + ImGui::GetStyle().WindowPadding.x * 0.5f - smallBtnSize.x );
+    contextBtnPos.y += ( -ImGui::GetFrameHeightWithSpacing() + ( ImGui::GetFrameHeight() - smallBtnSize.y ) * 0.5f );
+
+    ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ) );
+    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabHovered ) );
+    ImGui::PushStyleColor( ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4( ImGuiCol_ScrollbarGrabActive ) );
+    ImGui::PushStyleVar( ImGuiStyleVar_FrameBorderSize, 0 );
+
+    auto iconsFont = fontManager_.getFontByType( RibbonFontManager::FontType::Icons );
+    if ( iconsFont )
     {
-        ImGui::PushStyleVar( ImGuiStyleVar_CellPadding, ImGui::GetStyle().WindowPadding );
-        bool wasChanged = false;
-        if ( selectedVisualObjs.empty() )
-        {
-            wasChanged |= drawGeneralOptions_( selected );
-            wasChanged |= drawRemoveButton_( selected );
-            wasChanged |= drawGroupUngroupButton_( selected );
-        }
-        else if ( ImGui::BeginTable( "##DrawOptions", 2, ImGuiTableFlags_BordersInnerV ) )
-        {
-            ImGui::TableNextColumn();
-            wasChanged |= drawGeneralOptions_( selected );
-            wasChanged |= drawDrawOptionsCheckboxes_( selectedVisualObjs );
-            wasChanged |= drawAdvancedOptions_( selectedVisualObjs );
-            ImGui::TableNextColumn();
-            wasChanged |= drawDrawOptionsColors_( selectedVisualObjs );
-            wasChanged |= drawRemoveButton_( selected );
-            wasChanged |= drawGroupUngroupButton_( selected );
-            ImGui::EndTable();
-        }
-        ImGui::PopStyleVar();
-        if ( wasChanged )
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        iconsFont->Scale = 12.f / fontManager_.getFontSizeByType( RibbonFontManager::FontType::Icons );
+        ImGui::PushFont( iconsFont );
     }
+
+    ImGui::SetCursorPos( contextBtnPos );
+
+    if ( ImGui::Button( "\xef\x85\x82", smallBtnSize ) ) // three dots icon to open context dialog
+        ImGui::OpenPopup( cTransformContextName );
+    if ( iconsFont )
+        ImGui::PopFont();
+    UI::setTooltipIfHovered( "Open Transform Data context menu.", scaling );
+    if ( iconsFont )
+        ImGui::PushFont( iconsFont );
+
+    const auto& selectedObjectsCache = SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>();
+    if ( numButtons >= 2.0f && selectedObjectsCache.size() == 1 && selectedObjectsCache.front()->xf() != AffineXf3f() )
+    {
+        auto obj = std::const_pointer_cast< Object >( selectedObjectsCache.front() );
+        assert( obj );
+        contextBtnPos.x -= smallBtnSize.x;
+        ImGui::SetCursorPos( contextBtnPos );
+
+        if ( ImGui::Button( "\xef\x80\x8d", smallBtnSize ) ) // X(cross) icon for reset
+        {
+            AppendHistory<ChangeXfAction>( "Reset Transform", obj );
+            obj->setXf( AffineXf3f() );
+        }
+        if ( iconsFont )
+            ImGui::PopFont();
+        UI::setTooltipIfHovered( "Resets transform value to identity.", scaling );
+        if ( iconsFont )
+            ImGui::PushFont( iconsFont );
+
+        auto item = RibbonSchemaHolder::schema().items.find( "Apply Transform" );
+        bool drawApplyBtn = numButtons >=3.0f &&
+            item != RibbonSchemaHolder::schema().items.end() &&
+            item->second.item->isAvailable( selectedObjectsCache ).empty();
+
+        if ( drawApplyBtn )
+        {
+            contextBtnPos.x -= smallBtnSize.x;
+            ImGui::SetCursorPos( contextBtnPos );
+
+            if ( ImGui::Button( "\xef\x80\x8c", smallBtnSize ) ) // V(apply) icon for apply
+                item->second.item->action();
+            if ( iconsFont )
+                ImGui::PopFont();
+            UI::setTooltipIfHovered( "Transforms object and resets transform value to identity.", scaling );
+            if ( iconsFont )
+                ImGui::PushFont( iconsFont );
+        }
+    }
+    if ( iconsFont )
+    {
+        ImGui::PopFont();
+        iconsFont->Scale = 1.0f;
+    }
+    ImGui::PopStyleColor( 3 );
+    ImGui::PopStyleVar();
+    return res;
 }
 
 bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selected )
 {
-    if ( !ImGui::BeginPopupContextItem( "TransformContextWindow" ) )
+    if ( !ImGui::BeginPopupContextItem( cTransformContextName ) )
         return false;
 
-    auto buttonSize = 100.0f * menu_scaling();
+    const float scaling = menu_scaling();
+    auto buttonSize = 100.0f * scaling;
 
     struct Transform
     {
@@ -1458,6 +1875,13 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
         return Transform{ xf, uniformScale };
     };
 
+    auto semiBoldFont = fontManager_.getFontByType( RibbonFontManager::FontType::SemiBold );
+    if ( semiBoldFont )
+        ImGui::PushFont( semiBoldFont );
+    ImGui::Text( "Transform Data" );
+    if ( semiBoldFont )
+        ImGui::PopFont();
+
     const auto& startXf = selected->xf();
 #if !defined( __EMSCRIPTEN__ )
     if ( UI::button( "Copy", Vector2f( buttonSize, 0 ) ) )
@@ -1465,12 +1889,18 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
         Json::Value root;
         serializeTransform( root, { startXf, uniformScale_ } );
         transformClipboardText_ = root.toStyledString();
-        SetClipboardText( transformClipboardText_ );
+        if ( auto res = SetClipboardText( transformClipboardText_ ); !res )
+            spdlog::warn( res.error() );
         ImGui::CloseCurrentPopup();
     }
 #endif
     if ( ImGui::IsWindowAppearing() )
-        transformClipboardText_ = GetClipboardText();
+    {
+        if ( auto text = GetClipboardText() )
+            transformClipboardText_ = *text;
+        else
+            spdlog::warn( text.error() );
+    }
 
     if ( !transformClipboardText_.empty() )
     {
@@ -1484,7 +1914,7 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
             {
                 if ( UI::button( "Paste", Vector2f( buttonSize, 0 ) ) )
                 {
-                    AppendHistory<ChangeXfAction>( "Change XF", selected );
+                    AppendHistory<ChangeXfAction>( "Paste Transform", selected );
                     selected->setXf( tr->xf );
                     uniformScale_ = tr->uniformScale;
                     ImGui::CloseCurrentPopup();
@@ -1495,13 +1925,17 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
 
     if ( UI::button( "Save to file", Vector2f( buttonSize, 0 ) ) )
     {
-        auto filename = saveFileDialog( { "Transform", {}, { {"JSON (.json)", "*.json"} } } );
+        auto filename = saveFileDialog( {
+            .fileName = "Transform",
+            .filters = { {"JSON (.json)", "*.json"} },
+        } );
         if ( !filename.empty() )
         {
             Json::Value root;
             serializeTransform( root, { startXf, uniformScale_ } );
 
-            std::ofstream ofs( filename );
+            // although json is a textual format, we open the file in binary mode to get exactly the same result on Windows and Linux
+            std::ofstream ofs( filename, std::ofstream::binary );
             if ( ofs )
                 ofs << root.toStyledString();
             else
@@ -1512,7 +1946,8 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
 
     if ( UI::button( "Load from file", Vector2f( buttonSize, 0 ) ) )
     {
-        auto filename = openFileDialog( { "", {}, { {"JSON (.json)", "*.json"} } } );
+        auto filename = openFileDialog( { .filters = { { "JSON (.json)", "*.json" } } } );
+        std::string errorString;
         if ( !filename.empty() )
         {
             std::ifstream ifs( filename );
@@ -1528,23 +1963,25 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
                 {
                     if ( auto tr = deserializeTransform( root ))
                     {
-                        AppendHistory<ChangeXfAction>( "Change XF", selected );
+                        AppendHistory<ChangeXfAction>( "Load Transform from File", selected );
                         selected->setXf( tr->xf );
                         uniformScale_ = tr->uniformScale;
                     } else
                     {
-                        spdlog::error( "Cannot parse transform" );
+                        errorString = "Cannot parse transform";
                     }
                 }
                 else
                 {
-                    spdlog::error( "Cannot parse transform" );
+                    errorString = "Cannot parse transform";
                 }
             }
             else
             {
-                spdlog::error( "Cannot open file for reading" );
+                errorString = "Cannot open file for reading";
             }
+            if ( !errorString.empty() )
+                pushNotification( { .text = errorString, .type = NotificationType::Error } );
         }
         ImGui::CloseCurrentPopup();
     }
@@ -1553,99 +1990,64 @@ bool RibbonMenu::drawTransformContextMenu_( const std::shared_ptr<Object>& selec
     {
         auto item = RibbonSchemaHolder::schema().items.find( "Apply Transform" );
         if ( item != RibbonSchemaHolder::schema().items.end() &&
-            item->second.item->isAvailable( selectedObjectsCache_ ).empty() &&
+            item->second.item->isAvailable( SceneCache::getAllObjects<const Object, ObjectSelectivityType::Selected>() ).empty() &&
             UI::button( "Apply", Vector2f( buttonSize, 0 ) ) )
         {
             item->second.item->action();
             ImGui::CloseCurrentPopup();
         }
-        UI::setTooltipIfHovered( "Transforms object and resets transform value to identity.", menu_scaling() );
+        UI::setTooltipIfHovered( "Transforms object and resets transform value to identity.", scaling );
 
         if ( UI::button( "Reset", Vector2f( buttonSize, 0 ) ) )
         {
-            AppendHistory<ChangeXfAction>( "Reset XF", selected );
+            AppendHistory<ChangeXfAction>( "Reset Transform (context menu)", selected );
             selected->setXf( AffineXf3f() );
             ImGui::CloseCurrentPopup();
         }
-        UI::setTooltipIfHovered( "Resets transform value to identity.", menu_scaling() );
+        UI::setTooltipIfHovered( "Resets transform value to identity.", scaling );
     }
     ImGui::EndPopup();
     return true;
 }
 
-const char* RibbonMenu::getSceneItemIconByTypeName_( const std::string& typeName ) const
-{
-    if ( typeName == ObjectMesh::TypeName() )
-        return "\xef\x82\xac";
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-    if ( typeName == ObjectVoxels::TypeName() )
-        return "\xef\x86\xb3";
-#endif
-    if ( typeName == ObjectPoints::TypeName() )
-        return "\xef\x84\x90";
-    if ( typeName == ObjectLines::TypeName() )
-        return "\xef\x87\xa0";
-    if ( typeName == ObjectDistanceMap::TypeName() )
-        return "\xef\xa1\x8c";
-    if ( typeName == ObjectLabel::TypeName() )
-        return "\xef\x81\xb5";
-    return "\xef\x88\xad";
-}
-
-void RibbonMenu::drawCustomObjectPrefixInScene_( const Object& obj )
-{
-    auto imageSize = ImGui::GetFrameHeight();
-    auto* imageIcon = RibbonIcons::findByName( obj.typeName(), imageSize,
-                                               RibbonIcons::ColorType::White,
-                                               RibbonIcons::IconType::ObjectTypeIcon );
-
-    if ( !imageIcon )
-    {
-        auto font = fontManager_.getFontByType( RibbonFontManager::FontType::Icons );
-        font->Scale = fontManager_.getFontSizeByType( RibbonFontManager::FontType::Default ) /
-            fontManager_.getFontSizeByType( RibbonFontManager::FontType::Icons );
-        ImGui::PushFont( font );
-
-        ImGui::Text( "%s", getSceneItemIconByTypeName_( obj.typeName() ) );
-
-        ImGui::PopFont();
-        font->Scale = 1.0f;
-    }
-    else
-    {
-        auto multColor = ImGui::GetStyleColorVec4( ImGuiCol_Text );
-        ImGui::Image( *imageIcon, ImVec2( imageSize, imageSize ), multColor );
-    }
-    ImGui::SameLine();
-}
-
 void RibbonMenu::addRibbonItemShortcut_( const std::string& itemName, const ShortcutManager::ShortcutKey& key, ShortcutManager::Category category )
 {
+    if ( !shortcutManager_ )
+    {
+        assert( false );
+        return;
+    }
     auto itemIt = RibbonSchemaHolder::schema().items.find( itemName );
     if ( itemIt != RibbonSchemaHolder::schema().items.end() )
     {
-        auto caption = itemIt->second.caption.empty() ? itemIt->first : itemIt->second.caption;
-        shortcutManager_->setShortcut( key, { category, caption,[item = itemIt->second.item, this]()
+        shortcutManager_->setShortcut( key, { category, itemIt->first, [item = itemIt->second.item, this]()
         {
-            itemPressed_( item, getRequirements_( item ).empty() );
+            itemPressed_( item, getRequirements_( item ) );
         } } );
     }
 #ifndef __EMSCRIPTEN__
     else
+    {
+        spdlog::error( "Ribbon item not found: {}", itemName );
         assert( !"item not found" );
+    }
 #endif
 }
 
 void RibbonMenu::setupShortcuts_()
 {
+    ImGuiMenu::setupShortcuts_();
     if ( !shortcutManager_ )
-        shortcutManager_ = std::make_shared<ShortcutManager>();
+    {
+        assert( false );
+        return;
+    }
 
     shortcutManager_->setShortcut( { GLFW_KEY_H,0 }, { ShortcutManager::Category::View, "Toggle selected objects visibility", [] ()
     {
         auto& viewport = getViewerInstance().viewport();
         const auto& viewportid = viewport.id;
-        const auto selected = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        const auto& selected = SceneCache::getAllObjects<Object, ObjectSelectivityType::Selected>();
         bool atLeastOne = false;
         for ( const auto& data : selected )
             if ( data )
@@ -1659,9 +2061,9 @@ void RibbonMenu::setupShortcuts_()
                 data->setVisible( !atLeastOne, viewportid );
     } } );
     shortcutManager_->setShortcut( { GLFW_KEY_F1,0 }, { ShortcutManager::Category::Info, "Show this help with hot keys",[this] ()
-   {
-       showShortcuts_ = !showShortcuts_;
-   } } );
+    {
+        showShortcuts_ = !showShortcuts_;
+    } } );
     shortcutManager_->setShortcut( { GLFW_KEY_D,0 }, { ShortcutManager::Category::Info, "Toggle statistics window",[this] ()
     {
         showStatistics_ = !showStatistics_;
@@ -1670,15 +2072,19 @@ void RibbonMenu::setupShortcuts_()
     {
         auto& viewport = getViewerInstance().viewport();
         const auto& viewportid = viewport.id;
-        const auto selected = getAllObjectsInTree<ObjectMeshHolder>( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        const auto& selected = SceneCache::getAllObjects<ObjectMeshHolder, ObjectSelectivityType::Selected>();
         for ( const auto& sel : selected )
             sel->toggleVisualizeProperty( MeshVisualizePropertyType::FlatShading, viewportid );
+    } } );
+    shortcutManager_->setShortcut( { GLFW_KEY_F, CONTROL_OR_SUPER }, { ShortcutManager::Category::Info, "Search plugin by name or description",[this] ()
+    {
+        searcher_.activate();
     } } );
     shortcutManager_->setShortcut( { GLFW_KEY_I,0 }, { ShortcutManager::Category::View, "Invert normals of selected objects",[] ()
     {
         auto& viewport = getViewerInstance().viewport();
         const auto& viewportid = viewport.id;
-        const auto selected = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        const auto& selected = SceneCache::getAllObjects<VisualObject, ObjectSelectivityType::Selected>();
         for ( const auto& sel : selected )
             sel->toggleVisualizeProperty( VisualizeMaskType::InvertedNormals, viewportid );
     } }  );
@@ -1686,11 +2092,11 @@ void RibbonMenu::setupShortcuts_()
     {
         auto& viewport = getViewerInstance().viewport();
         const auto& viewportid = viewport.id;
-        const auto selected = getAllObjectsInTree<ObjectMeshHolder>( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        const auto& selected = SceneCache::getAllObjects<ObjectMeshHolder, ObjectSelectivityType::Selected>();
         for ( const auto& sel : selected )
                 sel->toggleVisualizeProperty( MeshVisualizePropertyType::Edges, viewportid );
     } } );
-    shortcutManager_->setShortcut( { GLFW_KEY_O,0 }, { ShortcutManager::Category::View, "Toggle orthographic in current viewport",[] ()
+    shortcutManager_->setShortcut( { GLFW_KEY_KP_5,0 }, { ShortcutManager::Category::View, "Toggle Orthographic/Perspective View",[] ()
     {
         auto& viewport = getViewerInstance().viewport();
         viewport.setOrthographic( !viewport.getParameters().orthographic );
@@ -1699,45 +2105,71 @@ void RibbonMenu::setupShortcuts_()
     {
         auto& viewport = getViewerInstance().viewport();
         const auto& viewportid = viewport.id;
-        const auto selected = getAllObjectsInTree<ObjectMeshHolder>( &SceneRoot::get(), ObjectSelectivityType::Selected );
+        const auto& selected = SceneCache::getAllObjects<ObjectMeshHolder, ObjectSelectivityType::Selected>();
         for ( const auto& sel : selected )
             sel->toggleVisualizeProperty( MeshVisualizePropertyType::Faces, viewportid );
     } }  );
-    shortcutManager_->setShortcut( { GLFW_KEY_DOWN,0 }, { ShortcutManager::Category::Objects, "Select next object",[] ()
+    if ( sceneObjectsList_ )
     {
-        changeSelection( true,0 );
-    } }  );
-    shortcutManager_->setShortcut( { GLFW_KEY_DOWN,GLFW_MOD_SHIFT }, { ShortcutManager::Category::Objects, "Add next object to selection",[] ()
-    {
-        changeSelection( true,GLFW_MOD_SHIFT );
-    } }  );
-    shortcutManager_->setShortcut( { GLFW_KEY_UP,0 }, { ShortcutManager::Category::Objects, "Select previous object",[] ()
-    {
-        changeSelection( false,0 );
-    } } );
-    shortcutManager_->setShortcut( { GLFW_KEY_UP,GLFW_MOD_SHIFT }, { ShortcutManager::Category::Objects, "Add previous object to selection",[] ()
-    {
-        changeSelection( false,GLFW_MOD_SHIFT );
-    } }  );
+        shortcutManager_->setShortcut( { GLFW_KEY_DOWN,0 }, { ShortcutManager::Category::Objects, "Select next object",[&] ()
+        {
+            sceneObjectsList_->changeSelection( true, false );
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_DOWN,GLFW_MOD_SHIFT }, { ShortcutManager::Category::Objects, "Add next object to selection",[&] ()
+        {
+            sceneObjectsList_->changeSelection( true, true );
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_UP,0 }, { ShortcutManager::Category::Objects, "Select previous object",[&] ()
+        {
+            sceneObjectsList_->changeSelection( false, false );
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_UP,GLFW_MOD_SHIFT }, { ShortcutManager::Category::Objects, "Add previous object to selection",[&] ()
+        {
+            sceneObjectsList_->changeSelection( false, true );
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_A, CONTROL_OR_SUPER }, { ShortcutManager::Category::Objects, "Ribbon Scene Select all",[&] ()
+        {
+            sceneObjectsList_->selectAllObjects();
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_F3, 0 }, { ShortcutManager::Category::View, "Ribbon Scene Show only previous",[&] ()
+        {
+            sceneObjectsList_->changeVisible( false );
+        } } );
+        shortcutManager_->setShortcut( { GLFW_KEY_F4, 0 }, { ShortcutManager::Category::View, "Ribbon Scene Show only next",[&] ()
+        {
+            sceneObjectsList_->changeVisible( true );
+        } } );
+    }
 
-    addRibbonItemShortcut_( "Ribbon Scene Select all", { GLFW_KEY_A, GLFW_MOD_CONTROL }, ShortcutManager::Category::Objects );
-    addRibbonItemShortcut_( "Fit data", { GLFW_KEY_F, GLFW_MOD_CONTROL }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Fit data", { GLFW_KEY_F, GLFW_MOD_CONTROL | GLFW_MOD_ALT }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Top View", { GLFW_KEY_KP_7, 0 }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Front View", { GLFW_KEY_KP_1, 0 }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Right View", { GLFW_KEY_KP_3, 0 }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Invert View", { GLFW_KEY_KP_9, 0 }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Bottom View", { GLFW_KEY_KP_7, CONTROL_OR_SUPER }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Back View", { GLFW_KEY_KP_1, CONTROL_OR_SUPER }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Left View", { GLFW_KEY_KP_3, CONTROL_OR_SUPER }, ShortcutManager::Category::View );
     addRibbonItemShortcut_( "Select objects", { GLFW_KEY_Q, GLFW_MOD_CONTROL }, ShortcutManager::Category::Objects );
-    addRibbonItemShortcut_( "Open files", { GLFW_KEY_O, GLFW_MOD_CONTROL }, ShortcutManager::Category::Scene );
-    addRibbonItemShortcut_( "Save Scene", { GLFW_KEY_S, GLFW_MOD_CONTROL }, ShortcutManager::Category::Scene );
-    addRibbonItemShortcut_( "Save Scene As", { GLFW_KEY_S, GLFW_MOD_CONTROL | GLFW_MOD_SHIFT }, ShortcutManager::Category::Scene );
-    addRibbonItemShortcut_( "New", { GLFW_KEY_N, GLFW_MOD_CONTROL }, ShortcutManager::Category::Scene );
-    addRibbonItemShortcut_( "Ribbon Scene Show only previous", { GLFW_KEY_F3, 0 }, ShortcutManager::Category::View );
-    addRibbonItemShortcut_( "Ribbon Scene Show only next", { GLFW_KEY_F4, 0 }, ShortcutManager::Category::View );
+    addRibbonItemShortcut_( "Open files", { GLFW_KEY_O, CONTROL_OR_SUPER }, ShortcutManager::Category::Scene );
+    addRibbonItemShortcut_( "Save Scene", { GLFW_KEY_S, CONTROL_OR_SUPER }, ShortcutManager::Category::Scene );
+    addRibbonItemShortcut_( "Save Scene As", { GLFW_KEY_S, CONTROL_OR_SUPER | GLFW_MOD_SHIFT }, ShortcutManager::Category::Scene );
+    addRibbonItemShortcut_( "New", { GLFW_KEY_N, CONTROL_OR_SUPER }, ShortcutManager::Category::Scene );
     addRibbonItemShortcut_( "Ribbon Scene Rename", { GLFW_KEY_F2, 0 }, ShortcutManager::Category::Objects );
     addRibbonItemShortcut_( "Ribbon Scene Remove selected objects", { GLFW_KEY_R, GLFW_MOD_SHIFT }, ShortcutManager::Category::Objects );
+    addRibbonItemShortcut_( "Viewer settings", { GLFW_KEY_COMMA, CONTROL_OR_SUPER }, ShortcutManager::Category::Info );
 }
 
 void RibbonMenu::drawShortcutsWindow_()
 {
+    if ( !shortcutManager_ )
+    {
+        assert( false );
+        return;
+    }
+
     const auto& style = ImGui::GetStyle();
     const auto scaling = menu_scaling();
-    float windowWidth = 920.0f * scaling;
+    float windowWidth = 1000.0f * scaling;
 
     const auto& shortcutList = shortcutManager_->getShortcutList();
     // header size
@@ -1767,6 +2199,7 @@ void RibbonMenu::drawShortcutsWindow_()
         rightNumKeys * ( fontManager_.getFontSizeByType( RibbonFontManager::FontType::Default ) + cButtonPadding + 2 * cDefaultItemSpacing ) ) * scaling;
     // calc window size for better positioning
     windowHeight += std::max( leftSize, rightSize );
+    windowHeight += 40.0f * scaling; // Reserve a bit more space
 
     const float minHeight = 200.0f * scaling;
     windowHeight = std::clamp( windowHeight, minHeight, float( getViewerInstance().framebufferSize.y ) - 100.0f * scaling );
@@ -1810,11 +2243,11 @@ void RibbonMenu::drawShortcutsWindow_()
 
         auto framePaddingX = std::max( style.FramePadding.x, ( itemWidth - textWidth ) / 2.0f );
         ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, { framePaddingX, cButtonPadding * scaling } );
-        ImGui::InputText( ( "##" + line + std::to_string( ++lineIndexer ) ).c_str(), const_cast< std::string& >( line ), ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll );
+        UI::inputText( ( "##" + line + std::to_string( ++lineIndexer ) ).c_str(), const_cast< std::string& >( line ), ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll );
         ImGui::PopItemWidth();
         ImGui::PopStyleVar();
     };
-    
+
     ImGui::SetCursorPosY( ImGui::GetCursorPosY() + cDefaultItemSpacing * scaling );
 
     ImGui::BeginChild( "##Hotkeys_table_chalid" );
@@ -1826,7 +2259,8 @@ void RibbonMenu::drawShortcutsWindow_()
         lastCategory = ShortcutManager::Category::Count;// invalid for first one
         for ( int i = 0; i < shortcutList.size(); ++i )
         {
-            const auto& [key, category, text] = shortcutList[i];
+            const auto& [key, category, name] = shortcutList[i];
+            const auto& caption = getItemCaption( name );
 
             if ( !secondColumnStarted && int( category ) >= int( ShortcutManager::Category::Count ) / 2 )
             {
@@ -1848,10 +2282,10 @@ void RibbonMenu::drawShortcutsWindow_()
             auto transparentColor = ImGui::GetStyleColorVec4( ImGuiCol_Text );
             transparentColor.w *= 0.5f;
             ImGui::PushStyleColor( ImGuiCol_Text, transparentColor );
-            ImGui::Text( "%s", text.c_str() );
+            ImGui::Text( "%s", caption.c_str() );
             ImGui::PopStyleColor();
 
-            float textSize = ImGui::CalcTextSize( text.c_str() ).x;
+            float textSize = ImGui::CalcTextSize( caption.c_str() ).x;
             ImGui::SameLine( 0, 260 * scaling - textSize );
 
             if ( key.mod & GLFW_MOD_CONTROL )
@@ -1878,6 +2312,16 @@ void RibbonMenu::drawShortcutsWindow_()
             {
                 ImGui::SetCursorPosY( ImGui::GetCursorPosY() - cButtonPadding * scaling );
                 addReadOnlyLine( ShortcutManager::getModifierString( GLFW_MOD_SHIFT ) );
+                ImGui::SameLine( 0, style.ItemInnerSpacing.x );
+                ImGui::SetCursorPosY( ImGui::GetCursorPosY() - cButtonPadding * scaling );
+                ImGui::Text( "+" );
+                ImGui::SameLine( 0, style.ItemInnerSpacing.x );
+            }
+
+            if ( key.mod & GLFW_MOD_SUPER )
+            {
+                ImGui::SetCursorPosY( ImGui::GetCursorPosY() - cButtonPadding * scaling );
+                addReadOnlyLine( ShortcutManager::getModifierString( GLFW_MOD_SUPER ) );
                 ImGui::SameLine( 0, style.ItemInnerSpacing.x );
                 ImGui::SetCursorPosY( ImGui::GetCursorPosY() - cButtonPadding * scaling );
                 ImGui::Text( "+" );
@@ -1952,8 +2396,34 @@ void RibbonMenu::endTopPanel_()
     ImGui::PopStyleVar( 3 );
 }
 
-void RibbonMenu::drawTopPanel_()
+void RibbonMenu::updateTopPanelSize_( bool drawTabs )
 {
+    constexpr int cTabSize = int( cTabHeight + cTabYOffset + 1 );
+    constexpr int cSumPanelSizeSize = cTabSize + 80;
+    if ( drawTabs && topPanelHiddenHeight_ == cTabSize )
+        return;
+    if ( !drawTabs && topPanelHiddenHeight_ == 0 )
+        return;
+    if ( drawTabs )
+    {
+        topPanelOpenedHeight_ = cSumPanelSizeSize;
+        topPanelHiddenHeight_ = cTabSize;
+    }
+    else
+    {
+        topPanelOpenedHeight_ = cSumPanelSizeSize - cTabSize;
+        topPanelHiddenHeight_ = 0;
+        collapseState_ = CollapseState::Pinned;
+    }
+    currentTopPanelHeight_ = collapseState_ == CollapseState::Closed ? topPanelHiddenHeight_ : topPanelOpenedHeight_;
+
+    fixViewportsSize_( getViewerInstance().framebufferSize.x, getViewerInstance().framebufferSize.y );
+}
+
+void RibbonMenu::drawTopPanel_( bool drawTabs, bool centerItems )
+{
+    updateTopPanelSize_( drawTabs );
+
     switch ( collapseState_ )
     {
         case MR::RibbonMenu::CollapseState::Closed:
@@ -1969,10 +2439,10 @@ void RibbonMenu::drawTopPanel_()
             }
             break;
     }
-    drawTopPanelOpened_();
+    drawTopPanelOpened_( drawTabs, centerItems );
 }
 
-void RibbonMenu::drawTopPanelOpened_()
+void RibbonMenu::drawTopPanelOpened_( bool drawTabs, bool centerItems )
 {
     beginTopPanel_();
 
@@ -1984,11 +2454,15 @@ void RibbonMenu::drawTopPanelOpened_()
     auto framePadding = style.FramePadding;
     framePadding.x = 0.0f;
 
-    drawHeaderPannel_();
+    if ( drawTabs )
+        drawHeaderPannel_();
 
     // tab content position
     ImGui::SetCursorPosX( style.CellPadding.x * 2 );
-    ImGui::SetCursorPosY( ( cTabYOffset + cTabHeight ) * menu_scaling() + 2 );
+    if ( drawTabs )
+        ImGui::SetCursorPosY( ( cTabYOffset + cTabHeight ) * menu_scaling() + 2 );
+    else
+        ImGui::SetCursorPosY( 2 );
 
     ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV;
 
@@ -2005,18 +2479,21 @@ void RibbonMenu::drawTopPanelOpened_()
             ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, itemSpacing );
             ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, framePadding ); // frame padding cause horizontal scrollbar which is not needed
             ImGui::PushStyleVar( ImGuiStyleVar_ScrollbarSize, cScrollBarSize * menu_scaling() );
-            if ( ImGui::BeginTable( ( tab + "##table" ).c_str(), int( tabIt->second.size() + 1 ), tableFlags ) )
+            auto config = setupItemsGroupConfig_( tabIt->second, tab, centerItems );
+            if ( ImGui::BeginTable( ( tab + "##table" ).c_str(), int( tabIt->second.size() ) + ( centerItems ? 0 : 1 ), tableFlags ) )
             {
-                setupItemsGroup_( tabIt->second, tab );
-                auto config = setupItemsGroupConfig_( tabIt->second, tab );
+                setupItemsGroup_( tabIt->second, tab, centerItems );
                 ImGui::TableNextRow();
+                UI::TestEngine::pushTree( "Ribbon" );
                 for ( int i = 0; i < tabIt->second.size(); ++i )
                 {
                     const auto& group = tabIt->second[i];
                     ImGui::TableNextColumn();
                     drawItemsGroup_( tab, group, config[i] );
                 }
-                ImGui::TableNextColumn(); // fictive
+                UI::TestEngine::popTree(); // "Ribbon"
+                if ( !centerItems )
+                    ImGui::TableNextColumn(); // fictive
                 ImGui::EndTable();
             }
             ImGui::PopStyleVar( 4 );
@@ -2029,25 +2506,34 @@ void RibbonMenu::drawTopPanelOpened_()
 
 void RibbonMenu::fixViewportsSize_( int width, int height )
 {
+    if ( width == 0 || height == 0 )
+        return;
     auto viewportsBounds = viewer->getViewportsBounds();
     auto minMaxDiff = viewportsBounds.max - viewportsBounds.min;
 
-    const float topPanelHeightScaled =
-        ( collapseState_ == CollapseState::Pinned ? topPanelOpenedHeight_ : topPanelHiddenHeight_ ) *
-        menu_scaling();
+    float topPanelHeightScaled = 0.0f;
+    if ( layoutMode_ == RibbonLayoutMode::All )
+    {
+        topPanelHeightScaled =
+            ( collapseState_ == CollapseState::Pinned ? topPanelOpenedHeight_ : topPanelHiddenHeight_ ) *
+            menu_scaling();
+    }
     for ( auto& vp : viewer->viewport_list )
     {
         auto rect = vp.getViewportRect();
 
-        const float sceneWidth = sceneSize_.x;
+        float sceneWidth = 0.0f;
+        if ( layoutMode_ != RibbonLayoutMode::None )
+            sceneWidth = sceneSize_.x;
 
         auto widthRect = MR::width( rect );
         auto heightRect = MR::height( rect );
 
-        rect.min.x = ( rect.min.x - viewportsBounds.min.x ) / minMaxDiff.x * ( width - sceneWidth ) + sceneWidth;
-        rect.min.y = ( rect.min.y - viewportsBounds.min.y ) / minMaxDiff.y * ( height - ( topPanelHeightScaled - 2 ) ); // -2 - buffer pixel
-        rect.max.x = rect.min.x + widthRect / minMaxDiff.x * ( width - sceneWidth );
-        rect.max.y = rect.min.y + heightRect / minMaxDiff.y * ( height - ( topPanelHeightScaled - 2 ) ); // -2 - buffer pixel
+        // -2 - buffer pixel
+        rect.min.x = ( rect.min.x - viewportsBounds.min.x ) / minMaxDiff.x * ( width - ( sceneWidth - 2 ) ) + sceneWidth;
+        rect.min.y = ( rect.min.y - viewportsBounds.min.y ) / minMaxDiff.y * ( height - ( topPanelHeightScaled - 2 ) );
+        rect.max.x = rect.min.x + widthRect / minMaxDiff.x * ( width - ( sceneWidth - 2 ) );
+        rect.max.y = rect.min.y + heightRect / minMaxDiff.y * ( height - ( topPanelHeightScaled - 2 ) );
         if ( MR::width( rect ) <= 0 || MR::height( rect ) <= 0 )
             continue;
         vp.setViewportRect( rect );
@@ -2057,6 +2543,64 @@ void RibbonMenu::fixViewportsSize_( int width, int height )
 bool RibbonMenu::drawCollapsingHeader_( const char* label, ImGuiTreeNodeFlags flags )
 {
     return RibbonButtonDrawer::CustomCollapsingHeader( label, flags );
+}
+
+void RibbonMenu::highlightBlocking_()
+{
+    if ( blockingHighlightTimer_ <= 0.0f )
+        return;
+    if ( !activeBlockingItem_.item )
+    {
+        blockingHighlightTimer_ = 0.0f;
+        return;
+    }
+    auto pluginWindowName = activeBlockingItem_.item->uiName();
+    auto* window = ImGui::FindWindowByName( pluginWindowName.c_str() );
+    if ( !window || blockingHighlightTimer_ <= 0.0f )
+    {
+        blockingHighlightTimer_ = 0.0f;
+        return;
+    }
+    auto scaling = menu_scaling();
+    if ( int( blockingHighlightTimer_ / 0.2f ) % 2 == 1 )
+    {
+        Color highlightColor = Color( 255, 161, 13, 255 );
+        ImGui::FocusWindow( window );
+        auto drawList = window->DrawList;
+        // Fix ImGui.
+        // The logic is set inside the library that if the program got there,
+        // then the command buffer should be at least one, but possibly empty.
+        // there is a blocking window that is not currently displayed.
+        // at some point, when trying to open another window, a crash occurs
+        // (it is worth switching applications during playback so that the system makes the
+        // window of another application active).
+        if ( drawList->CmdBuffer.Size > 0)
+        {
+            drawList->PushClipRect( ImVec2( 0, 0 ), ImGui::GetIO().DisplaySize );
+            drawList->AddRect(
+                ImVec2( window->Pos.x - 2.0f * scaling, window->Pos.y - 2.0f * scaling ),
+                ImVec2( window->Pos.x + window->Size.x + 2.0f * scaling, window->Pos.y + window->Size.y + 2.0f * scaling ),
+                highlightColor.getUInt32(), 0.0f, 0, 2.0f * scaling );
+            drawList->PopClipRect();
+        }
+    }
+    getViewerInstance().incrementForceRedrawFrames();
+    blockingHighlightTimer_ -= ImGui::GetIO().DeltaTime;
+}
+
+void pushNotification( const RibbonNotification& notification )
+{
+    if ( auto ribbonMenu = getViewerInstance().getMenuPluginAs<RibbonMenu>() )
+    {
+        if ( notification.text.back() != '\n' )
+            return ribbonMenu->pushNotification( notification );
+
+        auto notificationCopy = notification;
+        notificationCopy.text.pop_back();
+        return ribbonMenu->pushNotification( notificationCopy );
+    }
+
+    showModal( notification.text, notification.type );
 }
 
 }

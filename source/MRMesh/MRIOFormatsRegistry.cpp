@@ -1,87 +1,103 @@
 #include "MRIOFormatsRegistry.h"
+#include "MRImage.h"
 
 namespace MR
 {
-const IOFilter AllFilter = {"All (*.*)",         "*.*"};
+
+const IOFilters AllFilter =
+{
+    { "All (.*)", "*.*" },
+};
 
 namespace MeshLoad
 {
 
-class FormatsRegistry
+MR_FORMAT_REGISTRY_IMPL( MeshLoader )
+
+} // namespace MeshLoad
+
+namespace MeshSave
 {
-public:
 
-    static IOFilters getFilters()
-    {
-        const auto& loaders = get_().loaders_;
-        IOFilters res( loaders.size() );
-        for ( size_t i = 0; i < loaders.size(); ++i )
-            res[i] = loaders[i].filter;
-        return res;
-    }
+MR_FORMAT_REGISTRY_IMPL( MeshSaver )
 
-    static MeshLoader getLoader( IOFilter filter )
-    {
-        const auto& loaders = get_().loaders_;
-        auto it = std::find_if( loaders.begin(), loaders.end(), [filter]( const NamedMeshLoader& loader )
-        {
-            return loader.filter.name == filter.name;
-        } );
-        if ( it != loaders.end() )
-            return it->loader;
-        return {};
-    }
+} // namespace MeshSave
 
-    static MeshStreamLoader getStreamLoader( IOFilter filter )
-    {
-        const auto& loaders = get_().loaders_;
-        auto it = std::find_if( loaders.begin(), loaders.end(), [filter] ( const NamedMeshLoader& loader )
-        {
-            return loader.filter.name == filter.name;
-        } );
-        if ( it != loaders.end() )
-            return it->streamLoader;
-        return {};
-    }
-
-    static void addLoader( const NamedMeshLoader& loader )
-    {
-        auto& loaders = get_().loaders_;
-        if ( loaders.empty() )
-            loaders.push_back( {AllFilter,{}} );
-        loaders.push_back( loader );
-    }
-private:
-    FormatsRegistry() = default;
-    ~FormatsRegistry() = default;
-
-    static FormatsRegistry& get_()
-    {
-        static FormatsRegistry instance;
-        return instance;
-    }
-    std::vector<NamedMeshLoader> loaders_;
-};
-
-MeshLoaderAdder::MeshLoaderAdder( const NamedMeshLoader& loader )
+namespace LinesLoad
 {
-    FormatsRegistry::addLoader( loader );
-}
 
-MeshLoader getMeshLoader( IOFilter filter )
+MR_FORMAT_REGISTRY_IMPL( LinesLoader )
+
+} // namespace LinesLoad
+
+namespace LinesSave
 {
-    return FormatsRegistry::getLoader( filter );
-}
 
-MeshStreamLoader getMeshStreamLoader( IOFilter filter )
+MR_FORMAT_REGISTRY_IMPL( LinesSaver )
+
+} // namespace LinesSave
+
+namespace PointsLoad
 {
-    return FormatsRegistry::getStreamLoader( filter );
-}
 
-IOFilters getFilters()
+MR_FORMAT_REGISTRY_IMPL( PointsLoader )
+
+} // namespace PointsLoad
+
+namespace PointsSave
 {
-    return FormatsRegistry::getFilters();
-}
 
-}
-}
+MR_FORMAT_REGISTRY_IMPL( PointsSaver )
+
+} // namespace PointsSave
+
+namespace ImageLoad
+{
+
+MR_FORMAT_REGISTRY_IMPL( ImageLoader )
+
+} // namespace ImageLoad
+
+namespace ImageSave
+{
+
+MR_FORMAT_REGISTRY_IMPL( ImageSaver )
+
+} // namespace ImageSave
+
+namespace ObjectLoad
+{
+
+MR_FORMAT_REGISTRY_IMPL( ObjectLoader )
+
+} // namespace ObjectLoad
+
+namespace ObjectSave
+{
+
+MR_FORMAT_REGISTRY_IMPL( ObjectSaver )
+
+} // namespace ObjectSave
+
+namespace AsyncObjectLoad
+{
+
+MR_FORMAT_REGISTRY_IMPL( ObjectLoader )
+
+} // namespace AsyncObjectLoad
+
+namespace SceneLoad
+{
+
+MR_FORMAT_REGISTRY_IMPL( SceneLoader )
+
+} // namespace SceneLoad
+
+namespace SceneSave
+{
+
+MR_FORMAT_REGISTRY_IMPL( SceneSaver )
+
+} // namespace SceneSave
+
+} // namespace MR

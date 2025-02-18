@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MRMeshFwd.h"
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -8,7 +9,7 @@ namespace MR
 {
 
 
-/// \defgroup IOGroup
+/// \defgroup IOGroup Input/Output
 /// \{
 
 /// \defgroup Base64Group Base64

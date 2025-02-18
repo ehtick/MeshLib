@@ -7,60 +7,220 @@
 #include "MRDistanceMapLoad.h"
 #include "MRImageLoad.h"
 #include "MRPointsLoad.h"
-#include "MRVoxelsLoad.h"
-#include "MRObjectVoxels.h"
+#include "MRObjectFactory.h"
 #include "MRObjectLines.h"
 #include "MRObjectPoints.h"
 #include "MRDistanceMap.h"
 #include "MRObjectDistanceMap.h"
 #include "MRObjectGcode.h"
+#include "MRPointCloud.h"
 #include "MRGcodeLoad.h"
 #include "MRStringConvert.h"
 #include "MRIOFormatsRegistry.h"
 #include "MRMeshLoadObj.h"
 #include "MRSerializer.h"
 #include "MRDirectory.h"
-#include "MRPch/MRSpdlog.h"
-
-#ifndef MRMESH_NO_GLTF
-#include "MRGltfSerializer.h"
-#endif
+#include "MRSceneSettings.h"
+#include "MRMeshLoadSettings.h"
+#include "MRZip.h"
+#include "MRVoxels/MRDicom.h"
+#include "MRPch/MRTBB.h"
+#include "MRPch/MRFmt.h"
 
 namespace MR
 {
 
-const IOFilters allFilters = SceneFileFilters
-                             | MeshLoad::getFilters()
-#if !defined( __EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-                             | VoxelsLoad::Filters
-#endif
-                             | LinesLoad::Filters
-                             | PointsLoad::Filters;
-
-Expected<ObjectMesh, std::string> makeObjectMeshFromFile( const std::filesystem::path & file, ProgressCallback callback )
+namespace
 {
-    MR_TIMER;
 
-    VertColors colors;
-    auto mesh = MeshLoad::fromAnySupportedFormat( file, &colors, callback );
-    if ( !mesh.has_value() )
+/// finds if given mesh has enough sharp edges (>25 degrees) to recommend flat shading
+bool detectFlatShading( const Mesh& mesh )
+{
+    MR_TIMER
+
+    constexpr float sharpAngle = 25 * PI_F / 180; // Critical angle from planar, degrees
+    const float sharpAngleCos = std::cos( sharpAngle );
+
+    struct Data
     {
-        return unexpected( mesh.error() );
-    }
+        double sumDblArea = 0;
+        double sumSharpDblArea = 0;
+        Data operator + ( const Data & b ) const 
+        {
+            return { sumDblArea + b.sumDblArea, sumSharpDblArea + b.sumSharpDblArea };
+        }
+    };
 
-    ObjectMesh objectMesh;
-    objectMesh.setName( utf8string( file.stem() ) );
-    objectMesh.setMesh( std::make_shared<MR::Mesh>( std::move( mesh.value() ) ) );
-    if ( !colors.empty() )
-    {
-        objectMesh.setVertsColorMap( std::move( colors ) );
-        objectMesh.setColoringType( ColoringType::VertsColorMap );
-    }
+    auto total = parallel_deterministic_reduce(
+        tbb::blocked_range( 0_ue, UndirectedEdgeId{ mesh.topology.undirectedEdgeSize() } ),
+        Data(),
+        [&mesh, sharpAngleCos] ( const auto& range, Data current )
+        {
+            for ( UndirectedEdgeId ue = range.begin(); ue < range.end(); ++ue )
+            {
+                const EdgeId e = ue;
+                const auto l = mesh.topology.left( e );
+                const auto r = mesh.topology.right( e );
+                if ( !l || !r )
+                    continue;
+                const auto da = mesh.dblArea( l ) + mesh.dblArea( r );
+                current.sumDblArea += da;
+                auto dihedralCos = mesh.dihedralAngleCos( ue );
+                if ( dihedralCos <= sharpAngleCos )
+                    current.sumSharpDblArea += da;
+            }
+            return current;
+        },
+        std::plus<Data>() );
 
-    return objectMesh;
+    // triangles' area near sharp edges is more than 5% of total area
+    return total.sumSharpDblArea > 0.05 * total.sumDblArea;
 }
 
-Expected<ObjectLines, std::string> makeObjectLinesFromFile( const std::filesystem::path& file, ProgressCallback callback )
+// Prepare object after it has been imported from external format (not .mru)
+void postImportObject( const std::shared_ptr<Object> &o, const std::filesystem::path &filename )
+{
+    if ( std::shared_ptr<ObjectMesh> mesh = std::dynamic_pointer_cast< ObjectMesh >( o ) )
+    {
+        // Detect flat shading needed
+        bool flat;
+        if ( SceneSettings::getDefaultShadingMode() == SceneSettings::ShadingMode::AutoDetect )
+            flat = filename.extension() == ".step" || filename.extension() == ".stp" ||
+                   ( mesh->mesh() && detectFlatShading( *mesh->mesh().get() ) );
+        else
+            flat = SceneSettings::getDefaultShadingMode() == SceneSettings::ShadingMode::Flat;
+        mesh->setVisualizeProperty( flat, MeshVisualizePropertyType::FlatShading, ViewportMask::all() );
+    }
+    for ( const std::shared_ptr<Object>& child : o->children() )
+        postImportObject( child, filename );
+}
+
+} // namespace
+
+IOFilters getAllFilters()
+{
+    return
+        SceneLoad::getFilters()
+        | ObjectLoad::getFilters()
+        | MeshLoad::getFilters()
+        | LinesLoad::getFilters()
+        | PointsLoad::getFilters()
+    ;
+}
+
+Expected<LoadedObjectMesh> makeObjectMeshFromFile( const std::filesystem::path& file, const ProgressCallback& cb )
+{
+    auto maybe = makeObjectFromMeshFile( file, cb, true );
+    if ( !maybe )
+        return unexpected( std::move( maybe.error() ) );
+
+    auto objMesh = std::dynamic_pointer_cast<ObjectMesh>( maybe->obj );
+    if ( !objMesh )
+    {
+        assert( false );
+        return unexpected( "makeObjectFromMeshFile returned not a mesh" );
+    }
+
+    return LoadedObjectMesh{ .obj = std::move( objMesh ), .warnings = std::move( maybe->warnings ) };
+}
+
+static std::string makeWarningString( int skippedFaceCount, int duplicatedVertexCount, int holesCount )
+{
+    std::string res;
+    if ( skippedFaceCount )
+        res = fmt::format( "{} triangles were skipped as inconsistent with others.\n", skippedFaceCount );
+    if ( duplicatedVertexCount )
+        res += fmt::format( "{} vertices were duplicated to make them manifold.\n", duplicatedVertexCount );
+    if ( holesCount )
+        res += fmt::format( "The objects contains {} holes. Please consider using Fill Holes tool.\n", holesCount );
+    return res;
+}
+
+Expected<LoadedObject> makeObjectFromMeshFile( const std::filesystem::path& file, const ProgressCallback& cb, bool returnOnlyMesh )
+{
+    MR_TIMER
+
+    VertColors colors;
+    VertUVCoords uvCoords;
+    VertNormals normals;
+    MeshTexture texture;
+    int skippedFaceCount = 0;
+    int duplicatedVertexCount = 0;
+    int holesCount = 0;
+    AffineXf3f xf;
+    MeshLoadSettings settings
+    {
+        .colors = &colors,
+        .uvCoords = &uvCoords,
+        .normals = returnOnlyMesh ? nullptr : &normals,
+        .texture = &texture,
+        .skippedFaceCount = &skippedFaceCount,
+        .duplicatedVertexCount = &duplicatedVertexCount,
+        .xf = &xf,
+        .callback = cb
+    };
+    auto mesh = MeshLoad::fromAnySupportedFormat( file, settings );
+    if ( !mesh.has_value() )
+        return unexpected( mesh.error() );
+    
+    if ( !mesh->points.empty() && mesh->topology.numValidFaces() <= 0 )
+    {
+        if ( returnOnlyMesh )
+            return unexpected( "File contains a point cloud and not a mesh: " + utf8string( file ) );
+        auto pointCloud = std::make_shared<MR::PointCloud>();
+        pointCloud->points = std::move( mesh->points );
+        pointCloud->normals = std::move( normals );
+        pointCloud->validPoints.resize( pointCloud->points.size(), true );
+
+        auto objectPoints = std::make_unique<ObjectPoints>();
+        objectPoints->setName( utf8string( file.stem() ) );
+        objectPoints->setPointCloud( pointCloud );
+
+        if ( !colors.empty() )
+        {
+            objectPoints->setVertsColorMap( std::move( colors ) );
+            objectPoints->setColoringType( ColoringType::VertsColorMap );
+        }
+
+        objectPoints->setXf( xf );
+
+        return LoadedObject{ .obj = std::move( objectPoints ) };
+    }
+
+    const auto numVerts = mesh->points.size();
+    const bool hasColors = colors.size() >= numVerts;
+    const bool hasUV = uvCoords.size() >= numVerts;
+    const bool hasTexture = !texture.pixels.empty();
+
+    auto objectMesh = std::make_unique<ObjectMesh>();
+    objectMesh->setName( utf8string( file.stem() ) );
+    objectMesh->setMesh( std::make_shared<Mesh>( std::move( mesh.value() ) ) );
+
+    if ( hasColors )
+        objectMesh->setVertsColorMap( std::move( colors ) );
+    if ( hasUV )
+        objectMesh->setUVCoords( std::move( uvCoords ) );
+    if ( hasTexture )
+        objectMesh->setTextures( { std::move( texture ) } );
+
+    if ( hasUV && hasTexture )
+        objectMesh->setVisualizeProperty( true, MeshVisualizePropertyType::Texture, ViewportMask::all() );
+    else if ( hasColors )
+        objectMesh->setColoringType( ColoringType::VertsColorMap );
+
+    objectMesh->setXf( xf );
+
+        holesCount = int( objectMesh->numHoles() );
+    std::string warnings = makeWarningString( skippedFaceCount, duplicatedVertexCount, holesCount );
+        if ( !colors.empty() && !hasColors )
+        warnings += fmt::format( "Ignoring too few ({}) colors loaded for a mesh with {} vertices.\n", colors.size(), numVerts );
+        if ( !uvCoords.empty() && !hasUV )
+        warnings += fmt::format( "Ignoring too few ({}) uv-coordinates loaded for a mesh with {} vertices.\n", uvCoords.size(), numVerts );
+
+    return LoadedObject{ .obj = std::move( objectMesh ), .warnings = std::move( warnings ) };
+}
+
+Expected<ObjectLines> makeObjectLinesFromFile( const std::filesystem::path& file, ProgressCallback callback )
 {
     MR_TIMER;
 
@@ -77,12 +237,17 @@ Expected<ObjectLines, std::string> makeObjectLinesFromFile( const std::filesyste
     return objectLines;
 }
 
-Expected<ObjectPoints, std::string> makeObjectPointsFromFile( const std::filesystem::path& file, ProgressCallback callback )
+Expected<ObjectPoints> makeObjectPointsFromFile( const std::filesystem::path& file, ProgressCallback callback )
 {
     MR_TIMER;
 
     VertColors colors;
-    auto pointsCloud = PointsLoad::fromAnySupportedFormat( file, &colors, callback );
+    AffineXf3f xf;
+    auto pointsCloud = PointsLoad::fromAnySupportedFormat( file, {
+        .colors = &colors,
+        .outXf = &xf,
+        .callback = callback,
+    } );
     if ( !pointsCloud.has_value() )
     {
         return unexpected( pointsCloud.error() );
@@ -91,6 +256,7 @@ Expected<ObjectPoints, std::string> makeObjectPointsFromFile( const std::filesys
     ObjectPoints objectPoints;
     objectPoints.setName( utf8string( file.stem() ) );
     objectPoints.setPointCloud( std::make_shared<MR::PointCloud>( std::move( pointsCloud.value() ) ) );
+    objectPoints.setXf( xf );
     if ( !colors.empty() )
     {
         objectPoints.setVertsColorMap( std::move( colors ) );
@@ -100,7 +266,7 @@ Expected<ObjectPoints, std::string> makeObjectPointsFromFile( const std::filesys
     return objectPoints;
 }
 
-Expected<ObjectDistanceMap, std::string> makeObjectDistanceMapFromFile( const std::filesystem::path& file, ProgressCallback callback )
+Expected<ObjectDistanceMap> makeObjectDistanceMapFromFile( const std::filesystem::path& file, ProgressCallback callback )
 {
     MR_TIMER;
 
@@ -118,208 +284,126 @@ Expected<ObjectDistanceMap, std::string> makeObjectDistanceMapFromFile( const st
     return objectDistanceMap;
 }
 
-Expected<ObjectGcode, std::string> makeObjectGcodeFromFile( const std::filesystem::path& file, ProgressCallback callback /*= {} */ )
+Expected<ObjectGcode> makeObjectGcodeFromFile( const std::filesystem::path& file, ProgressCallback callback /*= {} */ )
 {
     MR_TIMER;
 
     auto gcodeSource = GcodeLoad::fromAnySupportedFormat( file, callback );
     if ( !gcodeSource.has_value() )
-    {
-        return unexpected( gcodeSource.error() );
-    }
+        return unexpected( std::move( gcodeSource.error() ) );
 
     ObjectGcode objectGcode;
     objectGcode.setName( utf8string( file.stem() ) );
-    objectGcode.setGcodeSource( std::make_shared<GcodeSource>( *gcodeSource ) );
+    objectGcode.setGcodeSource( std::make_shared<GcodeSource>( std::move( *gcodeSource ) ) );
 
     return objectGcode;
 }
 
-#if !defined( __EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-Expected<std::vector<std::shared_ptr<ObjectVoxels>>, std::string> makeObjectVoxelsFromFile( const std::filesystem::path& file, ProgressCallback callback /*= {} */ )
-{
-    MR_TIMER;
-
-    auto cb = callback;
-    if ( cb )
-        cb = [callback] ( float v ) { return callback( v / 3.f ); };
-    auto loadRes = VoxelsLoad::fromAnySupportedFormat( file, cb );
-    if ( !loadRes.has_value() )
-    {
-        return unexpected( loadRes.error() );
-    }
-    auto& loadResRef = *loadRes;
-    std::vector<std::shared_ptr<ObjectVoxels>> res;
-    int size = int( loadResRef.size() );
-    for ( int i = 0; i < size; ++i )
-    {
-        std::shared_ptr<ObjectVoxels> obj = std::make_shared<ObjectVoxels>();
-        const std::string name = i > 1 ? fmt::format( "{} {}", utf8string(file.stem()), i) : utf8string(file.stem());
-        obj->setName( name );
-        int step = 0;
-        bool callbackRes = true;
-        if ( cb )
-            cb = [callback, &i, &step, size, &callbackRes] ( float v )
-        {
-            callbackRes = callback( ( 1.f + 2 * ( i + ( step + v ) / 2.f ) / size ) / 3.f );
-            return callbackRes;
-        };
-
-        obj->construct( loadResRef[i], cb );
-        if ( cb && !callbackRes )
-            return unexpected( getCancelMessage( file ) );
-        step = 1;
-        obj->setIsoValue( ( loadResRef[i].min + loadResRef[i].max ) / 2.f, cb );
-        if ( cb && !callbackRes )
-            return unexpected( getCancelMessage( file ) );
-        res.emplace_back( obj );
-    }
-    
-    return res;
-}
-#endif
-
-Expected<std::vector<std::shared_ptr<MR::Object>>, std::string> loadObjectFromFile( const std::filesystem::path& filename,
-                                                                                        ProgressCallback callback )
+Expected<LoadedObjects> loadObjectFromFile( const std::filesystem::path& filename, const ProgressCallback& callback )
 {
     if ( callback && !callback( 0.f ) )
-        return unexpected( std::string( "Saving canceled" ) );
+        return unexpectedOperationCanceled();
 
-    Expected<std::vector<std::shared_ptr<Object>>, std::string> result;
+    Expected<LoadedObjects> result = unexpectedUnsupportedFileExtension();
+    bool loadedFromSceneFile = false;
 
     auto ext = std::string( "*" ) + utf8string( filename.extension().u8string() );
     for ( auto& c : ext )
-        c = ( char )tolower( c );   
+        c = ( char )tolower( c );
     
-    if ( ext == "*.obj" )
-    {
-        auto res = MeshLoad::fromSceneObjFile( filename, false, callback );
-        if ( res.has_value() )
-        {
-            std::vector<std::shared_ptr<Object>> objects( res.value().size() );
-            auto& resValue = *res;
-            for ( int i = 0; i < objects.size(); ++i )
-            {
-                std::shared_ptr<ObjectMesh> objectMesh = std::make_shared<ObjectMesh>();
-                if ( resValue[i].name.empty() )
-                    objectMesh->setName( utf8string( filename.stem() ) );
-                else
-                    objectMesh->setName( std::move( resValue[i].name ) );
-                objectMesh->select( true );
-                objectMesh->setMesh( std::make_shared<Mesh>( std::move( resValue[i].mesh ) ) );
-                if ( resValue[i].diffuseColor )
-                    objectMesh->setFrontColor( *resValue[i].diffuseColor, false );
-
-                auto image = ImageLoad::fromAnySupportedFormat( resValue[i].pathToTexture );
-                if ( image.has_value() )
-                {
-                    objectMesh->setUVCoords( std::move( resValue[i].uvCoords ) );
-                    objectMesh->setTexture( { image.value(), FilterType::Linear } );
-                    objectMesh->setVisualizeProperty( true, MeshVisualizePropertyType::Texture, ViewportMask::all() );
-                }
-
-                objects[i] = std::dynamic_pointer_cast< Object >( objectMesh );
-            }
-            result = objects;
-        }
-        else
-            result = unexpected( res.error() );
-    }
-    else if ( std::find_if( SceneFileFilters.begin(), SceneFileFilters.end(), [ext] ( const auto& filter ) { return filter.extension == ext;     } ) != SceneFileFilters.end() )
+    if ( findFilter( SceneLoad::getFilters(), ext ) )
     {
         const auto objTree = loadSceneFromAnySupportedFormat( filename, callback );
         if ( !objTree.has_value() )
-            return unexpected( objTree.error() );
-        
-        result = std::vector( { *objTree } );
-        ( *result )[0]->setName( utf8string( filename.stem() ) );
+            return unexpected( std::move( objTree.error() ) );
+
+        objTree->obj->setName( utf8string( filename.stem() ) );
+        result = LoadedObjects{ .objs = { objTree->obj }, .warnings = std::move( objTree->warnings ) };
+        loadedFromSceneFile = true;
     }
-    else
+    else if ( const auto filter = findFilter( ObjectLoad::getFilters(), ext ) )
     {
-        auto objectMesh = makeObjectMeshFromFile( filename, callback );
-        if ( objectMesh.has_value() )
+        const auto loader = ObjectLoad::getObjectLoader( *filter );
+        result = loader( filename, callback );
+    }
+    // no else to support same extensions in object and mesh loaders
+    if ( !result.has_value() && result.error() != stringOperationCanceled() )
+    {
+        auto maybe = makeObjectFromMeshFile( filename, callback );
+        if ( maybe )
         {
-            objectMesh->select( true );
-            auto obj = std::make_shared<ObjectMesh>( std::move( *objectMesh ) );
-            result = { obj };
+            maybe->obj->select( true );
+            result = LoadedObjects{ .objs = { maybe->obj }, .warnings = std::move( std::move( maybe->warnings ) ) };
         }
-        else if ( objectMesh.error() == "Loading canceled" )
-        {
-            result = unexpected( objectMesh.error() );
-        }
-        else
-        {
-            result = unexpected( objectMesh.error() );
-
-            auto objectPoints = makeObjectPointsFromFile( filename, callback );
-            if ( objectPoints.has_value() )
-            {
-                objectPoints->select( true );
-                auto obj = std::make_shared<ObjectPoints>( std::move( objectPoints.value() ) );
-                result = { obj };
-            }
-            else if ( result.error() == "unsupported file extension" )
-            {
-                result = unexpected( objectPoints.error() );
-
-                auto objectLines = makeObjectLinesFromFile( filename, callback );
-                if ( objectLines.has_value() )
-                {
-                    objectLines->select( true );
-                    auto obj = std::make_shared<ObjectLines>( std::move( objectLines.value() ) );
-                    result = { obj };
-                }
-                else if ( result.error() == "unsupported file extension" )
-                {
-                    result = unexpected( objectLines.error() );
-
-                    auto objectDistanceMap = makeObjectDistanceMapFromFile( filename, callback );
-                    if ( objectDistanceMap.has_value() )
-                    {
-                        objectDistanceMap->select( true );
-                        auto obj = std::make_shared<ObjectDistanceMap>( std::move( objectDistanceMap.value() ) );
-                        result = { obj };
-                    }
-                    else if ( result.error() == "unsupported file extension" )
-                    {
-                        result = unexpected( objectDistanceMap.error() );
-
-                        auto objectGcode = makeObjectGcodeFromFile( filename, callback );
-                        if ( objectGcode.has_value() )
-                        {
-                            objectGcode->select( true );
-                            auto obj = std::make_shared<ObjectGcode>( std::move( objectGcode.value() ) );
-                            result = { obj };
-                        }
-                        else if ( result.error() == "unsupported file extension" )
-                        {
-                            result = unexpected( objectDistanceMap.error() );
-
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-                            auto objsVoxels = makeObjectVoxelsFromFile( filename, callback );
-                            std::vector<std::shared_ptr<Object>> resObjs;
-                            if ( objsVoxels.has_value() )
-                            {
-                                auto& objsVoxelsRef = *objsVoxels;
-                                for ( auto& objPtr : objsVoxelsRef )
-                                {
-                                    objPtr->select( true );
-                                    resObjs.emplace_back( std::dynamic_pointer_cast< Object >( objPtr ) );
-                                }
-                                result = resObjs;
-                            }
-                            else
-                                result = unexpected( objsVoxels.error() );
-#endif
-                        }
-                    }
-                }
-            }
-        }
+        else if ( maybe.error() != stringUnsupportedFileExtension() )
+            result = unexpected( std::move( maybe.error() ) );
     }
 
-    if ( !result.has_value() )
-        spdlog::error( result.error() );
+    if ( !result.has_value() && result.error() != stringOperationCanceled() )
+    {
+        auto objectPoints = makeObjectPointsFromFile( filename, callback );
+        if ( objectPoints.has_value() )
+        {
+            objectPoints->select( true );
+            auto obj = std::make_shared<ObjectPoints>( std::move( objectPoints.value() ) );
+            result = LoadedObjects{ .objs = { obj } };
+        }
+        else if ( objectPoints.error() != stringUnsupportedFileExtension() )
+            result = unexpected( std::move( objectPoints.error() ) );
+    }
+
+    if ( !result.has_value() && result.error() != stringOperationCanceled() )
+    {
+        auto objectLines = makeObjectLinesFromFile( filename, callback );
+        if ( objectLines.has_value() )
+        {
+            objectLines->select( true );
+            auto obj = std::make_shared<ObjectLines>( std::move( objectLines.value() ) );
+            result = LoadedObjects{ .objs = { obj } };
+        }
+        else if ( objectLines.error() != stringUnsupportedFileExtension() )
+            result = unexpected( std::move( objectLines.error() ) );
+    }
+
+    if ( !result.has_value() && result.error() != stringOperationCanceled() )
+    {
+        auto objectDistanceMap = makeObjectDistanceMapFromFile( filename, callback );
+        if ( objectDistanceMap.has_value() )
+        {
+            objectDistanceMap->select( true );
+            auto obj = std::make_shared<ObjectDistanceMap>( std::move( objectDistanceMap.value() ) );
+            result = LoadedObjects{ .objs = { obj } };
+        }
+        else if ( objectDistanceMap.error() != stringUnsupportedFileExtension() )
+            result = unexpected( std::move( objectDistanceMap.error() ) );
+    }
+
+    if ( !result.has_value() && result.error() != stringOperationCanceled() )
+    {
+        auto objectGcode = makeObjectGcodeFromFile( filename, callback );
+        if ( objectGcode.has_value() )
+        {
+            objectGcode->select( true );
+            auto obj = std::make_shared<ObjectGcode>( std::move( objectGcode.value() ) );
+            result = LoadedObjects{ .objs = { obj } };
+        }
+        else if ( objectGcode.error() != stringUnsupportedFileExtension() )
+            result = unexpected( std::move( objectGcode.error() ) );
+    }
+
+    if ( result.has_value() && !loadedFromSceneFile )
+        for ( const std::shared_ptr<Object>& o : result->objs )
+        {
+            postImportObject( o, filename );
+            if ( auto objectPoints = o->asType<ObjectPoints>(); objectPoints )
+            {
+                if ( !objectPoints->pointCloud()->hasNormals() )
+                    result->warnings += "Point cloud " + o->name() + " has no normals.\n";
+                if ( objectPoints->getRenderDiscretization() > 1 )
+                    result->warnings += "Point cloud " + o->name() + " has too many points in PointCloud:\n"
+                    "Visualization is simplified (only part of the points is drawn)\n";
+            }
+        }
 
     return result;
 }
@@ -327,6 +411,8 @@ Expected<std::vector<std::shared_ptr<MR::Object>>, std::string> loadObjectFromFi
 
 bool isSupportedFileInSubfolders( const std::filesystem::path& folder )
 {
+    const auto allFilters = getAllFilters();
+
     std::vector<std::filesystem::path> filesList;
     filesList.push_back( folder );
 
@@ -352,8 +438,7 @@ bool isSupportedFileInSubfolders( const std::filesystem::path& folder )
                 if ( ext.empty() )
                     continue;
 
-                if ( std::find_if( allFilters.begin(), allFilters.end(), [&ext] ( const IOFilter& f )
-                    { return f.extension.substr( 1 ) == ext; } ) != allFilters.end() )
+                if ( findFilter( allFilters, ext ) )
                     return true;
             }
         }
@@ -361,191 +446,128 @@ bool isSupportedFileInSubfolders( const std::filesystem::path& folder )
     return false;
 }
 
-Expected<Object, std::string> makeObjectTreeFromFolder( const std::filesystem::path & folder, ProgressCallback callback )
-{
-    MR_TIMER;
-
-    if ( callback && !callback( 0.f ) )
-        return unexpected( getCancelMessage( folder ) );
-
-    struct FilePathNode
-    {
-        std::filesystem::path path;
-        std::vector<FilePathNode> subfolders;
-        std::vector<FilePathNode> files;
-    };
-
-    FilePathNode filesTree;
-    filesTree.path = folder;
-
-
-    std::function<void( FilePathNode& )> fillFilesTree = {};
-    fillFilesTree = [&fillFilesTree] ( FilePathNode& node )
-    {
-        std::error_code ec;
-        for ( auto entry : Directory{ node.path, ec } )
-        {
-            auto path = entry.path();
-            if ( entry.is_directory( ec ) )
-            {
-                node.subfolders.push_back( { .path = path } );
-                fillFilesTree( node.subfolders[node.subfolders.size() - 1] );
-            }
-            else if ( entry.is_regular_file( ec ) )
-            {
-                auto ext = utf8string( path.extension() );
-                for ( auto& c : ext )
-                    c = ( char )tolower( c );
-
-                if ( ext.empty() )
-                    continue;
-
-                if ( std::find_if( allFilters.begin(), allFilters.end(), [&ext] ( const IOFilter& f )
-                {
-                    return f.extension.substr( 1 ) == ext;
-                } ) != allFilters.end() )
-                    node.files.push_back( { .path = path } );
-            }
-        }
-    };
-    fillFilesTree( filesTree );
-
-    // clear empty folders
-    std::function<void( FilePathNode& )> clearEmptySubfolders = {};
-    clearEmptySubfolders = [&clearEmptySubfolders] ( FilePathNode& node )
-    {
-        for ( int i = int( node.subfolders.size() ) - 1; i >= 0; --i )
-        {
-            clearEmptySubfolders( node.subfolders[i] );
-            if ( node.subfolders[i].files.empty() && node.subfolders[i].subfolders.empty() )
-                node.subfolders.erase( node.subfolders.begin() + i );
-        }
-    };
-    clearEmptySubfolders( filesTree );
-
-    
-    if ( filesTree.subfolders.empty() && filesTree.files.empty() )
-        return unexpected( std::string( "Error: folder is empty." ) );
-
-
-    using loadObjResultType = Expected<std::vector<std::shared_ptr<MR::Object>>, std::string>;
-    // create folders objects
-    struct LoadTask
-    {
-        std::future<loadObjResultType> future;
-        Object* parent = nullptr;
-        LoadTask( std::future<loadObjResultType> future, Object* parent ) : future( std::move( future ) ), parent( parent ) {}
-        bool finished = false;
-    };
-    std::vector<LoadTask> loadTasks;
-
-    std::atomic_bool loadingCanceled = false;
-    std::function<void( const FilePathNode&, Object* )> createFolderObj = {};
-    createFolderObj = [&] ( const FilePathNode& node, Object* objPtr )
-    {
-
-        for ( const FilePathNode& folder : node.subfolders )
-        {
-            auto pObj = std::make_shared<Object>();
-            pObj->setName( utf8string( folder.path.stem() ) );
-            objPtr->addChild( pObj );
-            createFolderObj( folder, pObj.get() );
-        }
-        for ( const FilePathNode& file : node.files )
-        {
-            loadTasks.emplace_back( std::async( std::launch::async, [&] ()
-            {
-                return loadObjectFromFile( file.path, [&]( float ){ return !loadingCanceled; } );
-            } ), objPtr );
-        }
-    };
-    Object result;
-    result.setName( utf8string( folder.stem() ) );
-    createFolderObj( filesTree, &result );
-
-    // processing of results
-    bool atLeastOneLoaded = false;
-    std::unordered_map<std::string, int> allErrors;
-    const float taskCount = float( loadTasks.size() );
-    int finishedTaskCount = 0;
-    std::chrono::system_clock::time_point afterSecond = std::chrono::system_clock::now();
-    while ( finishedTaskCount < taskCount )
-    {
-        afterSecond += +std::chrono::seconds( 1 );
-        for ( auto& t : loadTasks )
-        {
-            if ( !t.future.valid() )
-                continue;
-            std::future_status status = t.future.wait_until( afterSecond );
-            if ( status != std::future_status::ready )
-                continue;
-            auto res = t.future.get();
-            if ( res.has_value() )
-            {
-                for ( const auto& objPtr : *res )
-                {
-                    t.parent->addChild( objPtr );
-                }
-                if ( !atLeastOneLoaded )
-                    atLeastOneLoaded = true;
-            }
-            else
-            {
-                ++allErrors[res.error()];
-            }
-            ++finishedTaskCount;
-            if ( callback && !callback( finishedTaskCount / taskCount ) )
-                loadingCanceled = true;
-        }
-    }
-
-    std::string errorString;
-    for ( const auto& error : allErrors )
-    {
-        errorString += ( errorString.empty() ? "" : "\n" ) + error.first;
-        if ( error.second > 1 )
-        {
-            errorString += std::string( " (" ) + std::to_string( error.second ) + std::string( ")" );
-        }
-    }
-
-    if ( !errorString.empty() )
-        spdlog::warn( "Load folder error:\n{}", errorString );
-    if ( loadingCanceled )
-        return unexpected( getCancelMessage( folder ) );
-    if ( !atLeastOneLoaded )
-        return unexpected( errorString );
-
-    return result;
-}
-
-Expected<std::shared_ptr<Object>, std::string> loadSceneFromAnySupportedFormat( const std::filesystem::path& path, ProgressCallback callback )
+Expected<LoadedObject> loadSceneFromAnySupportedFormat( const std::filesystem::path& path, const ProgressCallback& callback )
 {
     auto ext = std::string( "*" ) + utf8string( path.extension().u8string() );
     for ( auto& c : ext )
         c = ( char )tolower( c );
 
-    auto res = unexpected( std::string( "unsupported file extension" ) );
+    auto loader = SceneLoad::getSceneLoader( ext );
+    if ( !loader )
+        return unexpectedUnsupportedFileExtension();
 
-    auto itF = std::find_if( SceneFileFilters.begin(), SceneFileFilters.end(), [ext] ( const IOFilter& filter )
+    return loader( path, callback )
+    .and_then( [&] ( LoadedObject&& l ) -> Expected<LoadedObject>
     {
-        return filter.extension == ext;
+        if ( ext != "*.mru" && ext != "*.zip" )
+            postImportObject( l.obj, path );
+
+        return std::move( l );
     } );
-    if ( itF == SceneFileFilters.end() )
-        return res;
+}
 
-    if ( itF->extension == "*.mru" )
+Expected<LoadedObject> deserializeObjectTree( const std::filesystem::path& path, const FolderCallback& postDecompress,
+                                              const ProgressCallback& progressCb )
+{
+    MR_TIMER;
+    UniqueTemporaryFolder scenePath( postDecompress );
+    if ( !scenePath )
+        return unexpected( "Cannot create temporary folder" );
+    auto res = decompressZip( path, scenePath );
+    if ( !res.has_value() )
+        return unexpected( std::move( res.error() ) );
+
+    return deserializeObjectTreeFromFolder( scenePath, progressCb );
+}
+
+Expected<LoadedObject> deserializeObjectTreeFromFolder( const std::filesystem::path& folder,
+                                                        const ProgressCallback& progressCb )
+{
+    MR_TIMER;
+
+    std::error_code ec;
+    std::filesystem::path jsonFile;
+    for ( auto entry : Directory{ folder, ec } )
     {
-        return deserializeObjectTree( path, {}, callback );
+        // unlike extension() this works even if full file name is simply ".json"
+        if ( entry.path().u8string().ends_with( u8".json" ) )
+        {
+            jsonFile = entry.path();
+            break;
+        }
     }
-#ifndef MRMESH_NO_GLTF
-    else if ( itF->extension == "*.gltf" || itF->extension == "*.glb" )
+
+    auto readRes = deserializeJsonValue( jsonFile );
+    if( !readRes.has_value() )
     {
-        return deserializeObjectTreeFromGltf( path, callback );
+        return unexpected( readRes.error() );
     }
-#endif
+    auto root = readRes.value();
+
+    auto typeTreeSize = root["Type"].size();
+    LoadedObject res;
+    for (int i = typeTreeSize-1;i>=0;--i)
+    {
+        const auto& type = root["Type"][unsigned( i )];
+        if ( type.isString() )
+            res.obj = createObject( type.asString() );
+        if ( res.obj )
+            break;
+    }
+    if ( !res.obj )
+        return unexpected( "Unknown root object type" );
+
+    int modelNumber{ 0 };
+    int modelCounter{ 0 };
+    auto cb = progressCb;
+    if ( progressCb )
+    {
+        std::function<int( const Json::Value& )> calculateModelNum = [&calculateModelNum] ( const Json::Value& root )
+        {
+            int res{ 1 };
+
+            if ( root["Children"].isNull() )
+                return res;
+
+            for ( const std::string& childKey : root["Children"].getMemberNames() )
+            {
+                if ( !root["Children"].isMember( childKey ) )
+                    continue;
+
+                const auto& child = root["Children"][childKey];
+                if ( child.isNull() )
+                    continue;
+                res += calculateModelNum( child );
+            }
+
+            return res;
+        };
+        modelNumber = calculateModelNum( root );
+
+        modelNumber = std::max( modelNumber, 1 );
+        cb = [progressCb, &modelCounter, modelNumber] ( float v )
+        {
+            return progressCb( ( modelCounter + v ) / modelNumber );
+        };
+    }
+
+    auto resDeser = res.obj->deserializeRecursive( folder, root, cb, &modelCounter );
+    if ( !resDeser.has_value() )
+    {
+        std::string errorStr = resDeser.error();
+        if ( errorStr != stringOperationCanceled() )
+            errorStr = "Cannot deserialize: " + errorStr;
+        return unexpected( errorStr );
+    }
 
     return res;
 }
+
+Expected<LoadedObject> deserializeObjectTree( const std::filesystem::path& path, const ProgressCallback& progressCb )
+{
+    return deserializeObjectTree( path, FolderCallback{}, progressCb );
+}
+
+MR_ADD_SCENE_LOADER_WITH_PRIORITY( IOFilter( "MeshInspector scene (.mru)", "*.mru" ), deserializeObjectTree, -1 )
 
 } //namespace MR

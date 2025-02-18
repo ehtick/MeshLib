@@ -7,14 +7,14 @@
 
 namespace MR
 {
-class RenderLabelObject : public IRenderObject
+class RenderLabelObject : public virtual IRenderObject
 {
 public:
     RenderLabelObject( const VisualObject& visObj );
     ~RenderLabelObject();
 
-    virtual void render( const RenderParams& params ) override;
-    virtual void renderPicker( const BaseRenderParams& params, unsigned geomId ) override;
+    virtual bool render( const ModelRenderParams& params ) override;
+    virtual void renderPicker( const ModelBaseRenderParams& params, unsigned geomId ) override;
 
     virtual size_t heapBytes() const override;
     virtual size_t glBytes() const override;
@@ -47,9 +47,9 @@ private:
     GlBuffer llineVertPosBuffer_;
     GlBuffer llineEdgesIndicesBuffer_;
 
-    void renderSourcePoint_( const RenderParams& renderParams );
-    void renderBackground_( const RenderParams& renderParams );
-    void renderLeaderLine_( const RenderParams& renderParams );
+    void renderSourcePoint_( const ModelRenderParams& renderParams );
+    void renderBackground_( const ModelRenderParams& renderParams );
+    void renderLeaderLine_( const ModelRenderParams& renderParams );
 
     void bindLabel_();
 

@@ -1,9 +1,82 @@
 #include "MRPolylineTopology.h"
-#include "MRTimer.h"
 #include "MRGTest.h"
+#include "MRIOParsing.h"
+#include "MRMapEdge.h"
+#include "MRParallelFor.h"
+#include "MRTimer.h"
 
 namespace MR
 {
+
+void PolylineTopology::buildOpenLines( const std::vector<VertId> & comp2firstVert )
+{
+    MR_TIMER
+    if ( comp2firstVert.empty() )
+    {
+        assert( false );
+        return;
+    }
+    assert( comp2firstVert.front() == 0_v );
+    numValidVerts_ = comp2firstVert.back();
+    edges_.resizeNoInit( 2 * numValidVerts_ ); // the edges in between lines will be lone
+    edgePerVertex_.resizeNoInit( numValidVerts_ );
+    validVerts_.clear();
+    validVerts_.resize( numValidVerts_, true );
+    ParallelFor( edgePerVertex_, [&]( VertId v )
+    {
+        EdgeId e( 2 * (int)v );
+        if ( v + 1 >= numValidVerts_ )
+            return;
+        edgePerVertex_[v] = e;
+        edges_[e].next = v > 0 ? e - 1 : e;
+        edges_[e].org = v;
+        edges_[e + 1].next = e + 2;
+        edges_[e + 1].org = v + 1;
+    } );
+    for ( int j = 0; j + 1 < comp2firstVert.size(); ++j )
+    {
+        auto v0 = comp2firstVert[j];
+        auto v1 = comp2firstVert[j + 1];
+        if ( v0 == v1 )
+            continue;
+
+        EdgeId e0( 2 * (int)v0 );
+        assert( org( e0 ) == v0 );
+        edges_[e0].next = e0;
+
+        EdgeId e1( 2 * (int)(v1 - 1) );
+        assert( org( e1 - 1 ) == v1 - 1 );
+        if ( v1 < numValidVerts_ )
+        {
+            assert( org( e1 ) == v1 - 1 );
+            assert( edgePerVertex_[v1 - 1] == e1 );
+        }
+        edgePerVertex_[v1 - 1] = e1 - 1;
+        edges_[e1 - 1].next = e1 - 1;
+        edges_[e1].next = e1;
+        edges_[e1 + 1].next = e1 + 1;
+        edges_[e1].org = {};
+        edges_[e1 + 1].org = {};
+        assert( isLoneEdge( e1 ) );
+    }
+    assert( checkValidity() );
+}
+
+void PolylineTopology::vertResize( size_t newSize )
+{
+    if ( edgePerVertex_.size() >= newSize )
+        return;
+    edgePerVertex_.resize( newSize );
+    validVerts_.resize( newSize );
+}
+
+void PolylineTopology::vertResizeWithReserve( size_t newSize )
+{ 
+    if ( edgePerVertex_.size() >= newSize )
+        return;
+    edgePerVertex_.resizeWithReserve( newSize );
+    validVerts_.resizeWithReserve( newSize );
+}
 
 EdgeId PolylineTopology::makeEdge()
 {
@@ -222,13 +295,7 @@ VertId PolylineTopology::lastValidVert() const
 {
     if ( numValidVerts_ <= 0 )
         return {};
-    for ( VertId i{ (int)validVerts_.size() - 1 }; i.valid(); --i )
-    {
-        if ( validVerts_.test( i ) )
-            return i;
-    }
-    assert( false );
-    return {};
+    return validVerts_.find_last();
 }
 
 VertBitSet PolylineTopology::getPathVertices( const EdgePath & path ) const
@@ -284,33 +351,77 @@ EdgeId PolylineTopology::makePolyline( const VertId * vs, size_t num )
     for ( size_t i = 0; i < num; ++i )
         maxVertId = std::max( maxVertId, vs[i] );
     if ( maxVertId >= (int)vertSize() )
-        vertResize( maxVertId + 1 );
+        vertResizeWithReserve( maxVertId + 1 );
 
-    const auto e0 = makeEdge();
-    setOrg( e0, vs[0] );
-    auto e = e0;
+    PolylineMaker maker{ *this };
+    auto e0 = maker.start( vs[0] );
     for ( int j = 1; j + 1 < num; ++j )
-    {
-        const auto ej = makeEdge();
-        splice( ej, e.sym() );
-        setOrg( ej, vs[j] );
-        e = ej;
-    }
+        maker.proceed( vs[j] );
+
     if ( vs[0] == vs[num-1] )
-    {
-        // close
-        splice( e0, e.sym() );
-    }
+        maker.close();
     else
-    {
-        setOrg( e.sym(), vs[num-1] );
-    }
+        maker.finishOpen( vs[num-1] );
     return e0;
+}
+
+void PolylineTopology::addPart( const PolylineTopology & from, VertMap * outVmap, WholeEdgeMap * outEmap )
+{
+    MR_TIMER
+
+    // in all maps: from index -> to index
+    WholeEdgeMap emap;
+    emap.resize( from.undirectedEdgeSize() );
+    EdgeId firstNewEdge = edges_.endId();
+    for ( UndirectedEdgeId i{ 0 }; i < emap.size(); ++i )
+    {
+        if ( from.isLoneEdge( i ) )
+            continue;
+        emap[i] = edges_.endId();
+        edges_.push_back( from.edges_[ EdgeId( i ) ] );
+        edges_.push_back( from.edges_[ EdgeId( i ).sym() ] );
+    }
+
+    VertMap vmap;
+    VertId lastFromValidVertId = from.lastValidVert();
+    vmap.resize( lastFromValidVertId + 1 );
+    for ( VertId i{ 0 }; i <= lastFromValidVertId; ++i )
+    {
+        auto efrom = from.edgePerVertex_[i];
+        if ( !efrom.valid() )
+            continue;
+        auto nv = addVertId();
+        vmap[i] = nv;
+        edgePerVertex_[nv] = mapEdge( emap, efrom );
+        validVerts_.set( nv );
+        ++numValidVerts_;
+    }
+
+    // translate edge records
+    tbb::parallel_for( tbb::blocked_range( firstNewEdge.undirected(), edges_.endId().undirected() ),
+        [&]( const tbb::blocked_range<UndirectedEdgeId> & range )
+    {
+        for ( UndirectedEdgeId ue = range.begin(); ue < range.end(); ++ue )
+        {
+            const EdgeId e{ ue };
+            edges_[e].next = mapEdge( emap, edges_[e].next );
+            edges_[e.sym()].next = mapEdge( emap, edges_[e.sym()].next );
+        
+            edges_[e].org = vmap[edges_[e].org];
+            edges_[e.sym()].org = vmap[edges_[e.sym()].org];
+        }
+    } );
+
+    if ( outVmap )
+        *outVmap = std::move( vmap );
+    if ( outEmap )
+        *outEmap = std::move( emap );
 }
 
 void PolylineTopology::addPartByMask( const PolylineTopology& from, const UndirectedEdgeBitSet& mask, 
     VertMap* outVmap /*= nullptr*/, EdgeMap* outEmap /*= nullptr */ )
 {
+    MR_TIMER
     // in all maps: from index -> to index
     EdgeMap emap;
     EdgeId lastFromValidEdgeId = from.lastNotLoneEdge();
@@ -350,8 +461,14 @@ void PolylineTopology::addPartByMask( const PolylineTopology& from, const Undire
     for ( auto ue : mask )
     {
         auto e = EdgeId( ue );
-        edges_[emap[e]].next = emap[fromEdges[e].next];
-        edges_[emap[e.sym()]].next = emap[fromEdges[e.sym()].next];
+        auto ne = emap[fromEdges[e].next];
+        // If next edge is not presented in mask then it's value in emap is invalid. In that case we should skip it
+        if ( ne.valid() )
+            edges_[emap[e]].next = ne;
+
+        ne = emap[fromEdges[e.sym()].next];
+        if ( ne.valid() )
+            edges_[emap[e.sym()]].next = ne;
         
         edges_[emap[e]].org = vmap[fromEdges[e].org];
         edges_[emap[e.sym()]].org = vmap[fromEdges[e.sym()].org];
@@ -364,6 +481,17 @@ void PolylineTopology::addPartByMask( const PolylineTopology& from, const Undire
         *outVmap = std::move( vmap );
     if ( outEmap )
         *outEmap = std::move( emap );
+}
+
+void PolylineTopology::pack( VertMap * outVmap, WholeEdgeMap * outEmap )
+{
+    MR_TIMER
+
+    PolylineTopology packed;
+    packed.vertReserve( numValidVerts() );
+    packed.edgeReserve( 2 * computeNotLoneUndirectedEdges() );
+    packed.addPart( *this, outVmap, outEmap );
+    *this = std::move( packed );
 }
 
 void PolylineTopology::write( std::ostream & s ) const
@@ -387,11 +515,8 @@ bool PolylineTopology::read( std::istream & s )
     if ( !s )
         return false;
 
-    auto posCur = s.tellg();
-    s.seekg( 0, std::ios_base::end );
-    const auto posEnd = s.tellg();
-    s.seekg( posCur );
-    if ( size_t( posEnd - posCur ) < numEdges * sizeof(HalfEdgeRecord) )
+    const auto streamSize = getStreamSize( s );
+    if ( size_t( streamSize ) < numEdges * sizeof(HalfEdgeRecord) )
         return false; // stream is too short
 
     edges_.resize( numEdges );

@@ -1,56 +1,107 @@
 #include "MRUniformSampling.h"
-#include "MRVector.h"
 #include "MRPointCloud.h"
-#include "MRBox.h"
+#include "MRBitSetParallelFor.h"
+#include "MRVector.h"
+#include "MRTimer.h"
 #include "MRPointsInBall.h"
+#include "MRBox.h"
+#include <cfloat>
 
 namespace MR
 {
 
-VertBitSet pointUniformSampling( const PointCloud& pointCloud, float distance, ProgressCallback cb )
+std::optional<VertBitSet> pointUniformSampling( const PointCloud& pointCloud, const UniformSamplingSettings & settings )
 {
-    auto box = pointCloud.getBoundingBox();
-    if ( !box.valid() )
-        return {};
+    MR_TIMER
 
-    auto axis = ( box.max - box.min ).normalized();
+    auto cb = settings.progress;
 
-    struct VertProj
+    const VertNormals * pNormals = settings.pNormals;
+    if ( !pNormals && pointCloud.hasNormals() )
+        pNormals = &pointCloud.normals;
+
+    VertBitSet visited( pointCloud.validPoints.size() );
+    VertBitSet sampled( pointCloud.validPoints.size() );
+
+    struct NearVert
     {
-        float projLength{0};
-        VertId id{};
+        VertId v;
+        float distSq = 0;
+    };
+    std::vector<NearVert> nearVerts;
+
+    auto processOne = [&]( VertId v )
+    {
+        if ( visited.test( v ) )
+            return;
+        sampled.set( v );
+        const auto c = pointCloud.points[v];
+        float localMaxDistSq = sqr( settings.distance );
+        findPointsInBall( pointCloud, { c, localMaxDistSq }, [&] ( VertId u, const Vector3f& pu )
+        {
+            const auto distSq = ( c - pu ).lengthSq();
+            if ( pNormals && std::abs( dot( (*pNormals)[v], (*pNormals)[u] ) ) < settings.minNormalDot )
+            {
+                localMaxDistSq = std::min( localMaxDistSq, distSq );
+                return;
+            }
+            nearVerts.push_back( { u, distSq } );
+        } );
+        for ( const auto & [ u, distSq ] : nearVerts )
+        {
+            if ( distSq >= localMaxDistSq )
+                continue;
+            visited.set( u );
+        }
+        nearVerts.clear();
     };
 
-    auto size = pointCloud.validPoints.count();
-    if ( size == 0 )
-        return {};
-
-    std::vector<VertProj> projes( size );
-    int n = 0;
-    for ( auto v : pointCloud.validPoints )
+    size_t progressCount = 0;
+    if ( settings.lexicographicalOrder )
     {
-        projes[n++] = { dot( pointCloud.points[v],axis ),v };
-        if ( !reportProgress( cb, [&]{ return 0.5f * float( n ) / float( size ); }, n, 128 ) )
+        std::vector<VertId> searchQueue = pointCloud.getLexicographicalOrder();
+        if ( !reportProgress( cb, 0.3f ) )
             return {};
-    }
-
-    VertBitSet res( pointCloud.validPoints.size() );
-    n = 0;
-    for ( const auto& proj : projes )
-    {
-        bool ballHasPrevVert = false;
-        findPointsInBall( pointCloud, pointCloud.points[proj.id], distance, [&res,&ballHasPrevVert]( VertId v, const Vector3f& )
+        cb = subprogress( cb, 0.3f, 1.0f );
+        size_t totalCount = searchQueue.size();
+        for ( auto v : searchQueue )
         {
-            if ( !ballHasPrevVert && res.test( v ) )
-                ballHasPrevVert = true;
-        } );
-        if ( !ballHasPrevVert )
-            res.set( proj.id );
-        if ( !reportProgress( cb, [&]{ return 0.5f + 0.5f * float( n ) / float( size ); }, n++, 128 ) )
-            return {};
+            if ( cb && !( ( ++progressCount ) & 0x3ff ) && !cb( float( progressCount ) / float( totalCount ) ) )
+                return {};
+            processOne( v );
+        }
+    }
+    else
+    {
+        size_t totalCount = pointCloud.validPoints.count();
+        for ( auto v : pointCloud.validPoints )
+        {
+            if ( cb && !( ( ++progressCount ) & 0x3ff ) && !cb( float( progressCount ) / float( totalCount ) ) )
+                return {};
+            processOne( v );
+        }
     }
 
+    return sampled;
+}
+
+std::optional<PointCloud> makeUniformSampledCloud( const PointCloud& pointCloud, const UniformSamplingSettings & settings )
+{
+    MR_TIMER
+
+    std::optional<PointCloud> res;
+    auto s = settings;
+    s.progress = subprogress( s.progress, 0.0f, 0.9f );
+    auto optVerts = pointUniformSampling( pointCloud, s );
+    if ( !optVerts )
+        return res;
+
+    res.emplace();
+    res->addPartByMask( pointCloud, *optVerts );
+
+    if ( !reportProgress( settings.progress, 1.0f ) )
+        res.reset();
     return res;
 }
 
-}
+} //namespace MR

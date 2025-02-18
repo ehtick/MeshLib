@@ -1,4 +1,7 @@
 #include "MRObjectTransformWidget.h"
+#include "MRMouseController.h"
+#include "MRViewport.h"
+#include "MRViewer.h"
 #include "MRMesh/MRObjectMesh.h"
 #include "MRMesh/MRObjectLines.h"
 #include "MRMesh/MRBox.h"
@@ -8,12 +11,14 @@
 #include "MRMesh/MRArrow.h"
 #include "MRMesh/MRTorus.h"
 #include "MRMesh/MRSceneRoot.h"
-#include "MRViewport.h"
-#include "MRPch/MRTBB.h"
 #include "MRMesh/MRIntersection.h"
 #include "MRMesh/MR2to3.h"
 #include "MRMesh/MRMatrix3Decompose.h"
+#include "MRMesh/MRPolyline.h"
 #include "MRPch/MRSpdlog.h"
+#include "MRPch/MRTBB.h"
+#include "MRViewer.h"
+#include "ImGuiMenu.h"
 
 namespace
 {
@@ -21,21 +26,6 @@ constexpr std::array<MR::Vector3f, 3> baseAxis =
 { MR::Vector3f::plusX(),MR::Vector3f::plusY(),MR::Vector3f::plusZ() };
 
 using namespace MR;
-
-// fins point on p11,p12 line
-Vector3f findClosestPointOfSkewLines( const Vector3f& p11, const Vector3f& p12, const Vector3f& p21, const Vector3f& p22 )
-{
-    auto d1 = p12 - p11;
-    auto d2 = p22 - p21;
-    auto n = cross( d1, d2 );
-    auto n2 = cross( d2, n );
-    auto lSq = n.lengthSq();
-    auto l2Sq = n2.lengthSq();
-    if ( std::isnan( lSq ) || std::isnan( l2Sq ) || l2Sq == 0 )
-        return {};
-
-    return p11 + dot( ( p21 - p11 ), n2 ) / dot( d1, n2 ) * d1;
-}
 
 float findAngleDegOfPick( const Vector3f& center, const Vector3f& zeroPoint, const Vector3f& norm,
                           const Line3f& ray, Viewport& vp, const Vector3f& vpPoint )
@@ -85,7 +75,7 @@ float findAngleDegOfPick( const Vector3f& center, const Vector3f& zeroPoint, con
         diff = to2dim( dist1 ).lengthSq() - to2dim( dist2 ).lengthSq();
     else
         diff = dist1.z - dist2.z;
-    
+
     if ( diff > 0.0f || parallel )
     {
         if ( angleRes < 0.0f )
@@ -103,7 +93,7 @@ void ObjectTransformWidget::create( const Box3f& box, const AffineXf3f& worldXf,
 {
     if ( controlsRoot_ )
         reset();
-    
+
     boxDiagonal_ = box.size();
     controls_ = controls;
     if ( !controls_ )
@@ -118,14 +108,14 @@ void ObjectTransformWidget::create( const Box3f& box, const AffineXf3f& worldXf,
     controlsRoot_ = std::make_shared<Object>();
     controlsRoot_->setName( "TransformWidgetRoot" );
     controlsRoot_->setAncillary( true );
-    
+
     controls_->setCenter( box.center() );
     controls_->init( controlsRoot_ );
 
     SceneRoot::get().addChild( controlsRoot_ );
     setControlsXf_( worldXf, true );
 
-    setTransformMode( uint8_t( ControlBit::FullMask ) );
+    setTransformMode( ControlBit::FullMask );
 
     // 10 group to imitate plugins behavior
     connect( &getViewerInstance(), 10, boost::signals2::at_front );
@@ -168,7 +158,7 @@ void ObjectTransformWidget::reset()
     axisTransformMode_ = AxisTranslation;
 }
 
-void ObjectTransformWidget::setTransformMode( uint8_t mask, ViewportId vpId )
+void ObjectTransformWidget::setTransformMode( ControlBit mask, ViewportId vpId )
 {
     if ( !controlsRoot_ )
         return;
@@ -177,8 +167,8 @@ void ObjectTransformWidget::setTransformMode( uint8_t mask, ViewportId vpId )
 
     transformModeMask_.set( mask, vpId );
 
-    controls_->updateVisualTransformMode( mask, 
-        vpId ? vpId : ( controlsRoot_->visibilityMask() & getViewerInstance().getPresentViewports() ), 
+    controls_->updateVisualTransformMode( mask,
+        vpId ? vpId : ( controlsRoot_->visibilityMask() & getViewerInstance().getPresentViewports() ),
         getControlsXf( vpId ) );
 }
 
@@ -205,7 +195,7 @@ bool ObjectTransformWidget::onMouseDown_( Viewer::MouseButton button, int )
         return false;
     if ( !controlsRoot_ )
         return false;
-    if ( !controlsRoot_->globalVisibilty( getViewerInstance().getHoveredViewportId() ) )
+    if ( !controlsRoot_->globalVisibility( getViewerInstance().getHoveredViewportId() ) )
         return false;
 
     if ( startModifyCallback_ )
@@ -225,7 +215,7 @@ bool ObjectTransformWidget::onMouseUp_( Viewer::MouseButton button, int )
         return false;
     if ( !controlsRoot_ )
         return false;
-    
+
     stopModify_();
 
     return true;
@@ -235,7 +225,7 @@ bool ObjectTransformWidget::onMouseMove_( int, int )
 {
     if ( !controlsRoot_ )
         return false;
-    if ( !controlsRoot_->globalVisibilty( getViewerInstance().getHoveredViewportId() ) )
+    if ( !controlsRoot_->globalVisibility( getViewerInstance().getHoveredViewportId() ) )
         return false;
     if ( picked_ )
         activeMove_();
@@ -249,16 +239,17 @@ void ObjectTransformWidget::preDraw_()
     if ( !controlsRoot_ )
         return;
     if ( auto parent = visibilityParent_.lock() )
-        controlsRoot_->setVisibilityMask( parent->visibilityMask() );
+        controlsRoot_->setVisibilityMask( parent->globalVisibilityMask() );
     auto vpmask = controlsRoot_->visibilityMask() & getViewerInstance().getPresentViewports();
     for ( auto vpId : vpmask )
     {
         auto showMask = transformModeMask_.get( vpId );
         controls_->updateVisualTransformMode( showMask, vpId, getControlsXf( vpId ) );
+        controls_->updateSizeInPixel();
     }
 }
 
-void ObjectTransformWidget::draw_()
+void ObjectTransformWidget::postDraw_()
 {
     if ( !picked_ )
         return;
@@ -289,7 +280,7 @@ void ObjectTransformWidget::activeMove_( bool press )
     if ( press )
     {
         // we now know who is picked
-        if ( uint8_t( activeControl ) & uint8_t( ControlBit::MoveMask ) )
+        if ( bool( activeControl & ControlBit::MoveMask ) )
         {
             switch ( axisTransformMode_ )
             {
@@ -347,18 +338,13 @@ void ObjectTransformWidget::activeMove_( bool press )
 
 void ObjectTransformWidget::processScaling_( Axis ax, bool press )
 {
-    const auto& mousePos = getViewerInstance().mouseController.getMousePos();
+    const auto& mousePos = getViewerInstance().mouseController().getMousePos();
     auto& viewport = getViewerInstance().viewport();
     auto viewportPoint = getViewerInstance().screenToViewport( Vector3f( float( mousePos.x ), float( mousePos.y ), 0.f ), viewport.id );
     auto line = viewport.unprojectPixelRay( Vector2f( viewportPoint.x, viewportPoint.y ) );
     auto xf = controlsRoot_->xf( viewport.id );
     const auto& wCenter = controls_->getCenter();
-    auto wRadius = controls_->getRadius();
-    auto newScaling = findClosestPointOfSkewLines(
-        xf( wCenter - baseAxis[int( ax )] * wRadius ),
-        xf( wCenter + baseAxis[int( ax )] * wRadius ),
-        line.p, line.p + line.d
-    );
+    auto newScaling = closestPoints( Line3f( xf( wCenter ), xf.A * baseAxis[int( ax )] ), line ).a;
     auto centerTransformed = xf( controls_->getCenter() );
 
     if ( press )
@@ -390,18 +376,13 @@ void ObjectTransformWidget::processScaling_( Axis ax, bool press )
 
 void ObjectTransformWidget::processTranslation_( Axis ax, bool press )
 {
-    const auto& mousePos = getViewerInstance().mouseController.getMousePos();
+    const auto& mousePos = getViewerInstance().mouseController().getMousePos();
     auto& viewport = getViewerInstance().viewport();
     auto viewportPoint = getViewerInstance().screenToViewport( Vector3f( float( mousePos.x ), float( mousePos.y ), 0.f ), viewport.id );
     auto line = viewport.unprojectPixelRay( Vector2f( viewportPoint.x, viewportPoint.y ) );
     auto xf = controlsRoot_->xf( viewport.id );
     const auto& wCenter = controls_->getCenter();
-    auto wRadius = controls_->getRadius();
-    auto newTranslation = findClosestPointOfSkewLines(
-        xf( wCenter - baseAxis[int( ax )] * wRadius ),
-        xf( wCenter + baseAxis[int( ax )] * wRadius ),
-        line.p, line.p + line.d
-    );
+    auto newTranslation = closestPoints( Line3f( xf( wCenter ), xf.A * baseAxis[int( ax )] ), line ).a;
 
     if ( press )
     {
@@ -416,12 +397,12 @@ void ObjectTransformWidget::processTranslation_( Axis ax, bool press )
     accumShift_ = dot( newTranslation - startTranslation_, ( xf.A * baseAxis[int( ax )] ).normalized() );
 
     if ( controls_ )
-        controls_->updateTranslation( ax, startTranslation_, newTranslation );
+        controls_->updateTranslation( ax, startTranslation_, newTranslation, viewport.id );
 }
 
 void ObjectTransformWidget::processRotation_( Axis ax, bool press )
 {
-    const auto& mousePos = getViewerInstance().mouseController.getMousePos();
+    const auto& mousePos = getViewerInstance().mouseController().getMousePos();
     auto& viewport = getViewerInstance().viewport();
     auto viewportPoint = getViewerInstance().screenToViewport( Vector3f( float( mousePos.x ), float( mousePos.y ), 0.f ), viewport.id );
     auto line = viewport.unprojectPixelRay( Vector2f( viewportPoint.x, viewportPoint.y ) );
@@ -451,7 +432,7 @@ void ObjectTransformWidget::processRotation_( Axis ax, bool press )
         accumAngle_ = 2.0f * PI_F + accumAngle_;
 
     if ( controls_ )
-        controls_->updateRotation( ax, controlsRoot_->xf( viewport.id ), startAngle_, startAngle_ + accumAngle_ );
+        controls_->updateRotation( ax, controlsRoot_->xf( viewport.id ), startAngle_, startAngle_ + accumAngle_, viewport.id );
 }
 
 void ObjectTransformWidget::setControlsXf_( const AffineXf3f& xf, bool updateScaled, ViewportId id )
@@ -558,6 +539,8 @@ TransformControls::~TransformControls()
 
 void TransformControls::init( std::shared_ptr<Object> parent )
 {
+    float radius = params_.sizeType == VisualParams::SizeType::LengthUnit ? params_.radius : 1.0f;
+    float width = params_.sizeType == VisualParams::SizeType::LengthUnit ? params_.width : params_.width / params_.radius;
     for ( int i = int( Axis::X ); i < int( Axis::Count ); ++i )
     {
         if ( !translateControls_[i] )
@@ -582,14 +565,14 @@ void TransformControls::init( std::shared_ptr<Object> parent )
         auto transPolyline = std::make_shared<Polyline3>();
         std::vector<Vector3f> translationPoints =
         {
-            getCenter() - params_.radius * params_.negativeLineExtension * baseAxis[i],
-            getCenter() + params_.radius * params_.positiveLineExtension * baseAxis[i]
+            getCenter() - radius * params_.negativeLineExtension * baseAxis[i],
+            getCenter() + radius * params_.positiveLineExtension * baseAxis[i]
         };
         transPolyline->addFromPoints( translationPoints.data(), translationPoints.size() );
         translateLines_[i]->setPolyline( transPolyline );
 
         translateControls_[i]->setMesh( std::make_shared<Mesh>(
-            makeArrow( translationPoints[0], translationPoints[1], params_.width, params_.coneRadiusFactor * params_.width, params_.coneSizeFactor * params_.width ) ) );
+            makeArrow( translationPoints[0], translationPoints[1], width, params_.coneRadiusFactor * width, params_.coneSizeFactor * width ) ) );
 
         auto xf = AffineXf3f::translation( getCenter() ) *
             AffineXf3f::linear( Matrix3f::rotation( Vector3f::plusZ(), baseAxis[i] ) );
@@ -615,7 +598,7 @@ void TransformControls::init( std::shared_ptr<Object> parent )
         }
         auto rotPolyline = std::make_shared<Polyline3>();
         std::vector<Vector3f> rotatePoints;
-        auto rotMesh = makeTorus( params_.radius, params_.width, 128, 32, &rotatePoints );
+        auto rotMesh = makeTorus( radius, width, 128, 32, &rotatePoints );
         for ( auto& p : rotatePoints )
             p = xf( p );
         rotPolyline->addFromPoints( rotatePoints.data(), rotatePoints.size(), true );
@@ -644,12 +627,75 @@ void TransformControls::update()
         init( {} );
 }
 
+void TransformControls::setRadius( float radius )
+{
+    if ( params_.radius == radius )
+        return;
+    params_.radius = radius;
+
+    update();
+}
+
 void TransformControls::setWidth( float width )
 {
     if ( params_.width == width )
         return;
     params_.width = width;
+
     update();
+}
+
+void TransformControls::setSizeType( VisualParams::SizeType type )
+{
+    if ( params_.sizeType == type )
+        return;
+
+    resetSizeInPixel_();
+
+    params_.sizeType = type;
+}
+
+void TransformControls::updateSizeInPixel()
+{
+    if ( params_.sizeType != VisualParams::SizeType::Pixels )
+        return;
+
+    if ( !translateControls_[0] )
+        return;
+
+    auto parent = translateControls_[0]->parent();
+    if ( !parent )
+        return;
+
+    auto mask = getViewerInstance().getPresentViewports();
+    for ( auto idViewport : mask )
+    {
+        const auto& xf = parent->worldXf(idViewport);
+        const auto& center = xf( getCenter() );
+        float lenPerPixel = getViewerInstance().viewport( idViewport ).getPixelSizeAtPoint( center );
+
+        AffineXf3f pixelTransform;
+
+        auto radius = params_.radius * lenPerPixel ;
+        pixelTransform = AffineXf3f::xfAround( Matrix3f::scale( radius ), getCenter() );
+
+        for ( int i = int( Axis::X ); i < int( Axis::Count ); ++i )
+        {
+            translateControls_[i]->setXf( pixelTransform, idViewport );
+            rotateControls_[i]->setXf( pixelTransform, idViewport );
+        }
+    }
+}
+
+void TransformControls::resetSizeInPixel_()
+{
+    for ( int i = int( Axis::X ); i < int( Axis::Count ); ++i )
+    {
+        if ( translateControls_[i] )
+            translateControls_[i]->setXfsForAllViewports( {} );
+        if ( rotateControls_[i] )
+            rotateControls_[i]->setXfsForAllViewports( {} );
+    }
 }
 
 ControlBit TransformControls::hover_( bool pickThrough )
@@ -694,7 +740,7 @@ ControlBit TransformControls::hover_( bool pickThrough )
 
     const auto& vp = getViewerInstance().viewport( hoveredViewportId );
 
-    auto [obj, pick] = pickThrough ? vp.pick_render_object( objsToPick_ ) : vp.pick_render_object();
+    auto [obj, pick] = pickThrough ? vp.pickRenderObject( objsToPick_ ) : vp.pick_render_object();
     if ( !obj )
     {
         dropCurrentObj();
@@ -768,26 +814,26 @@ void TransformControls::stopModify_()
             obj->setVisible( true );
 }
 
-void TransformControls::updateVisualTransformMode_( uint8_t showMask, ViewportMask viewportMask )
+void TransformControls::updateVisualTransformMode_( ControlBit showMask, ViewportMask viewportMask )
 {
     for ( int i = 0; i < 3; ++i )
     {
-        uint8_t checkMask = uint8_t( ControlBit::MoveX ) << i;
+        ControlBit checkMask = ControlBit( int( ControlBit::MoveX ) << i );
         bool enable = ( showMask & checkMask ) == checkMask;
         translateControls_[i]->setVisible( enable, viewportMask );
 
-        checkMask = uint8_t( ControlBit::RotX ) << i;
+        checkMask = ControlBit( int( ControlBit::RotX ) << i );
         enable = ( showMask & checkMask ) == checkMask;
         rotateControls_[i]->setVisible( enable, viewportMask );
     }
 }
 
-void TransformControls::updateTranslation( Axis, const Vector3f& startMove, const Vector3f& endMove )
+void TransformControls::updateTranslation( Axis, const Vector3f& startMove, const Vector3f& endMove, ViewportId )
 {
     setActiveLineFromPoints_( { startMove,endMove } );
 }
 
-void TransformControls::updateRotation( Axis ax, const AffineXf3f& xf, float startAngle, float endAngle )
+void TransformControls::updateRotation( Axis ax, const AffineXf3f& xf, float startAngle, float endAngle, ViewportId vpId )
 {
     std::vector<Vector3f> activePoints;
     activePoints.reserve( 182 );
@@ -797,7 +843,7 @@ void TransformControls::updateRotation( Axis ax, const AffineXf3f& xf, float sta
     if ( ( endAngle - startAngle ) < 0.0f )
         step = -1;
 
-    auto radius = ( rotateLines_[0]->polyline()->points.vec_[0] - getCenter() ).length();
+    auto radius = ( rotateControls_[int( ax )]->xf( vpId ).A * ( rotateLines_[0]->polyline()->points.vec_[0] - getCenter() ) ).length();
     Vector3f basisXTransfomed = xf.A * baseAxis[( int( ax ) + 1 ) % 3];
     Vector3f basisYTransfomed = xf.A * baseAxis[( int( ax ) + 2 ) % 3];
 
@@ -831,25 +877,25 @@ TransformModesValidator TransformControls::ThresholdDotValidator( float threshol
         auto vpPoint = getViewerInstance().viewport( vpId ).projectToViewportSpace( transformedCenter );
         auto ray = getViewerInstance().viewport( vpId ).unprojectPixelRay( Vector2f( vpPoint.x, vpPoint.y ) ).d.normalized();
 
-        uint8_t showMask = uint8_t( ControlBit::FullMask );
+        ControlBit showMask = ControlBit::FullMask;
 
         bool xHide = std::abs( dot( xf.A.col( 0 ).normalized(), ray ) ) < thresholdDot;
         bool yHide = std::abs( dot( xf.A.col( 1 ).normalized(), ray ) ) < thresholdDot;
         bool zHide = std::abs( dot( xf.A.col( 2 ).normalized(), ray ) ) < thresholdDot;
 
         if ( xHide )
-            showMask &= ~uint8_t( ControlBit::RotX );
+            showMask &= ~ControlBit::RotX;
         if ( yHide )
-            showMask &= ~uint8_t( ControlBit::RotY );
+            showMask &= ~ControlBit::RotY;
         if ( zHide )
-            showMask &= ~uint8_t( ControlBit::RotZ );
+            showMask &= ~ControlBit::RotZ;
 
         if ( xHide && yHide )
-            showMask &= ~uint8_t( ControlBit::MoveZ );
+            showMask &= ~ControlBit::MoveZ;
         if ( xHide && zHide )
-            showMask &= ~uint8_t( ControlBit::MoveY );
+            showMask &= ~ControlBit::MoveY;
         if ( yHide && zHide )
-            showMask &= ~uint8_t( ControlBit::MoveX );
+            showMask &= ~ControlBit::MoveX;
 
         return showMask;
     };
@@ -903,7 +949,7 @@ void ITransformControls::setCenter( const Vector3f& center )
     update();
 }
 
-void ITransformControls::updateVisualTransformMode( uint8_t showMask, ViewportMask viewportMask, const AffineXf3f& xf )
+void ITransformControls::updateVisualTransformMode( ControlBit showMask, ViewportMask viewportMask, const AffineXf3f& xf )
 {
     if ( !validator_ )
     {
@@ -913,7 +959,7 @@ void ITransformControls::updateVisualTransformMode( uint8_t showMask, ViewportMa
     {
         for ( auto id : viewportMask )
         {
-            uint8_t modeMask = showMask & validator_( center_, xf, id );
+            ControlBit modeMask = showMask & validator_( center_, xf, id );
             updateVisualTransformMode_( modeMask, id );
         }
     }
@@ -921,8 +967,11 @@ void ITransformControls::updateVisualTransformMode( uint8_t showMask, ViewportMa
 
 void TransformControls::VisualParams::update( const Box3f& box )
 {
-    radius = box.diagonal() * 0.5f;
-    width = radius / 40.0f;
+    if( radius < 0 )
+        radius = box.diagonal() * 0.5f;
+
+    if ( width < 0 )
+        width = radius / 40.0f;
 }
 
 }

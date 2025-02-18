@@ -4,13 +4,15 @@
 #include "MRCreateShader.h"
 #include "MRMesh/MRPolyline.h"
 #include "MRMesh/MRPlane3.h"
+#include "MRMesh/MRMatrix4.h"
 #include "MRGLMacro.h"
 #include "MRMesh/MRBitSetParallelFor.h"
 #include "MRMesh/MRVector2.h"
 #include "MRRenderGLHelpers.h"
 #include "MRRenderHelpers.h"
-#include "MRMeshViewer.h"
+#include "MRViewer.h"
 #include "MRGladGlfw.h"
+#include "MRViewer/MRRenderDefaultObjects.h"
 
 namespace MR
 {
@@ -28,12 +30,19 @@ RenderLinesObject::~RenderLinesObject()
     freeBuffers_();
 }
 
-void RenderLinesObject::render( const RenderParams& renderParams )
+bool RenderLinesObject::render( const ModelRenderParams& renderParams )
 {
+    RenderModelPassMask desiredPass =
+        !objLines_->getVisualizeProperty( VisualizeMaskType::DepthTest, renderParams.viewportId ) ? RenderModelPassMask::NoDepthTest :
+        ( objLines_->getGlobalAlpha( renderParams.viewportId ) < 255 || objLines_->getFrontColor( objLines_->isSelected(), renderParams.viewportId ).a < 255 ) ? RenderModelPassMask::Transparent :
+        RenderModelPassMask::Opaque;
+    if ( !bool( renderParams.passMask & desiredPass ) )
+        return false; // Nothing to draw in this pass.
+
     if ( !Viewer::constInstance()->isGLInitialized() )
     {
         objLines_->resetDirty();
-        return;
+        return false;
     }
 
     update_();
@@ -58,9 +67,11 @@ void RenderLinesObject::render( const RenderParams& renderParams )
     if ( objLines_->getVisualizeProperty( LinesVisualizePropertyType::Points, renderParams.viewportId ) ||
         objLines_->getVisualizeProperty( LinesVisualizePropertyType::Smooth, renderParams.viewportId ) )
         render_( renderParams, true );
+
+    return true;
 }
 
-void RenderLinesObject::renderPicker( const BaseRenderParams& parameters, unsigned geomId )
+void RenderLinesObject::renderPicker( const ModelBaseRenderParams& parameters, unsigned geomId )
 {
     if ( !Viewer::constInstance()->isGLInitialized() )
     {
@@ -98,7 +109,7 @@ void RenderLinesObject::forceBindAll()
     bindLines_( GLStaticHolder::LinesJoint );
 }
 
-void RenderLinesObject::render_( const RenderParams& renderParams, bool points )
+void RenderLinesObject::render_( const ModelRenderParams& renderParams, bool points )
 {
     auto shaderType = points ? GLStaticHolder::LinesJoint : GLStaticHolder::Lines;
     bindLines_( shaderType );
@@ -135,7 +146,7 @@ void RenderLinesObject::render_( const RenderParams& renderParams, bool points )
 
         GL_EXEC( glDepthFunc( getDepthFunctionLEqual( renderParams.depthFunction ) ) );
         GL_EXEC( glDrawArrays( GL_TRIANGLES, 0, lineIndicesSize_ * 6 ) );
-        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
     }
     else
     {
@@ -152,11 +163,11 @@ void RenderLinesObject::render_( const RenderParams& renderParams, bool points )
 
         GL_EXEC( glDepthFunc( getDepthFunctionLEqual( renderParams.depthFunction ) ) );
         GL_EXEC( glDrawArrays( GL_POINTS, 0, lineIndicesSize_ * 2 ) );
-        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
     }
 }
 
-void RenderLinesObject::renderPicker_( const BaseRenderParams& parameters, unsigned geomId, bool points )
+void RenderLinesObject::renderPicker_( const ModelBaseRenderParams& parameters, unsigned geomId, bool points )
 {
     auto shaderType = points ? GLStaticHolder::LinesJointPicker : GLStaticHolder::LinesPicker;
     bindLinesPicker_( shaderType );
@@ -187,7 +198,7 @@ void RenderLinesObject::renderPicker_( const BaseRenderParams& parameters, unsig
 
         GL_EXEC( glDepthFunc( getDepthFunctionLEqual( parameters.depthFunction ) ) );
         GL_EXEC( glDrawArrays( GL_TRIANGLES, 0, lineIndicesSize_ * 6 ) );
-        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
     }
     else
     {
@@ -204,7 +215,7 @@ void RenderLinesObject::renderPicker_( const BaseRenderParams& parameters, unsig
 
         GL_EXEC( glDepthFunc( getDepthFunctionLess( parameters.depthFunction ) ) );
         GL_EXEC( glDrawArrays( GL_POINTS, 0, lineIndicesSize_ * 2 ) );
-        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFuncion::Default ) ) );
+        GL_EXEC( glDepthFunc( getDepthFunctionLess( DepthFunction::Default ) ) );
     }
 }
 
@@ -253,7 +264,7 @@ void RenderLinesObject::bindPositions_( GLuint shaderId )
             } );
         }
         positionsTex_.loadData(
-            { .resolution = res, .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
+            { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGB32UI, .format = GL_RGB_INTEGER, .type = GL_UNSIGNED_INT },
             positions );
     }
     else
@@ -314,7 +325,7 @@ void RenderLinesObject::bindLines_( GLStaticHolder::ShaderType shaderType )
             } );
         }
         vertColorsTex_.loadData(
-            { .resolution = res, .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
+            { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
             textVertColorMap );
     }
     else
@@ -334,7 +345,7 @@ void RenderLinesObject::bindLines_( GLStaticHolder::ShaderType shaderType )
         auto res = calcTextureRes( int( linesColorMap.size() ), maxTexSize );
         linesColorMap.resize( res.x * res.y );
         lineColorsTex_.loadData(
-            { .resolution = res, .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
+            { .resolution = GlTexture2::ToResolution( res ), .internalFormat = GL_RGBA8, .format = GL_RGBA, .type = GL_UNSIGNED_BYTE },
             linesColorMap );
     }
     else
@@ -387,6 +398,6 @@ const Vector2f& GetAvailableLineWidthRange()
     return availableWidth;
 }
 
-MR_REGISTER_RENDER_OBJECT_IMPL( ObjectLinesHolder, RenderLinesObject )
+MR_REGISTER_RENDER_OBJECT_IMPL( ObjectLinesHolder, RenderObjectCombinator<RenderDefaultUiObject, RenderLinesObject> )
 
 }

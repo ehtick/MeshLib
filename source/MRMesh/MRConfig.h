@@ -27,14 +27,15 @@ public:
 
     MRMESH_API const std::string& getAppName() const;
 
+    // writes current config to file. (imlicitly called from destructor)
+    MRMESH_API void writeToFile();
+
 private:
     Config();
 
     // looks for presented *.json file
     void reset( const std::filesystem::path& filePath );
 
-    // writes current config to file
-    void writeToFile();
 
     // stores configuration depends on constructor call: (<filepath>) or
     // (~/.local/share/<appname>/config.json) or (AppData\<appname>\config.json)
@@ -68,6 +69,16 @@ public:
     MRMESH_API Vector2i getVector2i( const std::string& key, const Vector2i& defaultValue = Vector2i() ) const;
     // sets Vector2i for presented key
     MRMESH_API void setVector2i( const std::string& key, const Vector2i& keyValue );
+
+    // Decription of a enumeration as a map between [0...N) and N strings
+    typedef std::vector<const char*> Enum;
+
+    // returns true if given enumeration value with this key exists and is correct
+    MRMESH_API bool hasEnum( const Enum &enumeration, const std::string& key ) const;
+    // returns custom enumeration value
+    MRMESH_API int getEnum( const Enum& enumeration, const std::string& key, int defaultValue = 0 ) const;
+    // sets custom enumeration value
+    MRMESH_API void setEnum( const Enum& enumeration, const std::string& key, int keyValue );
 
     // returns true if json value with this key exists
     MRMESH_API bool hasJsonValue( const std::string& key );

@@ -25,15 +25,19 @@
   <ItemGroup>
     <ClCompile Include="Basic\MRCameraOrientationPlugin.cpp" />
     <ClCompile Include="Basic\MRMoveObjectByMouse.cpp" />
-    <ClCompile Include="Basic\MRWasmUnavailablePlugin.cpp" />
+    <ClCompile Include="Basic\MRObjectInfo.cpp" />
+    <ClCompile Include="Basic\MRShowGlobalBasis.cpp" />
     <ClCompile Include="Selectors\MRSelectObjectByClick.cpp" />
+    <ClCompile Include="ViewerButtons\MRActiveListPlugin.cpp" />
     <ClCompile Include="ViewerButtons\MRAddCustomTheme.cpp" />
+    <ClCompile Include="ViewerButtons\MRInvertView.cpp" />
     <ClCompile Include="ViewerButtons\MRIOFilesMenuItems.cpp" />
     <ClCompile Include="ViewerButtons\MRRibbonSceneButtons.cpp" />
+    <ClCompile Include="ViewerButtons\MRRotatorPlugin.cpp" />
     <ClCompile Include="ViewerButtons\MRSceneControlMenuItems.cpp" />
-    <ClCompile Include="ViewerButtons\MRViewerSettingsPlugin.cpp" />
     <ClCompile Include="Voxels\MROpenRawVoxelsPlugin.cpp" />
     <ClCompile Include="Voxels\MROpenVoxelsFromTiffPlugin.cpp" />
+    <ClCompile Include="Voxels\MRBinaryOperationsPlugin.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="exports.h" />
@@ -45,12 +49,15 @@
     <ClInclude Include="ViewerButtons\MRIOFilesMenuItems.h" />
     <ClInclude Include="ViewerButtons\MRRibbonSceneButtons.h" />
     <ClInclude Include="ViewerButtons\MRSceneControlMenuItems.h" />
-    <ClInclude Include="ViewerButtons\MRViewerSettingsPlugin.h" />
     <ClInclude Include="Voxels\MROpenRawVoxelsPlugin.h" />
+    <ClInclude Include="Voxels\MRBinaryOperationsPlugin.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\imgui\imgui.vcxproj">
       <Project>{766f017f-ba42-484a-abb7-b667e7fa924c}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\MRIOExtras\MRIOExtras.vcxproj">
+      <Project>{99eb9674-abbf-47cd-a8d5-ee122eb5da0c}</Project>
     </ProjectReference>
     <ProjectReference Include="..\MRMesh\MRMesh.vcxproj">
       <Project>{c7780500-ca0e-4f5f-8423-d7ab06078b14}</Project>
@@ -61,8 +68,65 @@
     <ProjectReference Include="..\MRViewer\MRViewer.vcxproj">
       <Project>{cecb9185-ff38-461f-ba20-654399edc67e}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\MRVoxels\MRVoxels.vcxproj">
+      <Project>{7cc4f0fe-ace6-4441-9dd7-296066b6d69f}</Project>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <Image Include="resource\icons\X0_5\Active Plugins List.png" />
+    <Image Include="resource\icons\X0_5\BestFit Circle.png" />
+    <Image Include="resource\icons\X0_5\BestFit Cone.png" />
+    <Image Include="resource\icons\X0_5\BestFit Cylinder.png" />
+    <Image Include="resource\icons\X0_5\BestFit Line.png" />
+    <Image Include="resource\icons\X0_5\BestFit Plane.png" />
+    <Image Include="resource\icons\X0_5\BestFit Point.png" />
+    <Image Include="resource\icons\X0_5\BestFit Sphere.png" />
+    <Image Include="resource\icons\X0_5\Invert View.png" />
+    <Image Include="resource\icons\X0_5\Object Info.png" />
+    <Image Include="resource\icons\X0_5\Ribbon Scene Hide all.png" />
+    <Image Include="resource\icons\X0_5\Ribbon Scene Show all.png" />
+    <Image Include="resource\icons\X0_5\Rotator.png" />
+    <Image Include="resource\icons\X0_5\Show_Hide Global Basis.png" />
+    <Image Include="resource\icons\X0_5\Binary Operations.png" />
+    <Image Include="resource\icons\X0_75\Active Plugins List.png" />
+    <Image Include="resource\icons\X0_75\BestFit Circle.png" />
+    <Image Include="resource\icons\X0_75\BestFit Cone.png" />
+    <Image Include="resource\icons\X0_75\BestFit Cylinder.png" />
+    <Image Include="resource\icons\X0_75\BestFit Line.png" />
+    <Image Include="resource\icons\X0_75\BestFit Plane.png" />
+    <Image Include="resource\icons\X0_75\BestFit Point.png" />
+    <Image Include="resource\icons\X0_75\BestFit Sphere.png" />
+    <Image Include="resource\icons\X0_75\Invert View.png" />
+    <Image Include="resource\icons\X0_75\Object Info.png" />
+    <Image Include="resource\icons\X0_75\Ribbon Scene Hide all.png" />
+    <Image Include="resource\icons\X0_75\Ribbon Scene Show all.png" />
+    <Image Include="resource\icons\X0_75\Rotator.png" />
+    <Image Include="resource\icons\X0_75\Show_Hide Global Basis.png" />
+    <Image Include="resource\icons\X0_75\Binary Operations.png" />
+    <Image Include="resource\icons\X1\Active Plugins List.png" />
+    <Image Include="resource\icons\X1\BestFit Circle.png" />
+    <Image Include="resource\icons\X1\BestFit Cone.png" />
+    <Image Include="resource\icons\X1\BestFit Cylinder.png" />
+    <Image Include="resource\icons\X1\BestFit Line.png" />
+    <Image Include="resource\icons\X1\BestFit Plane.png" />
+    <Image Include="resource\icons\X1\BestFit Point.png" />
+    <Image Include="resource\icons\X1\BestFit Sphere.png" />
+    <Image Include="resource\icons\X1\Invert View.png" />
+    <Image Include="resource\icons\X1\Object Info.png" />
+    <Image Include="resource\icons\X1\Ribbon Scene Hide all.png" />
+    <Image Include="resource\icons\X1\Ribbon Scene Show all.png" />
+    <Image Include="resource\icons\X1\Rotator.png" />
+    <Image Include="resource\icons\X1\Show_Hide Global Basis.png" />
+    <Image Include="resource\icons\X1\Binary Operations.png" />
+    <Image Include="resource\icons\X3\Active Plugins List.png" />
+    <Image Include="resource\icons\X3\BestFit Circle.png" />
+    <Image Include="resource\icons\X3\BestFit Cone.png" />
+    <Image Include="resource\icons\X3\BestFit Cylinder.png" />
+    <Image Include="resource\icons\X3\BestFit Line.png" />
+    <Image Include="resource\icons\X3\BestFit Plane.png" />
+    <Image Include="resource\icons\X3\BestFit Point.png" />
+    <Image Include="resource\icons\X3\BestFit Sphere.png" />
+    <Image Include="resource\icons\X3\Binary Operations.png" />
     <Image Include="resource\icons\X0_5\Add custom theme.png" />
     <Image Include="resource\icons\X0_5\Back View.png" />
     <Image Include="resource\icons\X0_5\Bottom View.png" />
@@ -191,30 +255,36 @@
     <Image Include="resource\icons\X3\Fit selected primitives.png" />
     <Image Include="resource\icons\X3\Front View.png" />
     <Image Include="resource\icons\X3\Horizontal Viewports.png" />
+    <Image Include="resource\icons\X3\Invert View.png" />
     <Image Include="resource\icons\X3\Isometric View.png" />
     <Image Include="resource\icons\X3\Left View.png" />
     <Image Include="resource\icons\X3\Move object.png" />
     <Image Include="resource\icons\X3\New.png" />
+    <Image Include="resource\icons\X3\Object Info.png" />
     <Image Include="resource\icons\X3\Open DICOMs.png" />
     <Image Include="resource\icons\X3\Open directory.png" />
     <Image Include="resource\icons\X3\Open files.png" />
     <Image Include="resource\icons\X3\Open RAW Voxels.png" />
     <Image Include="resource\icons\X3\Open Voxels From TIFF.png" />
     <Image Include="resource\icons\X3\Quad Viewports.png" />
+    <Image Include="resource\icons\X3\Ribbon Scene Hide all.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Remove selected objects.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Rename.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Select all.png" />
+    <Image Include="resource\icons\X3\Ribbon Scene Show all.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Show only next.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Show only previous.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Sort by name.png" />
     <Image Include="resource\icons\X3\Ribbon Scene Unselect all.png" />
     <Image Include="resource\icons\X3\Right View.png" />
+    <Image Include="resource\icons\X3\Rotator.png" />
     <Image Include="resource\icons\X3\Save object.png" />
     <Image Include="resource\icons\X3\Save Scene As.png" />
     <Image Include="resource\icons\X3\Save Scene.png" />
     <Image Include="resource\icons\X3\Save selected.png" />
     <Image Include="resource\icons\X3\Screenshot to clipboard.png" />
     <Image Include="resource\icons\X3\Select objects.png" />
+    <Image Include="resource\icons\X3\Show_Hide Global Basis.png" />
     <Image Include="resource\icons\X3\Single Viewport.png" />
     <Image Include="resource\icons\X3\Top View.png" />
     <Image Include="resource\icons\X3\Vertical Viewports.png" />
@@ -258,12 +328,12 @@
       <WarningLevel>EnableAllWarnings</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>MRCOMMONPLUGINS_EXPORT;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRCommonPlugins_EXPORTS;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <PrecompiledHeaderFile>$(SolutionDir)source\MRPch\MRPch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
-      <ForcedIncludeFiles>$(SolutionDir)source\MRPch\MRPch.h</ForcedIncludeFiles>
+      <PrecompiledHeaderFile>$(ProjectDir)..\MRPch\MRPch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>$(ProjectDir)..\MRPch\MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <PrecompiledHeaderOutputFile>$(SolutionDir)TempOutput\MRPch\$(Platform)\$(Configuration)\MRPch.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
@@ -285,13 +355,13 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>MRCOMMONPLUGINS_EXPORT;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRCommonPlugins_EXPORTS;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
-      <PrecompiledHeaderFile>$(SolutionDir)source\MRPch\MRPch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile>$(ProjectDir)..\MRPch\MRPch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
-      <ForcedIncludeFiles>$(SolutionDir)source\MRPch\MRPch.h</ForcedIncludeFiles>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <ForcedIncludeFiles>$(ProjectDir)..\MRPch\MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <PrecompiledHeaderOutputFile>$(SolutionDir)TempOutput\MRPch\$(Platform)\$(Configuration)\MRPch.pch</PrecompiledHeaderOutputFile>
     </ClCompile>

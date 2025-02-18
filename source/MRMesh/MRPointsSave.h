@@ -1,9 +1,10 @@
 #pragma once
 
+#include "MRMeshFwd.h"
 #include "MRExpected.h"
 #include "MRPointCloud.h"
 #include "MRIOFilters.h"
-#include "MRProgressCallback.h"
+#include "MRSaveSettings.h"
 #include <filesystem>
 #include <ostream>
 
@@ -17,39 +18,31 @@ namespace PointsSave
 /// \ingroup IOGroup
 /// \{
 
-MRMESH_API extern const IOFilters Filters;
+/// save points without normals in textual .xyz file;
+/// each output line contains [x, y, z], where x, y, z are point coordinates
+MRMESH_API Expected<void> toXyz( const PointCloud& points, const std::filesystem::path& file, const SaveSettings& settings = {} );
+MRMESH_API Expected<void> toXyz( const PointCloud& points, std::ostream& out, const SaveSettings& settings = {} );
+
+/// save points with normals in textual .xyzn file;
+/// each output line contains [x, y, z, nx, ny, nz], where x, y, z are point coordinates and nx, ny, nz are the components of point normal
+MRMESH_API Expected<void> toXyzn( const PointCloud& points, const std::filesystem::path& file, const SaveSettings& settings = {} );
+MRMESH_API Expected<void> toXyzn( const PointCloud& points, std::ostream& out, const SaveSettings& settings = {} );
+
+/// save points with normals in .xyzn format, and save points without normals in .xyz format
+MRMESH_API Expected<void> toAsc( const PointCloud& points, const std::filesystem::path& file, const SaveSettings& settings = {} );
+MRMESH_API Expected<void> toAsc( const PointCloud& points, std::ostream& out, const SaveSettings& settings = {} );
 
 /// saves in .ply file
-MRMESH_API VoidOrErrStr toPly( const PointCloud& points, const std::filesystem::path& file, const VertColors* colors = nullptr,
-                                                  ProgressCallback callback = {} );
-MRMESH_API VoidOrErrStr toPly( const PointCloud& points, std::ostream& out, const VertColors* colors = nullptr,
-                                                  ProgressCallback callback = {} );
-
-struct CtmSavePointsOptions
-{
-    /// 0 - minimal compression, but fast; 9 - maximal compression, but slow
-    int compressionLevel = 1;
-    /// comment saved in the file
-    const char* comment = "MeshInspector Points";
-};
-
-#ifndef MRMESH_NO_OPENCTM
-/// saves in .ctm file
-MRMESH_API VoidOrErrStr toCtm( const PointCloud& points, const std::filesystem::path& file, const VertColors* colors = nullptr,
-                                                  const CtmSavePointsOptions& options = {}, ProgressCallback callback = {} );
-MRMESH_API VoidOrErrStr toCtm( const PointCloud& points, std::ostream& out, const VertColors* colors = nullptr,
-                                                  const CtmSavePointsOptions& options = {}, ProgressCallback callback = {} );
-#endif
+MRMESH_API Expected<void> toPly( const PointCloud& points, const std::filesystem::path& file, const SaveSettings& settings = {} );
+MRMESH_API Expected<void> toPly( const PointCloud& points, std::ostream& out, const SaveSettings& settings = {} );
 
 /// detects the format from file extension and save points to it
-MRMESH_API VoidOrErrStr toAnySupportedFormat( const PointCloud& points, const std::filesystem::path& file, const VertColors* colors = nullptr,
-                                                                 ProgressCallback callback = {} );
+MRMESH_API Expected<void> toAnySupportedFormat( const PointCloud& points, const std::filesystem::path& file, const SaveSettings& settings = {} );
 /// extension in `*.ext` format
-MRMESH_API VoidOrErrStr toAnySupportedFormat( const PointCloud& points, std::ostream& out, const std::string& extension, const VertColors* colors = nullptr,
-                                                                 ProgressCallback callback = {} );
+MRMESH_API Expected<void> toAnySupportedFormat( const PointCloud& points, const std::string& extension, std::ostream& out, const SaveSettings& settings = {} );
 
 /// \}
 
-}
+} // namespace PointsSave
 
-}
+} // namespace MR

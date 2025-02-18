@@ -2,7 +2,7 @@
 
 #include "MRViewerFwd.h"
 #include "MRMesh/MRVector3.h"
-#include <boost/signals2/signal.hpp>
+#include "MRMesh/MRSignal.h"
 #include <filesystem>
 #include <vector>
 
@@ -21,7 +21,7 @@ struct ConnectionHolder : virtual IConnectable
     virtual ~ConnectionHolder() = default;
     virtual void disconnect() { connection_.disconnect(); }
 protected:
-    boost::signals2::connection connection_;
+    boost::signals2::scoped_connection connection_;
 };
 
 template<typename ...Connectables>
@@ -32,7 +32,10 @@ struct MultiListener : Connectables...
 
     virtual ~MultiListener() = default;
 
-    virtual void connect( Viewer* viewer, int group = 0, boost::signals2::connect_position pos = boost::signals2::connect_position::at_back )
+    virtual void connect( 
+        [[maybe_unused]] Viewer* viewer, // unused if Connectables is empty
+        [[maybe_unused]] int group = 0,
+        [[maybe_unused]] boost::signals2::connect_position pos = boost::signals2::connect_position::at_back )
     {
         ( Connectables::connect( viewer, group, pos ), ... );
     }
@@ -78,6 +81,42 @@ struct MRVIEWER_CLASS MouseScrollListener : ConnectionHolder
     MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
 protected:
     virtual bool onMouseScroll_( float delta ) = 0;
+};
+
+struct MRVIEWER_CLASS MouseClickListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( MouseClickListener );
+    virtual ~MouseClickListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool onMouseClick_( MouseButton btn, int modifiers ) = 0;
+};
+
+struct MRVIEWER_CLASS DragStartListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( DragStartListener );
+    virtual ~DragStartListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool onDragStart_( MouseButton btn, int modifiers ) = 0;
+};
+
+struct MRVIEWER_CLASS DragEndListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( DragEndListener );
+    virtual ~DragEndListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool onDragEnd_( MouseButton btn, int modifiers ) = 0;
+};
+
+struct MRVIEWER_CLASS DragListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( DragListener );
+    virtual ~DragListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool onDrag_( int x, int y ) = 0;
 };
 
 struct MRVIEWER_CLASS CharPressedListener : ConnectionHolder
@@ -234,6 +273,96 @@ struct MRVIEWER_CLASS SpaceMouseUpListener : ConnectionHolder
     MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
 protected:
     virtual bool spaceMouseUp_( int key ) = 0;
+};
+
+/// class to subscribe on TouchpadRotateGestureBeginEvent
+struct MRVIEWER_CLASS TouchpadRotateGestureBeginListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadRotateGestureBeginListener );
+    virtual ~TouchpadRotateGestureBeginListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadRotateGestureBegin_() = 0;
+};
+
+/// class to subscribe on TouchpadRotateGestureUpdateEvent
+struct MRVIEWER_CLASS TouchpadRotateGestureUpdateListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadRotateGestureUpdateListener );
+    virtual ~TouchpadRotateGestureUpdateListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadRotateGestureUpdate_( float angle ) = 0;
+};
+
+/// class to subscribe on TouchpadRotateGestureEndEvent
+struct MRVIEWER_CLASS TouchpadRotateGestureEndListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadRotateGestureEndListener );
+    virtual ~TouchpadRotateGestureEndListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadRotateGestureEnd_() = 0;
+};
+
+/// class to subscribe on TouchpadSwipeGestureBeginEvent
+struct MRVIEWER_CLASS TouchpadSwipeGestureBeginListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadSwipeGestureBeginListener );
+    virtual ~TouchpadSwipeGestureBeginListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadSwipeGestureBegin_() = 0;
+};
+
+/// class to subscribe on TouchpadSwipeGestureUpdateEvent
+struct MRVIEWER_CLASS TouchpadSwipeGestureUpdateListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadSwipeGestureUpdateListener );
+    virtual ~TouchpadSwipeGestureUpdateListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadSwipeGestureUpdate_( float dx, float dy, bool kinetic ) = 0;
+};
+
+/// class to subscribe on TouchpadSwipeGestureEndEvent
+struct MRVIEWER_CLASS TouchpadSwipeGestureEndListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadSwipeGestureEndListener );
+    virtual ~TouchpadSwipeGestureEndListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadSwipeGestureEnd_() = 0;
+};
+
+/// class to subscribe on TouchpadZoomGestureBeginEvent
+struct MRVIEWER_CLASS TouchpadZoomGestureBeginListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadZoomGestureBeginListener );
+    virtual ~TouchpadZoomGestureBeginListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadZoomGestureBegin_() = 0;
+};
+
+/// class to subscribe on TouchpadZoomGestureUpdateEvent
+struct MRVIEWER_CLASS TouchpadZoomGestureUpdateListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadZoomGestureUpdateListener );
+    virtual ~TouchpadZoomGestureUpdateListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadZoomGestureUpdate_( float scale, bool kinetic ) = 0;
+};
+
+/// class to subscribe on TouchpadZoomGestureEndEvent
+struct MRVIEWER_CLASS TouchpadZoomGestureEndListener : ConnectionHolder
+{
+    MR_ADD_CTOR_DELETE_MOVE( TouchpadZoomGestureEndListener );
+    virtual ~TouchpadZoomGestureEndListener() = default;
+    MRVIEWER_API virtual void connect( Viewer* viewer, int group, boost::signals2::connect_position pos ) override;
+protected:
+    virtual bool touchpadZoomGestureEnd_() = 0;
 };
 
 /// class to subscribe on PostFocusSingal

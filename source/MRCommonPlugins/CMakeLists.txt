@@ -1,64 +1,109 @@
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD ${MR_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-project (MRCommonPlugins CXX)
+project(MRCommonPlugins CXX)
 
 file(GLOB_RECURSE SOURCES "*.cpp")
 file(GLOB_RECURSE HEADERS "*.h")
 
-
 file(GLOB UI_JSON "*.ui.json")
 file(GLOB ITEMS_JSON "*.items.json")
 IF(MR_EMSCRIPTEN)
-	file(COPY ${UI_JSON} DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
-	file(COPY ${ITEMS_JSON} DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
-	file(COPY "resource" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
+  file(COPY ${UI_JSON} DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
+  file(COPY ${ITEMS_JSON} DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
+  file(COPY "resource" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets")
 ELSE() # MR_EMSCRIPTEN
-	file(COPY ${UI_JSON} DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-	file(COPY ${ITEMS_JSON} DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-	file(COPY "resource" DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  file(COPY ${UI_JSON} DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  file(COPY ${ITEMS_JSON} DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  file(COPY "resource" DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 ENDIF() # MR_EMSCRIPTEN
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 
-IF(APPLE)
-	target_link_libraries(${PROJECT_NAME} PRIVATE
-		MRMesh
-		MRViewer
-		clip
-		imgui
-		fmt
-		spdlog
-		glfw
-		jsoncpp
-		glad
-		)
+IF(MR_EMSCRIPTEN)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    tbb
+    MRMesh
+    MRIOExtras
+    MRViewer
+    glad
+    glfw
+    imgui
+    jsoncpp
+    spdlog
+  )
+ELSEIF(WIN32)
+  find_package(glad REQUIRED)
+  find_package(OpenVDB REQUIRED)
+
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    TBB::tbb
+    MRMesh
+    MRIOExtras
+    MRViewer
+    glad::glad
+    glfw
+    imgui
+    JsonCpp::JsonCpp
+    OpenVDB::openvdb
+    spdlog::spdlog
+    fmt::fmt
+  )
 ELSE()
-	target_link_libraries(${PROJECT_NAME} PRIVATE
-		tbb
-		MRMesh
-		MRViewer
-		imgui
-		)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    tbb
+    MRMesh
+    MRIOExtras
+    MRViewer
+    clip
+    glad
+    glfw
+    imgui
+    jsoncpp
+    openvdb
+    spdlog
+    fmt
+  )
 ENDIF()
 
+IF(MESHLIB_BUILD_VOXELS)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    MRVoxels
+  )
+ELSE()
+  target_compile_definitions(${PROJECT_NAME} PRIVATE MESHLIB_NO_VOXELS)
+ENDIF()
 
-install(TARGETS ${PROJECT_NAME}
-		EXPORT ${PROJECT_NAME}
-		DESTINATION "${MR_MAIN_LIB_DIR}")
+install(
+  TARGETS ${PROJECT_NAME}
+  EXPORT ${PROJECT_NAME}
+  LIBRARY DESTINATION "${MR_MAIN_LIB_DIR}"
+  ARCHIVE DESTINATION "${MR_MAIN_LIB_DIR}"
+  RUNTIME DESTINATION "${MR_BIN_DIR}"
+)
 
-install(FILES ${HEADERS}
-		DESTINATION "${MR_INCLUDE_DIR}/${PROJECT_NAME}")
+install(
+  FILES ${HEADERS}
+  DESTINATION "${MR_INCLUDE_DIR}/${PROJECT_NAME}"
+)
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}Config.cmake
-		DESTINATION ${MR_CONFIG_DIR}/cmake)
+install(
+  FILES ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}Config.cmake
+  DESTINATION ${MR_CONFIG_DIR}
+)
 
 install(FILES ${HEADERS} DESTINATION "${MR_INCLUDE_DIR}/${PROJECT_NAME}")
 install(FILES ${UI_JSON} DESTINATION "${MR_RESOURCES_DIR}")
 install(FILES ${ITEMS_JSON} DESTINATION "${MR_RESOURCES_DIR}")
 
-install(EXPORT ${PROJECT_NAME}
-		FILE ${PROJECT_NAME}Targets.cmake
-		NAMESPACE MeshLib::
-		DESTINATION ${MR_CONFIG_DIR}/cmake)
+install(
+  EXPORT ${PROJECT_NAME}
+  FILE ${PROJECT_NAME}Targets.cmake
+  NAMESPACE MeshLib::
+  DESTINATION ${MR_CONFIG_DIR}
+)
+
+IF(MR_PCH)
+  TARGET_PRECOMPILE_HEADERS(${PROJECT_NAME} REUSE_FROM MRPch)
+ENDIF()

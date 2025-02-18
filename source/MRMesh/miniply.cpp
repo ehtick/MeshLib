@@ -77,6 +77,7 @@ namespace miniply {
     { "int",    PLYPropertyType::Int    },
     { "uint",   PLYPropertyType::UInt   },
     { "float",  PLYPropertyType::Float  },
+    { "float32",PLYPropertyType::Float  },
     { "double", PLYPropertyType::Double },
 
     { "uint8",  PLYPropertyType::UChar  },
@@ -690,7 +691,7 @@ namespace miniply {
     }
     else if (elem.fixedSize) {
       int64_t elementStart = static_cast<int64_t>(m_pos - m_buf);
-      int64_t elementSize = elem.rowStride * elem.count;
+      int64_t elementSize = static_cast<int64_t>(elem.rowStride) * static_cast<int64_t>(elem.count);
       int64_t elementEnd = elementStart + elementSize;
       if (elementEnd >= kPLYReadBufferSize) {
         m_bufOffset += elementEnd;
@@ -872,6 +873,10 @@ namespace miniply {
     return foundAll;
   }
 
+  std::streamsize PLYReader::get_end_pos() const
+  {
+    return inEnd_;
+  }
 
   bool PLYReader::extract_properties(const uint32_t propIdxs[], uint32_t numProps, PLYPropertyType destType, void *dest) const
   {
@@ -1480,7 +1485,7 @@ namespace miniply {
   bool PLYReader::load_fixed_size_element(PLYElement& elem)
   {
     MR_TIMER
-    size_t numBytes = elem.count * elem.rowStride;
+    size_t numBytes = size_t( elem.count ) * elem.rowStride;
 
     m_elementData.resize(numBytes);
 
@@ -1552,7 +1557,7 @@ namespace miniply {
   bool PLYReader::load_variable_size_element(PLYElement& elem)
   {
     MR_TIMER
-    m_elementData.resize(elem.count * elem.rowStride);
+    m_elementData.resize( size_t( elem.count ) * elem.rowStride);
 
     // Preallocate enough space for each row in the property to contain three
     // items. This is based on the assumptions that (a) the most common use for
@@ -1561,7 +1566,7 @@ namespace miniply {
     // listData vector as many times during loading.
     for (PLYProperty& prop : elem.properties) {
       if (prop.countType != PLYPropertyType::None) {
-        prop.listData.reserve(elem.count * kPLYPropertySize[uint32_t(prop.type)] * 3);
+        prop.listData.reserve( size_t( elem.count ) * kPLYPropertySize[uint32_t(prop.type)] * 3);
       }
     }
 

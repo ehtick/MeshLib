@@ -1,4 +1,5 @@
 #include "MRSelectScreenLasso.h"
+#include "MRViewport.h"
 #include "MRViewer/MRViewer.h"
 #include "MRMesh/MRVector3.h"
 #include "MRMesh/MRObjectMesh.h"
@@ -14,23 +15,14 @@
 #include "MRMesh/MRPolyline.h"
 #include "MRMesh/MRPolyline2Intersect.h"
 #include "MRMesh/MRPolylineProject.h"
+#include "MRMesh/MRPointCloud.h"
 
 namespace MR
 {
 
-void SelectScreenLasso::addPoint( int mouseX, int mouseY )
+BitSet calculateSelectedPixelsInsidePolygon( const Contour2f & screenPoints )
 {
-    float mx = float( mouseX );
-    float my = float( mouseY );
-    if ( screenPoints_.empty() || screenPoints_.back().x != mx || screenPoints_.back().y != my )
-    {
-        screenPoints_.push_back( { mx, my } );
-    }
-}
-
-BitSet SelectScreenLasso::calculateSelectedPixelsInsidePolygon()
-{
-    if ( screenPoints_.empty() )
+    if ( screenPoints.empty() )
         return {};
 
     Viewer& viewer = getViewerInstance();
@@ -38,11 +30,11 @@ BitSet SelectScreenLasso::calculateSelectedPixelsInsidePolygon()
     const auto& vpRect = viewer.viewport().getViewportRect();
 
     // convert polygon
-    Contour2f contour( screenPoints_.size() + 1 );
+    Contour2f contour( screenPoints.size() + 1 );
     
     auto viewportId = viewer.viewport().id;
-    for ( int i = 0; i < screenPoints_.size(); i++ )
-        contour[i] = to2dim( viewer.screenToViewport( { screenPoints_[i].x, screenPoints_[i].y,0.f }, viewportId ) );
+    for ( int i = 0; i < screenPoints.size(); i++ )
+        contour[i] = to2dim( viewer.screenToViewport( { screenPoints[i].x, screenPoints[i].y, 0.f }, viewportId ) );
     contour.back() = contour.front();
 
     Polyline2 polygon( { std::move( contour ) } );
@@ -74,9 +66,9 @@ BitSet SelectScreenLasso::calculateSelectedPixelsInsidePolygon()
     return resBS;
 }
 
-BitSet SelectScreenLasso::calculateSelectedPixelsNearPolygon( float radiusPix )
+BitSet calculateSelectedPixelsNearPolygon( const Contour2f & screenPoints, float radiusPix )
 {
-    if ( screenPoints_.empty() )
+    if ( screenPoints.empty() )
         return {};
 
     Viewer& viewer = getViewerInstance();
@@ -84,11 +76,11 @@ BitSet SelectScreenLasso::calculateSelectedPixelsNearPolygon( float radiusPix )
     const auto& vpRect = viewer.viewport().getViewportRect();
 
     // convert polygon
-    Contour2f contour( screenPoints_.size() );
+    Contour2f contour( screenPoints.size() );
 
     auto viewportId = viewer.viewport().id;
-    for ( int i = 0; i < screenPoints_.size(); i++ )
-        contour[i] = to2dim( viewer.screenToViewport( { screenPoints_[i].x, screenPoints_[i].y,0.f }, viewportId ) );
+    for ( int i = 0; i < screenPoints.size(); i++ )
+        contour[i] = to2dim( viewer.screenToViewport( { screenPoints[i].x, screenPoints[i].y,0.f }, viewportId ) );
     if ( contour.size() == 1 )
         contour.emplace_back( contour.front() );
 
@@ -155,7 +147,7 @@ FaceBitSet findIncidentFaces( const Viewport& viewport, const BitSet& pixBs, con
         FaceId f;
     };
 
-    const auto cameraEye = viewport.getCameraPoint();
+    const auto orthoBackwards = viewport.getBackwardDirection();
     const Box2f clipArea( { -1.f, -1.f }, { 1.f, 1.f } );
     tbb::enumerable_thread_specific<std::vector<Fragment>> tlsFragments;
     BitSetParallelFor( mesh->topology.getValidFaces(), [&]( FaceId f )
@@ -165,7 +157,12 @@ FaceBitSet findIncidentFaces( const Viewport& viewport, const BitSet& pixBs, con
         if ( !includeBackfaces )
         {
             const auto n = cross( v[1] - v[0], v[2] - v[0] );
-            if ( dot( xf.A * n, cameraEye ) < 0 )
+            Vector3f cameraDir;
+            if ( viewport.getParameters().orthographic )
+                cameraDir = orthoBackwards;
+            else
+                cameraDir = -viewport.unprojectPixelRay( to2dim( viewport.projectToViewportSpace( mesh->triCenter( f ) ) ) ).d;
+            if ( dot( xf.A * n, cameraDir ) < 0 )
                 return;
         }
         Vector3f clip[3];
@@ -228,8 +225,14 @@ FaceBitSet findIncidentFaces( const Viewport& viewport, const BitSet& pixBs, con
         }
 
         tbb::enumerable_thread_specific<std::vector<Line3fMesh>> tlsLineMeshes( std::cref( lineMeshes ) );
-        auto isPointHidden = [&]( const Vector3f& point )
+        const auto& clippingPlane = viewport.getParameters().clippingPlane;
+        const bool useClipping = obj.getVisualizeProperty( VisualizeMaskType::ClippedByPlane, viewport.id );
+
+        auto isPointHidden = [&]( const Vector3f& point ) -> bool
         {
+            if ( useClipping && clippingPlane.distance( xf( point ) ) > 0 )
+                return true;
+
             auto & myLineMeshes = tlsLineMeshes.local();
             assert( myLineMeshes.size() == cameraEyes.size() );
             for ( int i = 0; i < myLineMeshes.size(); ++i )
@@ -237,7 +240,7 @@ FaceBitSet findIncidentFaces( const Viewport& viewport, const BitSet& pixBs, con
                 auto pointInOcc = xfMeshToOccMesh[i]( point );
                 myLineMeshes[i].line = Line3f{ pointInOcc, cameraEyes[i] - pointInOcc };
             }
-            return rayMultiMeshAnyIntersect( myLineMeshes, 0.0f, FLT_MAX );
+            return (bool)rayMultiMeshAnyIntersect( myLineMeshes, 0.0f, FLT_MAX );
         };
 
         BitSetParallelFor( verts, [&] ( VertId vid )
@@ -261,16 +264,22 @@ FaceBitSet findIncidentFaces( const Viewport& viewport, const BitSet& pixBs, con
     auto res = getIncidentFaces( mesh->topology, verts );
     if ( !includeBackfaces )
     {
-        BitSetParallelFor( res, [&] ( FaceId i )
+        BitSetParallelFor( res, [&] ( FaceId f )
         {
-            const auto& n = mesh->dirDblArea( i ); // non-unit norm (unnormalized)
-            if ( dot( xf.A * n, cameraEye ) < 0.f )
-                res.set( i, false );
+            const auto& n = mesh->dirDblArea( f ); // non-unit norm (unnormalized)
+            Vector3f cameraDir;
+            if ( viewport.getParameters().orthographic )
+                cameraDir = orthoBackwards;
+            else
+                cameraDir = -viewport.unprojectPixelRay( to2dim( viewport.projectToViewportSpace( mesh->triCenter( f ) ) ) ).d;
+            if ( dot( xf.A * n, cameraDir ) < 0.f )
+                res.set( f, false );
         } );
     }
     for ( auto & frag : largeTriFragments )
         if ( frag.f )
             res.set( frag.f );
+
     return res;
 }
 
@@ -278,7 +287,7 @@ void appendGPUVisibleFaces( const Viewport& viewport, const BitSet& pixBs,
     const std::vector<std::shared_ptr<ObjectMesh>>& objects, 
     std::vector<FaceBitSet>& visibleFaces, bool includeBackfaces /*= true */ )
 {
-    const auto cameraEye = viewport.getCameraPoint();
+    const auto orthoBackwards = viewport.getBackwardDirection();
     auto gpuPickerVisibleFaces = viewport.findVisibleFaces( pixBs );
     for ( int i = 0; i < objects.size(); ++i )
     {
@@ -292,7 +301,12 @@ void appendGPUVisibleFaces( const Viewport& viewport, const BitSet& pixBs,
             BitSetParallelFor( it->second, [&] ( FaceId f )
             {
                 auto n = selMesh->mesh()->dirDblArea( f );
-                if ( dot( xf.A * n, cameraEye ) < 0 )
+                Vector3f cameraDir;
+                if ( viewport.getParameters().orthographic )
+                    cameraDir = orthoBackwards;
+                else
+                    cameraDir = -viewport.unprojectPixelRay( to2dim( viewport.projectToViewportSpace( selMesh->mesh()->triCenter( f ) ) ) ).d;
+                if ( dot( xf.A * n, cameraDir ) < 0 )
                     it->second.set( f, false );
             } );
         }
@@ -301,7 +315,7 @@ void appendGPUVisibleFaces( const Viewport& viewport, const BitSet& pixBs,
 }
 
 VertBitSet findVertsInViewportArea( const Viewport& viewport, const BitSet& pixBs, const ObjectPoints& obj,
-                                    bool includeBackfaces /*= true */ )
+                                    bool includeBackfaces /*= true */, bool onlyVisible /*= false */ )
 {
     if ( pixBs.none() )
         return {};
@@ -330,13 +344,29 @@ VertBitSet findVertsInViewportArea( const Viewport& viewport, const BitSet& pixB
 
     // find all verts inside
     auto verts = pointCloud->validPoints;
-    const auto cameraEye = viewport.getCameraPoint();
+    const auto orthoBackwards = viewport.getBackwardDirection();
     const auto& normals = pointCloud->normals;
     const bool excludeBackface = !includeBackfaces && normals.size() >= pointCloud->points.size();
+    const auto& clippingPlane = viewport.getParameters().clippingPlane;
     BitSetParallelFor( verts, [&]( VertId i )
     {
-        if ( !inSelectedArea( toClipSpace( pointCloud->points[i] ) ) || ( excludeBackface && dot( normals[i], cameraEye ) < 0 ) )
+        if ( !inSelectedArea( toClipSpace( pointCloud->points[i] ) ) )
             verts.set( i, false );
+        else if ( excludeBackface )
+        {
+            Vector3f cameraDir;
+            if ( viewport.getParameters().orthographic )
+                cameraDir = orthoBackwards;
+            else
+                cameraDir = -viewport.unprojectPixelRay( to2dim( viewport.projectToViewportSpace( pointCloud->points[i] ) ) ).d;
+            if ( dot( xf.A * normals[i], cameraDir ) < 0 )
+                verts.set( i, false );
+        }
+        if ( onlyVisible && obj.getVisualizeProperty( VisualizeMaskType::ClippedByPlane, viewport.id ) &&
+            clippingPlane.distance( xf( pointCloud->points[i] ) ) > 0 )
+        {
+            verts.set( i, false );
+        }
     } );
 
     return verts;

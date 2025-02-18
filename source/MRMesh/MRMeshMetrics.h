@@ -1,17 +1,22 @@
 #pragma once
+
 #include "MRMeshFwd.h"
 #include "MRVector3.h"
-#include "MRMesh.h"
 #include <functional>
-
 
 namespace MR
 {
 /// \addtogroup FillHoleGroup
 /// \{
 
-using FillTriangleMetric = std::function<double( VertId, VertId, VertId )>;
-using FillEdgeMetric = std::function<double( VertId, VertId, VertId, VertId )>;
+// args: three vertices of candidate triangle
+using FillTriangleMetric = std::function<double( VertId a, VertId b, VertId c )>;
+// args: 
+//  a->b: candidate edge
+//  l: next(a->b) note that they are not connected in topology untill triangulation process ends
+//  r: prev(a->b) note that they are not connected in topology untill triangulation process ends
+using FillEdgeMetric = std::function<double( VertId a, VertId b, VertId l, VertId r )>;
+// args: two metric weights to combine (usualy it is simple sum of them)
 using FillCombineMetric = std::function<double( double, double )>;
 
 /// Big value, but less then DBL_MAX, to be able to pass some bad triangulations instead of breaking it
@@ -23,12 +28,11 @@ MRMESH_API extern const double BadTriangulationMetric;
   * 
   * This is struct used as optimization metric of fillHole and buildCylinderBetweenTwoHoles functions\n
   * 
-  * \sa \ref getCircumscribedFillMetric
+  * \sa \ref getCircumscribedMetric
   * \sa \ref getPlaneFillMetric
   * \sa \ref getEdgeLengthFillMetric
   * \sa \ref getEdgeLengthStitchMetric
   * \sa \ref getComplexStitchMetric
-  * \sa \ref getCircumscribedStitchMetric
   * \sa \ref fillHole
   * \sa \ref buildCylinderBetweenTwoHoles
   */

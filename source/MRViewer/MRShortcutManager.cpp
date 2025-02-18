@@ -1,6 +1,6 @@
 #include "MRShortcutManager.h"
 #include "MRRibbonConstants.h"
-#include "imgui.h"
+#include "MRImGui.h"
 #include <GLFW/glfw3.h>
 
 namespace MR
@@ -8,7 +8,7 @@ namespace MR
 
 void ShortcutManager::setShortcut( const ShortcutKey& key, const ShortcutCommand& command )
 {
-    auto newMapKey = mapKeyFromKeyAndMod( key );
+    auto newMapKey = mapKeyFromKeyAndMod( key, false );
     auto [backMapIt, insertedToBackMap] = backMap_.insert( { command.name,newMapKey } );
     if ( !insertedToBackMap )
     {
@@ -54,13 +54,24 @@ bool ShortcutManager::processShortcut( const ShortcutKey& key, Reason reason ) c
 {
     if ( !enabled_ )
         return false;
-    auto it = map_.find( mapKeyFromKeyAndMod( key ) );
+    auto it = map_.find( mapKeyFromKeyAndMod( key, true ) );
     if ( it != map_.end() && ( reason == Reason::KeyDown || it->second.repeatable ) )
     {
         it->second.action();
         return true;
     }
     return false;
+}
+
+bool ShortcutManager::onKeyDown_( int key, int modifier )
+{
+    return processShortcut( {key, modifier }, Reason::KeyDown );
+}
+
+
+bool ShortcutManager::onKeyRepeat_( int key, int modifier )
+{
+    return processShortcut( { key, modifier }, Reason::KeyRepeat );
 }
 
 std::string ShortcutManager::getModifierString( int mod )
@@ -73,6 +84,8 @@ std::string ShortcutManager::getModifierString( int mod )
         return "Alt";
     case GLFW_MOD_SHIFT:
         return "Shift";
+    case GLFW_MOD_SUPER:
+        return "Command";
     default:
         return "";
     }
@@ -91,6 +104,10 @@ std::string ShortcutManager::getKeyString( int key )
     else if ( key >= GLFW_KEY_APOSTROPHE && key <= GLFW_KEY_GRAVE_ACCENT )
     {
         return { char( key ) };
+    }
+    else if ( key >= GLFW_KEY_KP_0 && key <= GLFW_KEY_KP_9 )
+    {
+        return std::string( "Num " ) + std::to_string( key - GLFW_KEY_KP_0 );
     }
     else
     {
@@ -120,6 +137,8 @@ std::string ShortcutManager::getKeyFullString( const ShortcutKey& key, bool resp
         res += getModifierString( GLFW_MOD_CONTROL ) + "+";
     if ( key.mod & GLFW_MOD_SHIFT )
         res += getModifierString( GLFW_MOD_SHIFT ) + "+";
+    if ( key.mod & GLFW_MOD_SUPER )
+        res += getModifierString( GLFW_MOD_SUPER ) + "+";
     if ( respectKey )
         res += getKeyString( key.key );
     return res;
@@ -133,9 +152,30 @@ std::optional<ShortcutManager::ShortcutKey> ShortcutManager::findShortcutByName(
     return kayAndModFromMapKey( it->second );
 }
 
-int ShortcutManager::mapKeyFromKeyAndMod( const ShortcutKey& key )
+void ShortcutManager::clear()
+{
+    map_.clear();
+    backMap_.clear();
+    listCache_ = {};
+}
+
+int ShortcutManager::mapKeyFromKeyAndMod( const ShortcutKey& key, [[maybe_unused]] bool respectKeyboard )
 {
     int upperKey = key.key;
+#ifndef __EMSCRIPTEN__
+    if ( respectKeyboard )
+    {
+        std::string namedKey;
+        // map key to char using system keyboard settings
+        auto chars = glfwGetKeyName( key.key, glfwGetKeyScancode( key.key ) );
+        if ( chars ) // null chars means that mapping failed
+            namedKey = std::string( chars );
+        // if mapped to latin symbol update `upperKey`
+        if ( namedKey.size() == 1 && namedKey[0] >= 'a' && namedKey[0] <= 'z' )
+            upperKey = int( namedKey[0] );
+    }
+#endif
+
     if ( upperKey >= 'a' && upperKey <= 'z' ) // lower
         upperKey = std::toupper( upperKey );
     return int( upperKey << 6 ) + key.mod;

@@ -2,6 +2,7 @@
 #include "MRAABBTree.h"
 #include "MRMesh.h"
 #include "MRTriangleIntersection.h"
+#include "MREnums.h"
 #include "MRTimer.h"
 #include "MRGTest.h"
 #include "MRPch/MRTBB.h"
@@ -14,9 +15,9 @@ namespace MR
 
 struct NodeNode
 {
-    AABBTree::NodeId aNode;
-    AABBTree::NodeId bNode;
-    NodeNode( AABBTree::NodeId a, AABBTree::NodeId b ) : aNode( a ), bNode( b ) { }
+    NodeId aNode;
+    NodeId bNode;
+    NodeNode( NodeId a, NodeId b ) : aNode( a ), bNode( b ) { }
 };
 
 std::vector<FaceFace> findCollidingTriangles( const MeshPart & a, const MeshPart & b, const AffineXf3f * rigidB2A, bool firstIntersectionOnly )
@@ -29,20 +30,20 @@ std::vector<FaceFace> findCollidingTriangles( const MeshPart & a, const MeshPart
     if ( aTree.nodes().empty() || bTree.nodes().empty() )
         return res;
 
-    AABBTree::NodeBitSet aNodes, bNodes;
-    AABBTree::NodeBitSet* aNodesPtr{nullptr}, * bNodesPtr{nullptr};
+    NodeBitSet aNodes, bNodes;
+    NodeBitSet* aNodesPtr{nullptr}, * bNodesPtr{nullptr};
     if ( a.region )
     {
-        aNodes = aTree.getNodesFromFaces( *a.region );
+        aNodes = aTree.getNodesFromLeaves( *a.region );
         aNodesPtr = &aNodes;
     }
     if ( b.region )
     {
-        bNodes = bTree.getNodesFromFaces( *b.region );
+        bNodes = bTree.getNodesFromLeaves( *b.region );
         bNodesPtr = &bNodes;
     }
 
-    std::vector<NodeNode> subtasks{ { AABBTree::NodeId{ 0 }, AABBTree::NodeId{ 0 } } };
+    std::vector<NodeNode> subtasks{ { NodeId{ 0 }, NodeId{ 0 } } };
 
     while( !subtasks.empty() )
     {
@@ -174,70 +175,74 @@ inline std::pair<int, int> sharedVertex( const VertId av[3], const VertId bv[3] 
 static void processSelfSubtasks( const AABBTree & tree,
     std::vector<NodeNode> & subtasks,
     std::vector<NodeNode> & nextSubtasks, // may be same as subtasks
-    std::function<void(const NodeNode&)> processLeaf )
+    std::function<Processing(const NodeNode&)> processLeaf )
 {
-        while( !subtasks.empty() )
+    while( !subtasks.empty() )
+    {
+        const auto s = subtasks.back();
+        subtasks.pop_back();
+        const auto & aNode = tree[s.aNode];
+        const auto & bNode = tree[s.bNode];
+
+        if ( s.aNode == s.bNode )
         {
-            const auto s = subtasks.back();
-            subtasks.pop_back();
-            const auto & aNode = tree[s.aNode];
-            const auto & bNode = tree[s.bNode];
-
-            if ( s.aNode == s.bNode )
+            if ( !aNode.leaf() )
             {
-                if ( !aNode.leaf() )
-                {
-                    nextSubtasks.emplace_back( aNode.l, aNode.l );
-                    nextSubtasks.emplace_back( aNode.r, aNode.r );
-                    nextSubtasks.emplace_back( aNode.l, aNode.r );
-                }
-                continue;
+                nextSubtasks.emplace_back( aNode.l, aNode.l );
+                nextSubtasks.emplace_back( aNode.r, aNode.r );
+                nextSubtasks.emplace_back( aNode.l, aNode.r );
             }
-
-            const auto overlap = aNode.box.intersection( bNode.box );
-            if ( !overlap.valid() )
-                continue;
-
-            if ( aNode.leaf() && bNode.leaf() )
-            {
-                processLeaf( s );
-                continue;
-            }
-        
-            if ( !aNode.leaf() && ( bNode.leaf() || aNode.box.volume() >= bNode.box.volume() ) )
-            {
-                // split aNode
-                nextSubtasks.emplace_back( aNode.l, s.bNode );
-                nextSubtasks.emplace_back( aNode.r, s.bNode );
-            }
-            else
-            {
-                assert( !bNode.leaf() );
-                // split bNode
-                nextSubtasks.emplace_back( s.aNode, bNode.l );
-                nextSubtasks.emplace_back( s.aNode, bNode.r );
-            }
+            continue;
         }
+
+        const auto overlap = aNode.box.intersection( bNode.box );
+        if ( !overlap.valid() )
+            continue;
+
+        if ( aNode.leaf() && bNode.leaf() )
+        {
+            if ( processLeaf( s ) == Processing::Stop )
+                return;
+            continue;
+        }
+        
+        if ( !aNode.leaf() && ( bNode.leaf() || aNode.box.volume() >= bNode.box.volume() ) )
+        {
+            // split aNode
+            nextSubtasks.emplace_back( aNode.l, s.bNode );
+            nextSubtasks.emplace_back( aNode.r, s.bNode );
+        }
+        else
+        {
+            assert( !bNode.leaf() );
+            // split bNode
+            nextSubtasks.emplace_back( s.aNode, bNode.l );
+            nextSubtasks.emplace_back( s.aNode, bNode.r );
+        }
+    }
 }
 
-Expected< std::vector<FaceFace>, std::string> findSelfCollidingTriangles( const MeshPart & mp, ProgressCallback cb )
+Expected<bool> findSelfCollidingTriangles(
+    const MeshPart& mp,
+    std::vector<FaceFace> * outCollidingPairs,
+    ProgressCallback cb,
+    const Face2RegionMap * regionMap )
 {
     MR_TIMER
-    std::vector<FaceFace> res;
     const AABBTree & tree = mp.mesh.getAABBTree();
     if ( tree.nodes().empty() )
-        return res;
+        return false;
 
     auto sb = subprogress( cb, 0, 0.08f );
 
     // sequentially subdivide full task on smaller subtasks;
     // they shall be not too many for this subdivision not to take too long;
     // and they shall be not too few for enough parallelism later
-    std::vector<NodeNode> subtasks{ { AABBTree::NodeId{ 0 }, AABBTree::NodeId{ 0 } } }, nextSubtasks, leafTasks;
+    std::vector<NodeNode> subtasks{ { NodeId{ 0 }, NodeId{ 0 } } }, nextSubtasks, leafTasks;
     for( int i = 0; i < 16 && !subtasks.empty(); ++i ) // 16 -> will produce at most 2^16 subtasks
     {
         processSelfSubtasks( tree, subtasks, nextSubtasks,
-            [&leafTasks]( const NodeNode & s ) { leafTasks.push_back( s ); } );
+            [&leafTasks]( const NodeNode & s ) { leafTasks.push_back( s ); return Processing::Continue; } );
         subtasks.swap( nextSubtasks );
 
         if ( !reportProgress( sb, i / 16.0f ) )
@@ -265,18 +270,20 @@ Expected< std::vector<FaceFace>, std::string> findSelfCollidingTriangles( const 
             mySubtasks.push_back( subtasks[is] );
             std::vector<FaceFace> myRes;
             processSelfSubtasks( tree, mySubtasks, mySubtasks,
-                [&tree, &mp, &myRes]( const NodeNode & s )
+                [&tree, &mp, &myRes, regionMap, outCollidingPairs, &keepGoing]( const NodeNode & s )
                 {
                     const auto & aNode = tree[s.aNode];
                     const auto & bNode = tree[s.bNode];
                     const auto aFace = aNode.leafId();
                     if ( mp.region && !mp.region->test( aFace ) )
-                        return;
+                        return Processing::Continue;
                     const auto bFace = bNode.leafId();
                     if ( mp.region && !mp.region->test( bFace ) )
-                        return;
+                        return Processing::Continue;
                     if ( mp.mesh.topology.sharedEdge( aFace, bFace ) )
-                        return;
+                        return Processing::Continue;
+                    if ( regionMap && (*regionMap)[aFace] != (*regionMap)[bFace] )
+                        return Processing::Continue;
 
                     VertId av[3], bv[3];
                     mp.mesh.topology.getTriVerts( aFace, av[0], av[1], av[2] );
@@ -297,12 +304,17 @@ Expected< std::vector<FaceFace>, std::string> findSelfCollidingTriangles( const 
                         const int k = sv.second;
                         if ( !doTriangleSegmentIntersect( ap[0], ap[1], ap[2], bp[ ( k + 1 ) % 3 ], bp[ ( k + 2 ) % 3 ] ) &&
                              !doTriangleSegmentIntersect( bp[0], bp[1], bp[2], ap[ ( j + 1 ) % 3 ], ap[ ( j + 2 ) % 3 ] ) )
-                            return;
+                            return Processing::Continue;
                     }
                     else if ( !doTrianglesIntersectExt( ap[0], ap[1], ap[2], bp[0], bp[1], bp[2] ) )
-                        return;
+                        return Processing::Continue;
                     myRes.emplace_back( aFace, bFace );
-
+                    if ( !outCollidingPairs )
+                    {
+                        keepGoing.store( false, std::memory_order_relaxed );
+                        return Processing::Stop;
+                    }
+                    return Processing::Continue;
                 }
             );
 
@@ -319,28 +331,45 @@ Expected< std::vector<FaceFace>, std::string> findSelfCollidingTriangles( const 
         }
     } );
 
-    if ( !keepGoing.load( std::memory_order_relaxed ) || !reportProgress( sb, 1.0f ) )
-        return unexpectedOperationCanceled();
-
     // unite results from sub-trees into final vector
     size_t cols = 0;
     for ( const auto & s : subtaskRes )
         cols += s.size();
-    res.reserve( cols );
-    for ( const auto & s : subtaskRes )
-        res.insert( res.end(), s.begin(), s.end() );
+
+    if ( !outCollidingPairs && cols > 0 )
+        return true; // even if keepGoing = false
+
+    if ( !keepGoing.load( std::memory_order_relaxed ) || !reportProgress( sb, 1.0f ) )
+        return unexpectedOperationCanceled();
+
+    if ( outCollidingPairs )
+    {
+        outCollidingPairs->reserve( outCollidingPairs->size() + cols );
+        for ( const auto & s : subtaskRes )
+            outCollidingPairs->insert( outCollidingPairs->end(), s.begin(), s.end() );
+    }
 
     if ( !reportProgress( cb, 1.0f ) )
         return unexpectedOperationCanceled();
 
+    return cols > 0;
+}
+
+Expected<std::vector<FaceFace>> findSelfCollidingTriangles( const MeshPart& mp, ProgressCallback cb,
+    const Face2RegionMap * regionMap )
+{
+    std::vector<FaceFace> res;
+    auto exp = findSelfCollidingTriangles( mp, &res, cb, regionMap );
+    if ( !exp )
+        return unexpected( std::move( exp.error() ) );
     return res;
 }
 
-Expected<FaceBitSet, std::string> findSelfCollidingTrianglesBS( const MeshPart & mp, ProgressCallback cb )
+Expected<FaceBitSet> findSelfCollidingTrianglesBS( const MeshPart & mp, ProgressCallback cb, const Face2RegionMap * regionMap )
 {
     MR_TIMER
     
-    auto ffs = findSelfCollidingTriangles( mp, cb );
+    auto ffs = findSelfCollidingTriangles( mp, cb, regionMap );
     if ( !ffs.has_value() )
         return unexpected( ffs.error() );
 
@@ -365,13 +394,16 @@ bool isInside( const MeshPart & a, const MeshPart & b, const AffineXf3f * rigidB
 
 bool isNonIntersectingInside( const MeshPart& a, const MeshPart& b, const AffineXf3f* rigidB2A )
 {
-    assert( b.mesh.topology.isClosed( b.region ) );
-
     auto aFace = a.mesh.topology.getFaceIds( a.region ).find_first();
+    return isNonIntersectingInside( a.mesh, aFace, b, rigidB2A );
+}
+
+bool isNonIntersectingInside( const Mesh& a, FaceId aFace, const MeshPart& b, const AffineXf3f* rigidB2A /*= nullptr */ )
+{
     if ( !aFace )
         return true; //consider empty mesh always inside
 
-    Vector3f aPoint = a.mesh.triCenter( aFace );
+    Vector3f aPoint = a.triCenter( aFace );
     if ( rigidB2A )
         aPoint = rigidB2A->inverse()( aPoint );
 

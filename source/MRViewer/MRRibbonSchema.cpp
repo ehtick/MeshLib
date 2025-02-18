@@ -1,9 +1,9 @@
 #include "MRRibbonSchema.h"
-#include "MRRibbonMenuItem.h"
-#include "imgui.h"
+#include "MRLambdaRibbonItem.h"
+#include "MRImGui.h"
 #include "MRRibbonMenu.h"
 #include "MRViewer.h"
-#include "MRMesh/MRSystem.h"
+#include "MRMesh/MRSystemPath.h"
 #include "MRMesh/MRStringConvert.h"
 #include "MRMesh/MRSerializer.h"
 #include "MRMesh/MRDirectory.h"
@@ -14,44 +14,177 @@
 namespace MR
 {
 
+void RibbonSchema::eliminateEmptyGroups()
+{
+    // eliminate empty groups
+    for ( auto it = groupsMap.begin(); it != groupsMap.end(); )
+    {
+        if ( it->second.empty() )
+        {
+            spdlog::info( "Empty group {} eliminated", it->first );
+            it = groupsMap.erase( it );
+        }
+        else
+            ++it;
+    }
+
+    // eliminate references on not-existing groups
+    for ( auto & [tabName, groups] : tabsMap )
+    {
+        std::erase_if( groups, [this, &tabName = tabName]( const std::string & groupName ) { return !groupsMap.contains( tabName + groupName ); } );
+    }
+}
+
+void RibbonSchema::sortTabsByPriority()
+{
+    std::stable_sort( tabsOrder.begin(), tabsOrder.end(), [] ( const auto& a, const auto& b )
+    {
+        return a.priority < b.priority;
+    } );
+}
+
 RibbonSchema& RibbonSchemaHolder::schema()
 {
     static RibbonSchema schemaInst;
     return schemaInst;
 }
 
-bool RibbonSchemaHolder::addItem( std::shared_ptr<RibbonMenuItem> item )
+bool RibbonSchemaHolder::addItem( const std::shared_ptr<RibbonMenuItem>& item )
 {
     auto& staticMap = schema().items;
     if ( !item )
         return false;
-    if ( staticMap.find( item->name() ) != staticMap.end() )
-        return false;
 
-    staticMap[item->name()] = { item };
+    auto [it, inserted] = staticMap.insert( { item->name(), MenuItemInfo{ item } } );
+    if ( !inserted )
+    {
+        spdlog::warn( "Attempt to register again ribbon item {}", item->name() );
+        return false;
+    }
+
+#ifndef NDEBUG
+    spdlog::info( "Register ribbon item {}", item->name() );
+#endif
     return true;
 }
 
-std::vector<RibbonSchemaHolder::SearchResult> RibbonSchemaHolder::search( const std::string& searchStr )
+bool RibbonSchemaHolder::delItem( const std::shared_ptr<RibbonMenuItem>& item )
 {
-    std::vector<SearchResult> res;
+    auto& staticMap = schema().items;
+    if ( !item )
+        return false;
+
+    const auto it = staticMap.find( item->name() );
+    if ( it == staticMap.end() || it->second.item != item )
+    {
+        spdlog::warn( "Attempt to unregister missing ribbon item {}", item->name() );
+        return false;
+    }
+
+    staticMap.erase( it );
+#ifndef NDEBUG
+    spdlog::info( "Unregister ribbon item {}, use count={}", item->name(), item.use_count() );
+#endif
+    return true;
+}
+
+std::vector<RibbonSchemaHolder::SearchResult> RibbonSchemaHolder::search( const std::string& searchStr, int* captionCount /*= nullptr*/,
+    std::vector<SearchResultWeight>* weights /*= nullptr*/ )
+{
+    std::vector<std::pair<SearchResult, SearchResultWeight>> rawResult;
+    
     if ( searchStr.empty() )
-        return res;
-    std::vector<std::pair<float, SearchResult>> resultListForSort;
+        return {};
+    auto words = split( searchStr, " " );
+    std::erase_if( words, [] ( const auto& str ) { return str.empty(); } );
+    auto calcWeight = [&words] ( const std::string& sourceStr )->Vector2f
+    {
+        if ( sourceStr.empty() )
+            return { 1.0f, 1.f };
+        
+        auto sourceWords = split( sourceStr, " " );
+        std::erase_if( sourceWords, [] ( const auto& str ) { return str.empty(); } );
+        if ( sourceWords.empty() )
+            return { 1.0f, 1.f };
+
+        const int sourceWordsSize = int( sourceWords.size() );
+        //std::vector<int> errorArr( words.size() * sourceWordsSize, -1 );
+        std::vector<bool> busyWord( sourceWordsSize, false );
+        int sumError = 0;
+        int searchCharCount = 0;
+        int posWeight = sourceWordsSize;
+        for ( int i = 0; i < words.size(); ++i )
+        {
+            searchCharCount += int( words[i].size() );
+            int minError = int( words[i].size() );
+            int minErrorIndex = -1;
+            for ( int j = 0; j < sourceWordsSize; ++j )
+            {
+                if ( busyWord[j] )
+                    continue;
+                int cornersInsertions = 0;
+                int error = calcDamerauLevenshteinDistance( words[i], sourceWords[j], false, &cornersInsertions );
+                if ( i == words.size() - 1 )
+                    error -= cornersInsertions;
+                if ( error < minError )
+                {
+                    minError = error;
+                    minErrorIndex = j;
+                }
+            }
+            if ( minErrorIndex != -1 )
+            {
+                busyWord[minErrorIndex] = true;
+                posWeight += minErrorIndex;
+            }
+            sumError += minError;
+        }
+        return { std::clamp( float( sumError ) / searchCharCount, 0.0f, 1.0f ), float( posWeight ) / sourceWordsSize / words.size()};
+    };
+
+    const float maxWeight = 0.25f;
+    bool exactMatch = false;
+    // check item (calc difference from search item) and add item to raw results if difference less than threshold
     auto checkItem = [&] ( const MenuItemInfo& item, int t )
     {
         const auto& caption = item.caption.empty() ? item.item->name() : item.caption;
         const auto& tooltip = item.tooltip;
-        float res = 0.0f;
-        auto captionRes = findSubstringCaseInsensitive( caption, searchStr );
-        auto tooltipRes = findSubstringCaseInsensitive( tooltip, searchStr );
-        if ( captionRes == std::string::npos && tooltipRes == std::string::npos )
+        std::pair<SearchResult, SearchResultWeight> itemRes;
+        itemRes.first.tabIndex = t;
+        itemRes.first.item = &item;
+        const auto posCE = findSubstringCaseInsensitive( caption, searchStr );
+        if ( posCE != std::string::npos )
+        {
+            if ( !exactMatch )
+            {
+                rawResult.clear();
+                exactMatch = true;
+            }
+            itemRes.second.captionWeight = 0.f;
+            itemRes.second.captionOrderWeight = float( posCE ) / caption.size();
+            rawResult.push_back( itemRes );
             return;
-        if ( captionRes != std::string::npos )
-            res += ( 1.0f - float( captionRes ) / float( caption.size() ) );
-        if ( tooltipRes != std::string::npos )
-            res += 0.5f * ( 1.0f - float( tooltipRes ) / float( tooltip.size() ) );
-        resultListForSort.push_back( { res, SearchResult{t,&item} } );
+        }
+        else if ( exactMatch )
+        {
+            const auto posTE = findSubstringCaseInsensitive( tooltip, searchStr );
+            if ( posTE == std::string::npos )
+                return;
+            itemRes.second.tooltipWeight = 0.f;
+            itemRes.second.tooltipOrderWeight = float( posTE ) / tooltip.size();
+            rawResult.push_back( itemRes );
+            return;
+        }
+
+        Vector2f weightEP = calcWeight( caption );
+        itemRes.second.captionWeight = weightEP.x;
+        itemRes.second.captionOrderWeight = weightEP.y;
+        weightEP = calcWeight( tooltip );
+        itemRes.second.tooltipWeight = weightEP.x;
+        itemRes.second.tooltipOrderWeight = weightEP.y;
+        if ( itemRes.second.captionWeight > maxWeight && itemRes.second.tooltipWeight > maxWeight )
+            return;
+        rawResult.push_back( itemRes );
     };
     const auto& schema = RibbonSchemaHolder::schema();
     auto lookUpMenuItemList = [&] ( const MenuItemsList& list, int t )
@@ -82,6 +215,8 @@ std::vector<RibbonSchemaHolder::SearchResult> RibbonSchemaHolder::search( const 
     };
     for ( int t = 0; t < schema.tabsOrder.size(); ++t )
     {
+        if ( schema.tabsOrder[t].experimental && !getViewerInstance().experimentalFeatures )
+            continue;
         auto tabItem = schema.tabsMap.find( schema.tabsOrder[t].name );
         if ( tabItem == schema.tabsMap.end() )
             continue;
@@ -96,46 +231,137 @@ std::vector<RibbonSchemaHolder::SearchResult> RibbonSchemaHolder::search( const 
     lookUpMenuItemList( schema.headerQuickAccessList, -1 );
     lookUpMenuItemList( schema.sceneButtonsList, -1 );
 
-    std::sort( resultListForSort.begin(), resultListForSort.end(), [] ( const auto& a, const auto& b )
+    // clear duplicated results
+    std::sort( rawResult.begin(), rawResult.end(), [] ( const auto& a, const auto& b )
     {
-        return intptr_t( a.second.item ) < intptr_t( b.second.item );
+        return intptr_t( a.first.item ) < intptr_t( b.first.item );
     } );
-    resultListForSort.erase(
-        std::unique( resultListForSort.begin(), resultListForSort.end(),
+    rawResult.erase(
+        std::unique( rawResult.begin(), rawResult.end(),
             [] ( const auto& a, const auto& b )
     {
-        return a.second.item == b.second.item;
+        return a.first.item == b.first.item;
     } ),
-        resultListForSort.end() );
+        rawResult.end() );
 
-    std::sort( resultListForSort.begin(), resultListForSort.end(), [] ( const auto& a, const auto& b )
+    std::sort( rawResult.begin(), rawResult.end(), [maxWeight] ( const auto& a, const auto& b )
     {
-        return a.first > b.first;
+        if ( a.second.captionWeight <= maxWeight )
+        {
+            if ( b.second.captionWeight <= maxWeight )
+            {
+                if ( a.second.captionWeight < b.second.captionWeight )
+                    return true;
+                else if ( a.second.captionWeight > b.second.captionWeight )
+                    return false;
+                else
+                    return a.second.captionOrderWeight < b.second.captionOrderWeight;
+            }
+            else
+                return true;
+        }
+        else
+        {
+            if ( b.second.captionWeight <= maxWeight )
+                return false;
+            else
+            {
+                if ( a.second.tooltipWeight < b.second.tooltipWeight )
+                    return true;
+                else if ( a.second.tooltipWeight > b.second.tooltipWeight )
+                    return false;
+                else
+                    return a.second.tooltipOrderWeight < b.second.tooltipOrderWeight;
+            }
+        }
     } );
-    res.reserve( resultListForSort.size() );
-    for ( const auto& sortedRes : resultListForSort )
-        res.push_back( sortedRes.second );
+
+    // filter results with error threshold as 3x minimum caption error 
+    if ( !rawResult.empty() && rawResult[0].second.captionWeight < maxWeight / 3.f )
+    {
+        const float maxWeightNew = rawResult[0].second.captionWeight * 3.f;
+        if ( rawResult.back().second.captionWeight > maxWeightNew )
+        {
+            auto tailIt = std::find_if( rawResult.begin(), rawResult.end(), [&] ( const auto& a )
+            {
+                return a.second.captionWeight > maxWeightNew && a.second.tooltipWeight > maxWeightNew;
+            } );
+            rawResult.erase( tailIt, rawResult.end() );
+        }
+    }
+
+    std::vector<SearchResult> res( rawResult.size() );
+    if ( weights )
+        *weights = std::vector<SearchResultWeight>( rawResult.size() );
+    if ( captionCount )
+        *captionCount = -1;
+    for ( int i = 0; i < rawResult.size(); ++i )
+    {
+        if ( !rawResult[i].first.item )
+            continue;
+        res[i] = rawResult[i].first;
+        if ( captionCount && rawResult[i].second.captionWeight > maxWeight &&
+            ( i == 0 || ( i > 0 && rawResult[i-1].second.captionWeight <= maxWeight ) ) )
+            *captionCount = i;
+        if ( weights )
+            ( *weights )[i] = rawResult[i].second;
+    }
 
     return res;
+}
+
+int RibbonSchemaHolder::findItemTab( const std::shared_ptr<RibbonMenuItem>& item )
+{
+    if ( !item )
+        return -1;
+
+    const auto& schema = RibbonSchemaHolder::schema();
+    for ( int t = 0; t < schema.tabsOrder.size(); ++t )
+    {
+        if ( schema.tabsOrder[t].experimental && !getViewerInstance().experimentalFeatures )
+            continue;
+        auto gpIt = schema.tabsMap.find( schema.tabsOrder[t].name );
+        if ( gpIt == schema.tabsMap.end() )
+            continue;
+        for ( const auto& gp : gpIt->second )
+        {
+            auto itmesIt = schema.groupsMap.find( schema.tabsOrder[t].name + gp );
+            if ( itmesIt == schema.groupsMap.end() )
+                continue;
+            for ( const auto& itemName : itmesIt->second )
+            {
+                if ( item->name() == itemName )
+                    return t;
+            }
+        }
+    }
+    return -1;
 }
 
 void RibbonSchemaLoader::loadSchema() const
 {
     auto files = getStructureFiles_( ".items.json" );
+    if ( files.empty() )
+        spdlog::error( "No Ribbon Items files found" );
     for ( const auto& file : files )
+    {
+        spdlog::info( "Reading {}", utf8string( file ) );
         readItemsJson_( file );
+    }
 
     files = getStructureFiles_( ".ui.json" );
+    if ( files.empty() )
+        spdlog::error( "No Ribbon UI files found" );
     sortFilesByOrder_( files );
     for ( const auto& file : files )
-        readUIJson_( file );
-
-
-    auto& tabsOrder = RibbonSchemaHolder::schema().tabsOrder;
-    std::stable_sort( tabsOrder.begin(), tabsOrder.end(), [] ( const auto& a, const auto& b )
     {
-        return a.priority < b.priority;
-    } );
+        spdlog::info( "Reading {}", utf8string( file ) );
+        readUIJson_( file );
+    }
+    spdlog::info( "Reading Ribbon Schema done" );
+
+    RibbonSchemaHolder::schema().eliminateEmptyGroups();
+    RibbonSchemaHolder::schema().sortTabsByPriority();
 }
 
 void RibbonSchemaLoader::readMenuItemsList( const Json::Value& root, MenuItemsList& list )
@@ -270,7 +496,7 @@ std::vector<std::filesystem::path> RibbonSchemaLoader::getStructureFiles_( const
 {
     std::vector<std::filesystem::path> files;
     std::error_code ec;
-    for ( auto entry : Directory{ GetResourcesDirectory(), ec } )
+    for ( auto entry : Directory{ SystemPath::getResourcesDirectory(), ec } )
     {
         auto filename = entry.path().filename().u8string();
         for ( auto& c : filename )
@@ -315,7 +541,12 @@ void RibbonSchemaLoader::readItemsJson_( const std::filesystem::path& path ) con
         assert( false );
         return;
     }
-    auto items = itemsStructRes.value()["Items"];
+    readItemsJson_( *itemsStructRes );
+}
+
+void RibbonSchemaLoader::readItemsJson_( const Json::Value& itemsStruct ) const
+{
+    auto items = itemsStruct["Items"];
     if ( !items.isArray() )
     {
         spdlog::warn( "\"Items\" field is not valid or not present" );
@@ -339,6 +570,9 @@ void RibbonSchemaLoader::readItemsJson_( const std::filesystem::path& path ) con
         auto& itemCaption = item["Caption"];
         if ( itemCaption.isString() )
             findIt->second.caption = itemCaption.asString();
+        auto& itemHelpLink = item["HelpLink"];
+        if ( itemHelpLink.isString() )
+            findIt->second.helpLink = itemHelpLink.asString();
         auto itemIcon = item["Icon"];
         if ( !itemIcon.isString() )
         {
@@ -385,7 +619,12 @@ void RibbonSchemaLoader::readUIJson_( const std::filesystem::path& path ) const
         assert( false );
         return;
     }
-    auto tabs = itemsStructRes.value()["Tabs"];
+    readUIJson_( *itemsStructRes );
+}
+
+void RibbonSchemaLoader::readUIJson_( const Json::Value& itemsStructure ) const
+{
+    auto tabs = itemsStructure["Tabs"];
     if ( !tabs.isArray() )
     {
         spdlog::warn( "\"Tabs\" field is not valid or not present" );
@@ -398,6 +637,9 @@ void RibbonSchemaLoader::readUIJson_( const std::filesystem::path& path ) const
         auto tab = tabs[i];
         auto tabName = tab["Name"];
         auto tabPriorityJSON = tab["Priority"];
+        bool experementalTab = false;
+        if ( tab["Experimental"].isBool() )
+            experementalTab = tab["Experimental"].asBool();
         int tabPriority{ 0 };
         if ( tabPriorityJSON.isInt() )
             tabPriority = tabPriorityJSON.asInt();
@@ -439,25 +681,11 @@ void RibbonSchemaLoader::readUIJson_( const std::filesystem::path& path ) const
                 assert( false );
                 continue;
             }
-            auto listSize = int( list.size() );
-            if ( listSize == 0 )
-            {
-                spdlog::warn( "\"List\" array is empty in group: \"{}\", in tab: \"{}\"", groupName.asString(), tabName.asString() );
-                assert( false );
-                continue;
-            }
             MenuItemsList items;
             readMenuItemsList( list, items );
-            if ( items.empty() )
-            {
-#ifndef __EMSCRIPTEN__
-                spdlog::warn( "\"List\" array has no valid items in group: \"{}\", in tab: \"{}\"", groupName.asString(), tabName.asString() );
-                assert( false );
-#endif
-                continue;
-            }
-            auto& groupsMapRef = RibbonSchemaHolder::schema().groupsMap[tabName.asString() + groupName.asString()];
-            if ( groupsMapRef.empty() )
+            auto [it, inserted] = RibbonSchemaHolder::schema().groupsMap.insert( { tabName.asString() + groupName.asString(), MenuItemsList{} } );
+            auto& groupsMapRef = it->second;
+            if ( inserted )
             {
                 groupsMapRef = std::move( items );
                 newGroupsVec.push_back( groupName.asString() );
@@ -472,21 +700,29 @@ void RibbonSchemaLoader::readUIJson_( const std::filesystem::path& path ) const
         auto& tabRef = RibbonSchemaHolder::schema().tabsMap[tabName.asString()];
         if ( tabRef.empty() )
         {
-            RibbonSchemaHolder::schema().tabsOrder.push_back( { tabName.asString(),tabPriority } );
+            RibbonSchemaHolder::schema().tabsOrder.push_back( { tabName.asString(),tabPriority,experementalTab } );
             tabRef = std::move( newGroupsVec );
         }
         else
         {
+            auto it = std::find_if( 
+                RibbonSchemaHolder::schema().tabsOrder.begin(), 
+                RibbonSchemaHolder::schema().tabsOrder.end(),
+                [&] ( const RibbonTab& tnp ) { return tnp.name == tabName.asString(); } );
+
+            if ( it != RibbonSchemaHolder::schema().tabsOrder.end() && tabPriority != 0 )
+                it->priority = tabPriority;
+
             tabRef.insert( tabRef.end(), newGroupsVec.begin(), newGroupsVec.end() );
         }
     }
 
     auto loadQuickAccess = [&] ( const std::string& key, MenuItemsList& oldList )
     {
-        if ( itemsStructRes.value().isMember( key ) )
+        if ( itemsStructure.isMember( key ) )
         {
             MenuItemsList newDefaultList;
-            readMenuItemsList( itemsStructRes.value()[key], newDefaultList );
+            readMenuItemsList( itemsStructure[key], newDefaultList );
             // move items of `newDefaultList` that are not preset in `oldList` to the end of `oldList`
             std::copy_if(
                 std::make_move_iterator( newDefaultList.begin() ),

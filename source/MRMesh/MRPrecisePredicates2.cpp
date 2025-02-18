@@ -5,24 +5,26 @@
 namespace MR
 {
 
-bool ccw( const Vector2i & a0, const Vector2i & b0 )
+bool ccw( const Vector2i & a, const Vector2i & b )
 {
-    Vector2ll a{ a0 };
-    Vector2ll b{ b0 };
+    if ( auto v = cross( Vector2ll{ a }, Vector2ll{ b } ) )
+        return v > 0; // points are in general position
 
-    auto v = cross( a, b );
-    if ( v ) return v > 0;
+    // points 0, a, b are on the same line
 
-    v = b.x - a.x;
-    if ( v ) return v > 0;
+    // permute points:
+    // da.y >> da.x >> db.y >> db.x > 0
 
-    v = a.y - b.y;
-    if ( v ) return v > 0;
+    if ( b.x )
+        return b.x < 0;
 
-    v = -b.x;
-    if ( v ) return v > 0;
+    if ( b.y )
+        return b.y > 0;
 
-    return true;
+    if ( a.x )
+        return a.x > 0;
+
+    return a.y < 0;
 }
 
 bool ccw( const std::array<PreciseVertCoords2, 3> & vs )
@@ -79,22 +81,37 @@ SegmentSegmentIntersectResult doSegmentSegmentIntersect( const std::array<Precis
     return res;
 }
 
+Vector2i findSegmentSegmentIntersectionPrecise(
+    const Vector2i& ai, const Vector2i& bi, const Vector2i& ci, const Vector2i& di )
+{
+    auto abc = cross( Vector2hp( ai - ci ), Vector2hp( bi - ci ) );
+    if ( abc < 0 )
+        abc = -abc;
+    auto abd = cross( Vector2hp( ai - di ), Vector2hp( bi - di ) );
+    if ( abd < 0 )
+        abd = -abd;
+    auto sum = abc + abd;
+    if ( sum != HighPrecisionInt( 0 ) )
+        return Vector2i{ Vector2d( abc * Vector2hp( di ) + abd * Vector2hp( ci ) ) / double( sum ) };
+    auto adLSq = Vector2hp( di - ai ).lengthSq();
+    auto bcLSq = Vector2hp( bi - ci ).lengthSq();
+    if ( adLSq > bcLSq )
+        return ci;
+    else if ( bcLSq > adLSq )
+        return di;
+    else
+        return Vector2i( Vector2d( Vector2hp( ai ) + Vector2hp( bi ) + Vector2hp( ci ) + Vector2hp( di ) ) * 0.5 );
+}
+
 Vector2f findSegmentSegmentIntersectionPrecise( 
     const Vector2f& a, const Vector2f& b, const Vector2f& c, const Vector2f& d,
     CoordinateConverters2 converters )
 {
-    Vector2ll ai{ converters.toInt( a ) };
-    Vector2ll bi{ converters.toInt( b ) };
-    Vector2ll ci{ converters.toInt( c ) };
-    Vector2ll di{ converters.toInt( d ) };
-    auto abc = cross( ai - ci, bi - ci );
-    if ( abc < 0 )
-        abc = -abc;
-    auto abd = cross( ai - di, bi - di );
-    if ( abd < 0 )
-        abd = -abd;
-    auto sum = abc + abd;
-    return converters.toFloat( Vector2i{ Vector2d( abc * di + abd * ci ) / double( sum ) } );
+    auto ai{ converters.toInt( a ) };
+    auto bi{ converters.toInt( b ) };
+    auto ci{ converters.toInt( c ) };
+    auto di{ converters.toInt( d ) };
+    return converters.toFloat( findSegmentSegmentIntersectionPrecise( ai, bi, ci, di ) );
 }
 
 TEST( MRMesh, PrecisePredicates2 )
@@ -120,6 +137,40 @@ TEST( MRMesh, PrecisePredicates2 )
     vs[3].pt.y = -5;
     res = doSegmentSegmentIntersect( vs );
     EXPECT_FALSE( res.doIntersect );
+}
+
+TEST( MRMesh, PrecisePredicates2other )
+{
+    std::array<PreciseVertCoords2, 7> vs =
+    {
+        PreciseVertCoords2{ 0_v, Vector2i{  0,  0 } },
+        PreciseVertCoords2{ 1_v, Vector2i(  0,  0 ) },
+        PreciseVertCoords2{ 2_v, Vector2i{  0,  1 } },
+        PreciseVertCoords2{ 3_v, Vector2i{  0, -1 } },
+        PreciseVertCoords2{ 4_v, Vector2i{  1,  0 } },
+        PreciseVertCoords2{ 5_v, Vector2i{ -1,  0 } },
+        PreciseVertCoords2{ 6_v, Vector2i{  0,  0 } },
+    };
+
+    EXPECT_FALSE( ccw( { vs[0],vs[1],vs[2] } ) );
+    EXPECT_TRUE(  ccw( { vs[0],vs[1],vs[3] } ) );
+    EXPECT_TRUE(  ccw( { vs[0],vs[1],vs[4] } ) );
+    EXPECT_FALSE( ccw( { vs[0],vs[1],vs[5] } ) );
+    EXPECT_FALSE( ccw( { vs[0],vs[1],vs[6] } ) );
+}
+
+TEST( MRMesh, PrecisePredicates2more )
+{
+    std::array<PreciseVertCoords2, 4> vs =
+    {
+        PreciseVertCoords2{ 0_v, Vector2i{ 1, 0 } },
+        PreciseVertCoords2{ 1_v, Vector2i( 0, 1 ) },
+        PreciseVertCoords2{ 2_v, Vector2i{ 0, 1 } },
+        PreciseVertCoords2{ 3_v, Vector2i{ 1, 0 } }
+    };
+
+    EXPECT_FALSE( ccw( { vs[1],vs[0],vs[2] } ) );
+    EXPECT_TRUE(  ccw( { vs[2],vs[3],vs[0] } ) );
 }
 
 } //namespace MR

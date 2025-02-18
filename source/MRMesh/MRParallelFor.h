@@ -1,8 +1,9 @@
 #pragma once
 
 #include "MRVector.h"
-#include "MRPch/MRTBB.h"
+#include "MRBox.h"
 #include "MRProgressCallback.h"
+#include "MRParallel.h"
 #include <atomic>
 #include <limits>
 #include <thread>
@@ -10,28 +11,27 @@
 namespace MR
 {
 
-/// \addtogroup BasicGroup
-/// \{
+namespace Parallel
+{
 
-/// executes given function f for each span element [begin, end)
-template <typename I, typename F>
-void ParallelFor( I begin, I end, F && f )
+template <typename I, typename CM, typename F>
+void For( I begin, I end, const CM & callMaker, F && f )
 {
     tbb::parallel_for( tbb::blocked_range( begin, end ),
         [&] ( const tbb::blocked_range<I>& range )
     {
+        auto c = callMaker();
         for ( I i = range.begin(); i < range.end(); ++i )
-            f( i );
+            c( f, i );
     } );
 }
 
-/// executes given function f for each span element [begin, end)
-template <typename I, typename F>
-bool ParallelFor( I begin, I end, F && f, ProgressCallback cb, size_t reportProgressEvery = 1024 )
+template <typename I, typename CM, typename F>
+bool For( I begin, I end, const CM & callMaker, F && f, ProgressCallback cb, size_t reportProgressEvery = 1024 )
 {
     if ( !cb )
     {
-        ParallelFor( begin, end, std::forward<F>( f ) );
+        For( begin, end, callMaker, std::forward<F>( f ) );
         return true;
     }
     const auto size = end - begin;
@@ -56,11 +56,12 @@ bool ParallelFor( I begin, I end, F && f, ProgressCallback cb, size_t reportProg
     {
         const bool report = std::this_thread::get_id() == callingThreadId;
         size_t myProcessed = 0;
+        auto c = callMaker();
         for ( I i = range.begin(); i < range.end(); ++i )
         {
             if ( !keepGoing.load( std::memory_order_relaxed ) )
                 break;
-            f( i );
+            c( f, i );
             if ( ( ++myProcessed % reportProgressEvery ) == 0 )
             {
                 if ( report )
@@ -82,14 +83,42 @@ bool ParallelFor( I begin, I end, F && f, ProgressCallback cb, size_t reportProg
     return keepGoing.load( std::memory_order_relaxed );
 }
 
-/// executes given function f for each vector element in parallel threads
+} //namespace Parallel
+
+/// \addtogroup BasicGroup
+/// \{
+
+/// executes given function f for each span element [begin, end);
+/// optional parameters after f: ProgressCallback cb, size_t reportProgressEvery = 1024 for periodic progress report
+/// \return false if terminated by callback
+template <typename I, typename ...F>
+inline auto ParallelFor( I begin, I end, F &&... f )
+{
+    return Parallel::For( begin, end, Parallel::CallSimplyMaker{}, std::forward<F>( f )... );
+}
+
+/// executes given function f for each span element [begin, end)
+/// passing e.local() (evaluated once for each sub-range) as the second argument to f;
+/// optional parameters after f: ProgressCallback cb, size_t reportProgressEvery = 1024 for periodic progress report
+/// \return false if terminated by callback
+template <typename I, typename L, typename ...F>
+inline auto ParallelFor( I begin, I end, tbb::enumerable_thread_specific<L> & e, F &&... f )
+{
+    return Parallel::For( begin, end, Parallel::CallWithTLSMaker<L>{ e }, std::forward<F>( f )... );
+}
+
+/// executes given function f for each vector element in parallel threads;
+/// optional parameters after f: ProgressCallback cb, size_t reportProgressEvery = 1024 for periodic progress report
+/// \return false if terminated by callback
 template <typename T, typename ...F>
 inline auto ParallelFor( const std::vector<T> & v, F &&... f )
 {
     return ParallelFor( size_t(0), v.size(), std::forward<F>( f )... );
 }
 
-/// executes given function f for each vector element in parallel threads
+/// executes given function f for each vector element in parallel threads;
+/// optional parameters after f: ProgressCallback cb, size_t reportProgressEvery = 1024 for periodic progress report
+/// \return false if terminated by callback
 template <typename T, typename I, typename ...F>
 inline auto ParallelFor( const Vector<T, I> & v, F &&... f )
 {
@@ -101,14 +130,8 @@ inline auto ParallelFor( const Vector<T, I> & v, F &&... f )
 template<typename T>
 std::pair<T, T> parallelMinMax( const std::vector<T>& vec, const T * topExcluding = nullptr )
 {
-    struct MinMax
-    {
-        T min = std::numeric_limits<T>::max();
-        T max = std::numeric_limits<T>::lowest();
-    };
-
-    auto minmax = tbb::parallel_reduce( tbb::blocked_range<size_t>( 0, vec.size() ), MinMax{},
-    [&] ( const tbb::blocked_range<size_t> range, MinMax curMinMax )
+    auto minmax = tbb::parallel_reduce( tbb::blocked_range<size_t>( 0, vec.size() ), MinMax<T>{},
+    [&] ( const tbb::blocked_range<size_t> range, MinMax<T> curMinMax )
     {
         for ( size_t i = range.begin(); i < range.end(); i++ )
         {
@@ -122,9 +145,9 @@ std::pair<T, T> parallelMinMax( const std::vector<T>& vec, const T * topExcludin
         }
         return curMinMax;
     },
-    [&] ( const MinMax& a, const MinMax& b )
+    [&] ( const MinMax<T>& a, const MinMax<T>& b )
     {
-        MinMax res;
+        MinMax<T> res;
         if ( a.min < b.min )
         {
             res.min = a.min;
@@ -147,6 +170,54 @@ std::pair<T, T> parallelMinMax( const std::vector<T>& vec, const T * topExcludin
     return { minmax.min, minmax.max };
 }
 
+/// finds minimal and maximal elements and their indices in given vector in parallel;
+/// \param topExcluding if provided then all values in the array equal or larger by absolute value than it will be ignored
+template<typename T, typename I>
+auto parallelMinMaxArg( const Vector<T, I>& vec, const T * topExcluding = nullptr )
+{
+    struct MinMaxArg
+    {
+        T min = std::numeric_limits<T>::max();
+        T max = std::numeric_limits<T>::lowest();
+        I minArg, maxArg;
+    };
+
+    return tbb::parallel_reduce( tbb::blocked_range<I>( I(0), vec.endId() ), MinMaxArg{},
+    [&] ( const tbb::blocked_range<I> range, MinMaxArg curr )
+    {
+        for ( I i = range.begin(); i < range.end(); i++ )
+        {
+            T val = vec[i];
+            if ( topExcluding && std::abs( val ) >= *topExcluding )
+                continue;
+            if ( val < curr.min )
+            {
+                curr.min = val;
+                curr.minArg = i;
+            }
+            if ( val > curr.max )
+            {
+                curr.max = val;
+                curr.maxArg = i;
+            }
+        }
+        return curr;
+    },
+    [&] ( MinMaxArg a, const MinMaxArg& b )
+    {
+        if ( b.min < a.min )
+        {
+            a.min = b.min;
+            a.minArg = b.minArg;
+        }
+        if ( b.max > a.max )
+        {
+            a.max = b.max;
+            a.maxArg = b.maxArg;
+        }
+        return a;
+    } );
+}
 
 /// \}
 

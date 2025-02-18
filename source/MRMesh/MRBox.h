@@ -2,9 +2,11 @@
 
 #include "MRMeshFwd.h"
 #include "MRAffineXf3.h"
+#include "MRVectorTraits.h"
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <type_traits>
 
 namespace MR
 {
@@ -18,11 +20,13 @@ template <typename T>
 std::array<Vector3<T>, 8> getCorners( const Box<Vector3<T>> & box );
 
 /// Box given by its min- and max- corners
-template <typename V> 
+template <typename V>
 struct Box
 {
 public:
-    using T = typename V::ValueType;
+    using VTraits = VectorTraits<V>;
+    using T = typename VTraits::BaseType;
+    static constexpr int elements = VTraits::size;
 
     V min, max;
 
@@ -31,20 +35,26 @@ public:
           V & operator []( int e )       { return *( &min + e ); }
 
     /// create invalid box by default
-    Box() : min{ V::diagonal( std::numeric_limits<T>::max() ) }, max{ V::diagonal( std::numeric_limits<T>::lowest() ) } { }
-    explicit Box( NoInit ) : min{ noInit }, max{ noInit } { }
+    Box() : min{ VTraits::diagonal( std::numeric_limits<T>::max() ) }, max{ VTraits::diagonal( std::numeric_limits<T>::lowest() ) } { }
     Box( const V& min, const V& max ) : min{ min }, max{ max } { }
+
+    /// skip initialization of min/max
+    template <typename VV = V, typename std::enable_if_t<VectorTraits<VV>::supportNoInit, int> = 0>
+    explicit Box( NoInit ) : min{ noInit }, max{ noInit } { }
+
+    template <typename VV = V, typename std::enable_if_t<!VectorTraits<VV>::supportNoInit, int> = 0>
+    explicit Box( NoInit ) { }
 
     template <typename U>
     explicit Box( const Box<U> & a ) : min{ a.min }, max{ a.max } { }
 
-    static Box fromMinAndSize( const V& min, const V& size ) { return Box{ min,min + size }; }
+    static Box fromMinAndSize( const V& min, const V& size ) { return Box{ min, V( min + size ) }; }
 
     /// true if the box contains at least one point
-    bool valid() const 
-    { 
-        for ( int i = 0; i < V::elements; ++i )
-            if ( min[i] > max[i] )
+    bool valid() const
+    {
+        for ( int i = 0; i < elements; ++i )
+            if ( VTraits::getElem( i, min ) > VTraits::getElem( i, max ) )
                 return false;
         return true;
     }
@@ -56,43 +66,43 @@ public:
     V size() const { assert( valid() ); return max - min; }
 
     /// computes length from min to max
-    T diagonal() const { return size().length(); }
+    T diagonal() const { return std::sqrt( sqr( size() ) ); }
 
     /// computes the volume of this box
     T volume() const
     {
         assert( valid() );
         T res{ 1 };
-        for ( int i = 0; i < V::elements; ++i )
-            res *= max[i] - min[i];
+        for ( int i = 0; i < elements; ++i )
+            res *= VTraits::getElem( i, max ) - VTraits::getElem( i, min );
         return res;
     }
 
     /// minimally increases the box to include given point
     void include( const V & pt )
     {
-        for ( int i = 0; i < V::elements; ++i )
+        for ( int i = 0; i < elements; ++i )
         {
-            if ( pt[i] < min[i] ) min[i] = pt[i];
-            if ( pt[i] > max[i] ) max[i] = pt[i];
+            if ( VTraits::getElem( i, pt ) < VTraits::getElem( i, min ) ) VTraits::getElem( i, min ) = VTraits::getElem( i, pt );
+            if ( VTraits::getElem( i, pt ) > VTraits::getElem( i, max ) ) VTraits::getElem( i, max ) = VTraits::getElem( i, pt );
         }
     }
 
     /// minimally increases the box to include another box
     void include( const Box & b )
     {
-        for ( int i = 0; i < V::elements; ++i )
+        for ( int i = 0; i < elements; ++i )
         {
-            if ( b.min[i] < min[i] ) min[i] = b.min[i];
-            if ( b.max[i] > max[i] ) max[i] = b.max[i];
+            if ( VTraits::getElem( i, b.min ) < VTraits::getElem( i, min ) ) VTraits::getElem( i, min ) = VTraits::getElem( i, b.min );
+            if ( VTraits::getElem( i, b.max ) > VTraits::getElem( i, max ) ) VTraits::getElem( i, max ) = VTraits::getElem( i, b.max );
         }
     }
 
     /// checks whether given point is inside (including the surface) of the box
     bool contains( const V & pt ) const
     {
-        for ( int i = 0; i < V::elements; ++i )
-            if ( min[i] > pt[i] || pt[i] > max[i] )
+        for ( int i = 0; i < elements; ++i )
+            if ( VTraits::getElem( i, min ) > VTraits::getElem( i, pt ) || VTraits::getElem( i, pt ) > VTraits::getElem( i, max ) )
                 return false;
         return true;
     }
@@ -102,17 +112,17 @@ public:
     {
         assert( valid() );
         V res;
-        for ( int i = 0; i < V::elements; ++i )
-            res[i] = std::clamp( pt[i], min[i], max[i] );
+        for ( int i = 0; i < elements; ++i )
+            VTraits::getElem( i, res ) = std::clamp( VTraits::getElem( i, pt ), VTraits::getElem( i, min ), VTraits::getElem( i, max ) );
         return res;
     }
 
     /// checks whether this box intersects or touches given box
     bool intersects( const Box & b ) const
     {
-        for ( int i = 0; i < V::elements; ++i )
+        for ( int i = 0; i < elements; ++i )
         {
-            if ( b.max[i] < min[i] || b.min[i] > max[i] )
+            if ( VTraits::getElem( i, b.max ) < VTraits::getElem( i, min ) || VTraits::getElem( i, b.min ) > VTraits::getElem( i, max ) )
                 return false;
         }
         return true;
@@ -122,10 +132,10 @@ public:
     Box intersection( const Box & b ) const
     {
         Box res;
-        for ( int i = 0; i < V::elements; ++i )
+        for ( int i = 0; i < elements; ++i )
         {
-            res.min[i] = std::max( min[i], b.min[i] );
-            res.max[i] = std::min( max[i], b.max[i] );
+            VTraits::getElem( i, res.min ) = std::max( VTraits::getElem( i, min ), VTraits::getElem( i, b.min ) );
+            VTraits::getElem( i, res.max ) = std::min( VTraits::getElem( i, max ), VTraits::getElem( i, b.max ) );
         }
         return res;
     }
@@ -137,21 +147,45 @@ public:
     {
         auto ibox = intersection( b );
         T distSq = 0;
-        for ( int i = 0; i < V::elements; ++i )
-            if ( ibox.min[i] > ibox.max[i] )
-                distSq += sqr( ibox.min[i] - ibox.max[i] );
+        for ( int i = 0; i < elements; ++i )
+            if ( VTraits::getElem( i, ibox.min ) > VTraits::getElem( i, ibox.max ) )
+                distSq += sqr( VTraits::getElem( i, ibox.min ) - VTraits::getElem( i, ibox.max ) );
         return distSq;
     }
 
-    /// expands min and max to their closest representable value 
+    /// returns squared distance between this box and given point;
+    /// returns zero if the point is inside or on the boundary of the box
+    T getDistanceSq( const V & pt ) const
+    {
+        assert( valid() );
+        T res{};
+        for ( int i = 0; i < elements; ++i )
+        {
+            if ( VTraits::getElem( i, pt ) < VTraits::getElem( i, min ) )
+                res += sqr( VTraits::getElem( i, pt ) - VTraits::getElem( i, min ) );
+            else
+            if ( VTraits::getElem( i, pt ) > VTraits::getElem( i, max ) )
+                res += sqr( VTraits::getElem( i, pt ) - VTraits::getElem( i, max ) );
+        }
+        return res;
+    }
+
+    /// decreases min and increased max on given value
+    Box expanded( const V & expansion ) const
+    {
+        assert( valid() );
+        return Box( min - expansion, max + expansion );
+    }
+
+    /// decreases min and increases max to their closest representable value
     Box insignificantlyExpanded() const
     {
         assert( valid() );
         Box res;
-        for ( int i = 0; i < V::elements; ++i )
+        for ( int i = 0; i < elements; ++i )
         {
-            res.min[i] = std::nextafter( min[i], std::numeric_limits<T>::lowest() );
-            res.max[i] = std::nextafter( max[i], std::numeric_limits<T>::max() );
+            VTraits::getElem( i, res.min ) = std::nextafter( VTraits::getElem( i, min ), std::numeric_limits<T>::lowest() );
+            VTraits::getElem( i, res.max ) = std::nextafter( VTraits::getElem( i, max ), std::numeric_limits<T>::max() );
         }
         return res;
     }
@@ -165,7 +199,7 @@ public:
 template <typename T>
 inline std::array<Vector3<T>, 8> getCorners( const Box<Vector3<T>> & box )
 {
-    return  
+    return
     {
         Vector3<T>{ box.min.x, box.min.y, box.min.z },
         Vector3<T>{ box.max.x, box.min.y, box.min.z },
@@ -181,7 +215,7 @@ inline std::array<Vector3<T>, 8> getCorners( const Box<Vector3<T>> & box )
 template <typename T>
 inline std::array<Vector2<T>, 4> getCorners( const Box<Vector2<T>> & box )
 {
-    return  
+    return
     {
         Vector2<T>{ box.min.x, box.min.y },
         Vector2<T>{ box.max.x, box.min.y },
@@ -194,6 +228,8 @@ inline std::array<Vector2<T>, 4> getCorners( const Box<Vector2<T>> & box )
 template <typename V>
 inline Box<V> transformed( const Box<V> & box, const AffineXf<V> & xf )
 {
+    if ( !box.valid() )
+        return {};
     Box<V> res;
     for ( const auto & p : getCorners( box ) )
         res.include( xf( p ) );
@@ -227,6 +263,23 @@ inline auto depth( const Box<V>& box )
     return box.max.z - box.min.z;
 }
 
+/// get<0> returns min, get<1> returns max
+template<size_t I, typename V>
+constexpr const V& get( const Box<V>& box ) noexcept { return box[int( I )]; }
+template<size_t I, typename V>
+constexpr       V& get(       Box<V>& box ) noexcept { return box[int( I )]; }
+
 /// \}
 
 } // namespace MR
+
+namespace std
+{
+
+template<size_t I, typename V>
+struct tuple_element<I, MR::Box<V>> { using type = V; };
+
+template <typename V> 
+struct tuple_size<MR::Box<V>> : integral_constant<size_t, 2> {};
+
+} //namespace std

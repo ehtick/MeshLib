@@ -3,7 +3,7 @@
 #include "MRTimer.h"
 #include "MRExpandShrink.h"
 #include "MRRingIterator.h"
-#include "MRUVSphere.h"
+#include "MRMakeSphereMesh.h"
 #include "MRMeshComponents.h"
 #include "MRGTest.h"
 #include "MRPch/MRTBB.h"
@@ -12,7 +12,7 @@
 namespace MR
 {
 
-void Laplacian::init( const VertBitSet & freeVerts, EdgeWeights weights, RememberShape rem )
+void Laplacian::init( const VertBitSet & freeVerts, MR::EdgeWeights weights, RememberShape rem )
 {
     MR_TIMER;
     assert( !MeshComponents::hasFullySelectedComponent( mesh_, freeVerts ) );
@@ -57,17 +57,19 @@ void Laplacian::init( const VertBitSet & freeVerts, EdgeWeights weights, Remembe
         for ( auto e : orgRing( mesh_.topology, v ) )
         {
             double w = 1;
-            if ( weights == EdgeWeights::Cotan || weights == EdgeWeights::CotanWithAreaEqWeight ) 
+            if ( weights == MR::EdgeWeights::Cotan || weights == MR::EdgeWeights::CotanWithAreaEqWeight ) 
                 w = std::clamp( mesh_.cotan( e ), -1.0f, 10.0f ); // cotan() can be arbitrary high for degenerate edges
-            else if ( weights == EdgeWeights::CotanTimesLength ) 
+            else if ( weights == MR::EdgeWeights::CotanTimesLength ) 
                 w = mesh_.edgeLength( e ) * mesh_.cotan( e );
             auto d = mesh_.topology.dest( e );
             rowElements.push_back( { -w, d } );
             sumWPos -= w * Vector3d( mesh_.points[d] );
             sumW += w;
         }
+        if ( sumW == 0 )
+            continue;
         double a = 1;
-        if ( weights == EdgeWeights::CotanWithAreaEqWeight )
+        if ( weights == MR::EdgeWeights::CotanWithAreaEqWeight )
             if ( auto d = mesh_.dblArea( v ); d > 0 )
                 a =  1 / std::sqrt( d );
         const double rSumW = a / sumW;
@@ -122,10 +124,7 @@ void Laplacian::updateSolver_()
     }
     rhsValid_ = false;
 
-    freeVert2id_.resize( freeVerts_.size() );
-    int n = 0;
-    for ( auto v : freeVerts_ )
-        freeVert2id_[v] = n++;
+    freeVert2id_ = makeVectorWithSeqNums( freeVerts_ );
 
     firstLayerFixedVerts_ = freeVerts_;
     expand( mesh_.topology, firstLayerFixedVerts_ );
@@ -135,7 +134,7 @@ void Laplacian::updateSolver_()
 
     std::vector< Eigen::Triplet<double> > mTriplets;
     // equations for free vertices
-    n = 0;
+    int n = 0;
     for ( auto v : freeVerts_ )
     {
         assert( n == freeVert2id_[v] );
@@ -305,7 +304,7 @@ TEST(MRMesh, Laplacian)
         VertBitSet vs;
         vs.autoResizeSet( 0_v );
         Laplacian laplacian( sphere );
-        laplacian.init( vs, Laplacian::EdgeWeights::Cotan );
+        laplacian.init( vs, EdgeWeights::Cotan );
         laplacian.apply();
 
         // fix the only free vertex
@@ -316,7 +315,7 @@ TEST(MRMesh, Laplacian)
     {
         Laplacian laplacian( sphere );
         // no free verts
-        laplacian.init( {}, Laplacian::EdgeWeights::Cotan );
+        laplacian.init( {}, EdgeWeights::Cotan );
         laplacian.apply();
     }
 }

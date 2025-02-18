@@ -1,61 +1,43 @@
 #pragma once
 
 #include "MRMeshFwd.h"
-#include "MRIOFilters.h"
-#include "MRProgressCallback.h"
 #include "MRExpected.h"
+#include "MRIOFilters.h"
+#include "MRPointsLoadSettings.h"
+
 #include <filesystem>
-#include <istream>
-#include <string>
 
-namespace MR
-{
-
-namespace PointsLoad
+namespace MR::PointsLoad
 {
 
 /// \defgroup PointsLoadGroup Points Load
 /// \addtogroup IOGroup
 /// \{
 
-MRMESH_API extern const IOFilters Filters;
+/// loads from .csv, .asc, .xyz, .txt file
+MRMESH_API Expected<PointCloud> fromText( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
+MRMESH_API Expected<PointCloud> fromText( std::istream& in, const PointsLoadSettings& settings = {} );
 
-/// loads from .csv, .xyz, .txt file
-MRMESH_API Expected<PointCloud, std::string> fromText( const std::filesystem::path& file, ProgressCallback callback = {} );
-MRMESH_API Expected<PointCloud, std::string> fromText( std::istream& in, ProgressCallback callback = {} );
-
-
-#ifndef MRMESH_NO_OPENCTM
-/// loads from .ctm file
-MRMESH_API Expected<PointCloud, std::string> fromCtm( const std::filesystem::path& file, VertColors* colors = nullptr,
-                                                          ProgressCallback callback = {} );
-MRMESH_API Expected<PointCloud, std::string> fromCtm( std::istream& in, VertColors* colors = nullptr,
-                                                          ProgressCallback callback = {} );
-#endif
+/// loads from Laser scan plain data format (.pts) file
+MRMESH_API Expected<PointCloud> fromPts( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
+MRMESH_API Expected<PointCloud> fromPts( std::istream& in, const PointsLoadSettings& settings = {} );
 
 /// loads from .ply file
-MRMESH_API Expected<PointCloud, std::string> fromPly( const std::filesystem::path& file, VertColors* colors = nullptr,
-                                                          ProgressCallback callback = {} );
-MRMESH_API Expected<PointCloud, std::string> fromPly( std::istream& in, VertColors* colors = nullptr,
-                                                          ProgressCallback callback = {} );
+MRMESH_API Expected<PointCloud> fromPly( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
+MRMESH_API Expected<PointCloud> fromPly( std::istream& in, const PointsLoadSettings& settings = {} );
 
 /// loads from .obj file
-MRMESH_API Expected<PointCloud, std::string> fromObj( const std::filesystem::path& file, ProgressCallback callback = {} );
-MRMESH_API Expected<PointCloud, std::string> fromObj( std::istream& in, ProgressCallback callback = {} );
+MRMESH_API Expected<PointCloud> fromObj( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
+MRMESH_API Expected<PointCloud> fromObj( std::istream& in, const PointsLoadSettings& settings = {} );
 
-/// loads from .asc file
-MRMESH_API Expected<PointCloud, std::string> fromAsc( const std::filesystem::path& file, ProgressCallback callback = {} );
-MRMESH_API Expected<PointCloud, std::string> fromAsc( std::istream& in, ProgressCallback callback = {} );
+MRMESH_API Expected<PointCloud> fromDxf( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
+MRMESH_API Expected<PointCloud> fromDxf( std::istream& in, const PointsLoadSettings& settings = {} );
 
 /// detects the format from file extension and loads points from it
-MRMESH_API Expected<PointCloud, std::string> fromAnySupportedFormat( const std::filesystem::path& file, VertColors* colors = nullptr,
-                                                                         ProgressCallback callback = {} );
+MRMESH_API Expected<PointCloud> fromAnySupportedFormat( const std::filesystem::path& file, const PointsLoadSettings& settings = {} );
 /// extension in `*.ext` format
-MRMESH_API Expected<PointCloud, std::string> fromAnySupportedFormat( std::istream& in, const std::string& extension, VertColors* colors = nullptr,
-                                                                         ProgressCallback callback = {} );
+MRMESH_API Expected<PointCloud> fromAnySupportedFormat( std::istream& in, const std::string& extension, const PointsLoadSettings& settings = {} );
 
 /// \}
 
-} // namespace PointsLoad
-
-} // namespace MR
+} // namespace MR::PointsLoad

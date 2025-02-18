@@ -13,7 +13,7 @@ namespace MR
 
 MR_ADD_CLASS_FACTORY( Object )
 
-ObjectChildrenHolder::ObjectChildrenHolder( ObjectChildrenHolder && b ) noexcept 
+ObjectChildrenHolder::ObjectChildrenHolder( ObjectChildrenHolder && b ) noexcept
     : children_( std::move( b.children_ ) )
     , bastards_( std::move( b.bastards_ ) )
 {
@@ -55,6 +55,16 @@ ObjectChildrenHolder::~ObjectChildrenHolder()
             child->parent_ = nullptr;
 }
 
+std::shared_ptr<Object> ObjectChildrenHolder::getSharedPtr() const
+{
+    if ( !parent_ )
+        return {};
+    for ( const auto& child : parent_->children_ )
+        if ( child.get() == this )
+            return child;
+    return {};
+}
+
 size_t ObjectChildrenHolder::heapBytes() const
 {
     auto res = MR::heapBytes( children_ ) + MR::heapBytes( bastards_ );
@@ -78,11 +88,12 @@ void Object::setXf( const AffineXf3f& xf, ViewportId id )
         return;
     if ( xf.A.det() == 0 )
     {
+        assert( false && "Object transform is degenerate" );
         spdlog::warn( "Object transform is degenerate" );
         return;
     }
     xf_.set( xf, id );
-    propagateWorldXfChangedSignal_();
+    sendWorldXfChangedSignal_();
     needRedraw_ = true;
 }
 
@@ -90,7 +101,7 @@ void Object::resetXf( ViewportId id )
 {
     if ( !xf_.reset( id ) )
         return;
-    propagateWorldXfChangedSignal_();
+    sendWorldXfChangedSignal_();
     needRedraw_ = true;
 }
 
@@ -120,17 +131,17 @@ void Object::applyScale( float )
 
 ViewportMask Object::globalVisibilityMask() const
 {
-    auto res = visibilityMask_;
+    auto res = visibilityMask();
     auto parent = this->parent();
     while ( !res.empty() && parent )
     {
-        res &= parent->visibilityMask_;
+        res &= parent->visibilityMask();
         parent = parent->parent();
     }
     return res;
 }
 
-void Object::setGlobalVisibilty( bool on, ViewportMask viewportMask /*= ViewportMask::any() */ )
+void Object::setGlobalVisibility( bool on, ViewportMask viewportMask /*= ViewportMask::any() */ )
 {
     setVisible( on, viewportMask );
     if ( !on )
@@ -156,6 +167,61 @@ bool Object::isAncestor( const Object* ancestor ) const
         preParent = preParent->parent();
     }
     return false;
+}
+
+Object* Object::findCommonAncestor( Object& other )
+{
+    // Some common cases first.
+    if ( this == &other )
+        return this;
+    if ( parent() == other.parent() )
+        return parent();
+
+    // Visits all parents of `cur`. Writes the number of them into `depth`.
+    // Returns the topmost parent.
+    auto visitParents = []( Object& object, int &depth ) -> Object&
+    {
+        Object* cur = &object;
+        while ( true )
+        {
+            if ( auto parent = cur->parent() )
+            {
+                cur = parent;
+                depth++;
+            }
+            else
+            {
+                return *cur;
+            }
+        }
+    };
+
+    int depthA = 0;
+    int depthB = 0;
+    if ( &visitParents( *this, depthA ) != &visitParents( other, depthB ) )
+        return nullptr; // No common ancestor.
+
+    Object* curA = this;
+    Object* curB = &other;
+
+    while ( depthA > depthB )
+    {
+        curA = curA->parent();
+        depthA--;
+    }
+    while ( depthA < depthB )
+    {
+        curB = curB->parent();
+        depthB--;
+    }
+
+    while ( curA != curB )
+    {
+        curA = curA->parent();
+        curB = curB->parent();
+    }
+
+    return curA;
 }
 
 bool Object::detachFromParent()
@@ -186,15 +252,16 @@ bool Object::addChild( std::shared_ptr<Object> child, bool recognizedChild )
     child->parent_ = this;
     if ( recognizedChild )
     {
-        children_.push_back( std::move( child ) );
+        children_.push_back( child );
     }
     else
     {
         // remove invalid children before adding new one
         std::erase_if( bastards_, [](const auto & b) { return !b.lock(); } );
-        bastards_.push_back( std::move( child ) );
+        bastards_.push_back( child );
     }
-
+    child->sendWorldXfChangedSignal_();
+    needRedraw_ = true;
     return true;
 }
 
@@ -233,7 +300,9 @@ bool Object::addChildBefore( std::shared_ptr<Object> newChild, const std::shared
         oldParent->removeChild( newChild );
 
     newChild->parent_ = this;
-    children_.insert( it1, std::move( newChild ) );
+    children_.insert( it1, newChild );
+    newChild->sendWorldXfChangedSignal_();
+    needRedraw_ = true;
     return true;
 }
 
@@ -248,6 +317,7 @@ bool Object::removeChild( Object* child )
         return false;
 
     child->parent_ = nullptr;
+    needRedraw_ = true;
 
     auto it = std::remove_if( children_.begin(), children_.end(), [child]( const std::shared_ptr<Object>& obj )
     {
@@ -275,6 +345,7 @@ void Object::removeAllChildren()
     for ( const auto & ch : children_ )
         ch->parent_ = nullptr;
     children_.clear();
+    needRedraw_ = true;
 }
 
 void Object::sortChildren()
@@ -284,7 +355,7 @@ void Object::sortChildren()
         const auto& lhs = a->name();
         const auto& rhs = b->name();
         // used for case insensitive sorting
-        const auto result = std::mismatch( lhs.cbegin(), lhs.cend(), rhs.cbegin(), rhs.cend(), 
+        const auto result = std::mismatch( lhs.cbegin(), lhs.cend(), rhs.cbegin(), rhs.cend(),
             [] ( const unsigned char lhsc, const unsigned char rhsc )
         {
             return std::tolower( lhsc ) == std::tolower( rhsc );
@@ -292,6 +363,7 @@ void Object::sortChildren()
 
         return result.second != rhs.cend() && ( result.first == lhs.cend() || std::tolower( *result.first ) < std::tolower( *result.second ) );
     } );
+    needRedraw_ = true;
 }
 
 bool Object::select( bool on )
@@ -302,6 +374,7 @@ bool Object::select( bool on )
     if ( ancillary_ && on )
         return false;
 
+    needRedraw_ = true;
     selected_ = on;
     return true;
 }
@@ -310,6 +383,7 @@ void Object::setAncillary( bool ancillary )
 {
     if ( ancillary )
         select( false );
+    needRedraw_ = true;
     ancillary_ = ancillary;
 }
 
@@ -318,12 +392,19 @@ void Object::setVisible( bool on, ViewportMask viewportMask /*= ViewportMask::al
     if ( ( visibilityMask_ & viewportMask ) == ( on ? viewportMask : ViewportMask{} ) )
         return;
 
-    needRedraw_ = true;
-
-    if ( on ) 
-        setVisibilityMask( visibilityMask_ | viewportMask ); 
-    else 
+    if ( on )
+        setVisibilityMask( visibilityMask_ | viewportMask );
+    else
         setVisibilityMask( visibilityMask_ & ~viewportMask );
+}
+
+void Object::setVisibilityMask( ViewportMask viewportMask )
+{
+    if ( visibilityMask_ == viewportMask )
+        return;
+
+    needRedraw_ = true;
+    visibilityMask_ = viewportMask;
 }
 
 void Object::swapBase_( Object& other )
@@ -336,7 +417,7 @@ void Object::swapSignals_( Object& other )
     std::swap( worldXfChangedSignal, other.worldXfChangedSignal );
 }
 
-Expected<std::future<void>, std::string> Object::serializeModel_( const std::filesystem::path& ) const
+Expected<std::future<Expected<void>>> Object::serializeModel_( const std::filesystem::path& ) const
 {
     return {};
 }
@@ -344,9 +425,10 @@ Expected<std::future<void>, std::string> Object::serializeModel_( const std::fil
 void Object::serializeFields_( Json::Value& root ) const
 {
     root["Name"] = name_;
-    root["Visibility"] = visibilityMask_.value();
+    root["Visibility"] = visibilityMask().value();
     root["Selected"] = selected_;
     root["Locked"] = locked_;
+    root["ParentLocked"] = parentLocked_;
 
     // xf
     serializeToJson( xf_.get(), root["XF"] );
@@ -355,10 +437,10 @@ void Object::serializeFields_( Json::Value& root ) const
     root["Type"].append( Object::TypeName() ); // will be appended in derived calls
 }
 
-VoidOrErrStr Object::deserializeModel_( const std::filesystem::path&, ProgressCallback progressCb )
+Expected<void> Object::deserializeModel_( const std::filesystem::path&, ProgressCallback progressCb )
 {
     if ( progressCb && !progressCb( 1.f ) )
-        return unexpected( std::string( "Loading canceled" ) );
+        return unexpectedOperationCanceled();
     return{};
 }
 
@@ -379,9 +461,11 @@ void Object::deserializeFields_( const Json::Value& root )
         deserializeFromJson( root["XF"], xf_.get() );
     if ( root["Locked"].isBool() )
         locked_ = root["Locked"].asBool();
+    if ( const auto& json = root["ParentLocked"]; json.isBool() )
+        parentLocked_ = json.asBool();
 }
 
- void Object::propagateWorldXfChangedSignal_()
+void Object::sendWorldXfChangedSignal_()
 {
     std::stack<Object*> buf;
     buf.push( this );
@@ -389,12 +473,17 @@ void Object::deserializeFields_( const Json::Value& root )
     while ( !buf.empty() )
     {
         auto obj = buf.top();
-        obj->worldXfChangedSignal();
+        obj->onWorldXfChanged_();
         buf.pop();
 
         for ( auto& child : obj->children_ )
             buf.push( child.get() );
     }
+}
+
+void Object::onWorldXfChanged_()
+{
+    worldXfChangedSignal();
 }
 
 std::shared_ptr<Object> Object::cloneTree() const
@@ -434,15 +523,14 @@ std::vector<std::string> Object::getInfoLines() const
     return res;
 }
 
-Expected<std::vector<std::future<void>>, std::string> Object::serializeRecursive( const std::filesystem::path& path, Json::Value& root,
-    int childId ) const
+Expected<std::vector<std::future<Expected<void>>>> Object::serializeRecursive( const std::filesystem::path& path, Json::Value& root, int childId ) const
 {
     std::error_code ec;
     if ( !std::filesystem::is_directory( path, ec ) )
         if ( !std::filesystem::create_directories( path, ec ) )
             return unexpected( "Cannot create directories " + utf8string( path ) );
 
-    std::vector<std::future<void>> res;
+    std::vector<std::future<Expected<void>>> res;
 
     // the key must be unique among all children of same parent
     std::string key = std::to_string( childId ) + "_" + replaceProhibitedChars( name_ );
@@ -453,7 +541,7 @@ Expected<std::vector<std::future<void>>, std::string> Object::serializeRecursive
     if ( model.value().valid() )
         res.push_back( std::move( model.value() ) );
     serializeFields_( root );
-    
+
     root["Key"] = key;
 
     if ( !children_.empty() )
@@ -478,7 +566,7 @@ Expected<std::vector<std::future<void>>, std::string> Object::serializeRecursive
     return res;
 }
 
-VoidOrErrStr Object::deserializeRecursive( const std::filesystem::path& path, const Json::Value& root,
+Expected<void> Object::deserializeRecursive( const std::filesystem::path& path, const Json::Value& root,
         ProgressCallback progressCb, int* objCounter )
 {
     std::string key = root["Key"].isString() ? root["Key"].asString() : root["Name"].asString();

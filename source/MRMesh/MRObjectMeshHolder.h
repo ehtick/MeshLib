@@ -7,24 +7,22 @@
 namespace MR
 {
 
-struct MeshVisualizePropertyType : VisualizeMaskType
+enum class MRMESH_CLASS MeshVisualizePropertyType
 {
-    enum : unsigned
-    {
-        Faces = VisualizeMaskType::VisualizePropsCount,
-        Texture,
-        Edges,
-        SelectedFaces,
-        SelectedEdges,
-        EnableShading,
-        FlatShading,
-        OnlyOddFragments,
-        BordersHighlight,
-        PolygonOffsetFromCamera, // recommended for drawing edges on top of mesh
-
-        MeshVisualizePropsCount,
-    };
+    Faces,
+    Texture,
+    Edges,
+    Points,
+    SelectedFaces,
+    SelectedEdges,
+    EnableShading,
+    FlatShading,
+    OnlyOddFragments,
+    BordersHighlight,
+    PolygonOffsetFromCamera, // recommended for drawing edges on top of mesh
+    _count [[maybe_unused]],
 };
+template <> struct IsVisualizeMaskEnum<MeshVisualizePropertyType> : std::true_type {};
 
 /// an object that stores a mesh
 /// \ingroup ModelHolderGroup
@@ -41,7 +39,10 @@ public:
 
     MRMESH_API virtual void applyScale( float scaleFactor ) override;
 
+    /// mesh object can be seen if the mesh has at least one edge
     MRMESH_API virtual bool hasVisualRepresentation() const override;
+
+    [[nodiscard]] virtual bool hasModel() const override { return bool( mesh_ ); }
 
     const std::shared_ptr< const Mesh >& mesh() const
     { return reinterpret_cast< const std::shared_ptr<const Mesh>& >( mesh_ ); } // reinterpret_cast to avoid making a copy of shared_ptr
@@ -52,7 +53,7 @@ public:
     MRMESH_API virtual std::shared_ptr<Object> clone() const override;
     MRMESH_API virtual std::shared_ptr<Object> shallowClone() const override;
 
-    MRMESH_API virtual void setDirtyFlags( uint32_t mask ) override;
+    MRMESH_API virtual void setDirtyFlags( uint32_t mask, bool invalidateCaches = true ) override;
 
     const FaceBitSet& getSelectedFaces() const { return selectedTriangles_; }
     MRMESH_API virtual void selectFaces( FaceBitSet newSelection );
@@ -86,26 +87,35 @@ public:
 
     /// sets flat (true) or smooth (false) shading
     void setFlatShading( bool on )
-    { return setVisualizeProperty( on, unsigned( MeshVisualizePropertyType::FlatShading ), ViewportMask::all() ); }
+    { return setVisualizeProperty( on, MeshVisualizePropertyType::FlatShading, ViewportMask::all() ); }
     bool flatShading() const
-    { return getVisualizeProperty( unsigned( MeshVisualizePropertyType::FlatShading ), ViewportMask::any() ); }
+    { return getVisualizeProperty( MeshVisualizePropertyType::FlatShading, ViewportMask::any() ); }
 
-    /// get all visualize properties masks as array
-    MRMESH_API virtual AllVisualizeProperties getAllVisualizeProperties() const override;
+    [[nodiscard]] MRMESH_API bool supportsVisualizeProperty( AnyVisualizeMaskEnum type ) const override;
+
+    /// get all visualize properties masks
+    MRMESH_API AllVisualizeProperties getAllVisualizeProperties() const override;
     /// returns mask of viewports where given property is set
-    MRMESH_API virtual const ViewportMask& getVisualizePropertyMask( unsigned type ) const override;
+    MRMESH_API const ViewportMask& getVisualizePropertyMask( AnyVisualizeMaskEnum type ) const override;
 
-    const Vector<Color, FaceId>& getFacesColorMap() const { return facesColorMap_; }
-    virtual void setFacesColorMap( Vector<Color, FaceId> facesColorMap )
+    const FaceColors& getFacesColorMap() const { return facesColorMap_; }
+    virtual void setFacesColorMap( FaceColors facesColorMap )
     { facesColorMap_ = std::move( facesColorMap ); dirty_ |= DIRTY_PRIMITIVE_COLORMAP; }
+    virtual void updateFacesColorMap( FaceColors& updated )
+    { std::swap( facesColorMap_, updated ); dirty_ |= DIRTY_PRIMITIVE_COLORMAP; }
 
+    MRMESH_API virtual void setEdgeWidth( float edgeWidth );
     float getEdgeWidth() const { return edgeWidth_; }
-    virtual void setEdgeWidth( float edgeWidth )
-    { edgeWidth_ = edgeWidth; needRedraw_ = true; }
+    MRMESH_API virtual void setPointSize( float size );
+    virtual float getPointSize() const { return pointSize_; }
 
     const Color& getEdgesColor( ViewportId id = {} ) const { return edgesColor_.get(id); }
     virtual void setEdgesColor( const Color& color, ViewportId id = {} )
     { edgesColor_.set( color, id ); needRedraw_ = true; }
+    
+    const Color& getPointsColor( ViewportId id = {} ) const { return pointsColor_.get(id); }
+    virtual void setPointsColor( const Color& color, ViewportId id = {} )
+    { pointsColor_.set( color, id ); needRedraw_ = true; }
 
     const Color& getBordersColor( ViewportId id = {} ) const { return bordersColor_.get( id ); }
     virtual void setBordersColor( const Color& color, ViewportId id = {} )
@@ -115,15 +125,30 @@ public:
     ObjectMeshHolder( ProtectedStruct, const ObjectMeshHolder& obj ) : ObjectMeshHolder( obj )
     {}
 
-    const MeshTexture& getTexture() const { return texture_; }
-    virtual void setTexture( MeshTexture texture ) { texture_ = std::move( texture ); dirty_ |= DIRTY_TEXTURE; }
+    /// returns first texture in the vector. If there is no textures, returns empty texture
+    MRMESH_API const MeshTexture& getTexture() const;
+    // for backward compatibility
+    [[deprecated]] MRMESH_API virtual void setTexture( MeshTexture texture );
+    [[deprecated]] MRMESH_API virtual void updateTexture( MeshTexture& updated );
+    const Vector<MeshTexture, TextureId>& getTextures() const { return textures_; }
+    virtual void setTextures( Vector<MeshTexture, TextureId> texture ) { textures_ = std::move( texture ); dirty_ |= DIRTY_TEXTURE; }
+    virtual void updateTextures( Vector<MeshTexture, TextureId>& updated ) { std::swap( textures_, updated ); dirty_ |= DIRTY_TEXTURE; }
 
+    /// the texture ids for the faces if more than one texture is used to texture the object
+    /// texture coordinates (uvCoordinates_) at a point can belong to different textures, depending on which face the point belongs to
+    virtual void setTexturePerFace( Vector<TextureId, FaceId> texturePerFace ) { texturePerFace_ = std::move( texturePerFace ); dirty_ |= DIRTY_TEXTURE_PER_FACE; }
+    virtual void updateTexturePerFace( Vector<TextureId, FaceId>& texturePerFace ) { std::swap( texturePerFace_, texturePerFace ); dirty_ |= DIRTY_TEXTURE_PER_FACE; }
+    virtual void addTexture( MeshTexture texture ) { textures_.emplace_back( std::move( texture ) ); dirty_ |= DIRTY_TEXTURE_PER_FACE; }
+    const TexturePerFace& getTexturePerFace() const { return texturePerFace_; }
+    
     const VertUVCoords& getUVCoords() const { return uvCoordinates_; }
     virtual void setUVCoords( VertUVCoords uvCoordinates ) { uvCoordinates_ = std::move( uvCoordinates ); dirty_ |= DIRTY_UV; }
-    void updateUVCoords( VertUVCoords& updated ) { std::swap( uvCoordinates_, updated ); dirty_ |= DIRTY_UV; }
+    virtual void updateUVCoords( VertUVCoords& updated ) { std::swap( uvCoordinates_, updated ); dirty_ |= DIRTY_UV; }
 
     /// copies texture, UV-coordinates and vertex colors from given source object \param src using given map \param thisToSrc
-    MRMESH_API virtual void copyTextureAndColors( const ObjectMeshHolder & src, const VertMap & thisToSrc );
+    MRMESH_API virtual void copyTextureAndColors( const ObjectMeshHolder& src, const VertMap& thisToSrc, const FaceMap& thisToSrcFaces = {} );
+
+    MRMESH_API void copyColors( const VisualObject& src, const VertMap& thisToSrc, const FaceMap& thisToSrcFaces = {} ) override;
 
     // ancillary texture can be used to have custom features visualization without affecting real one
     const MeshTexture& getAncillaryTexture() const { return ancillaryTexture_; }
@@ -132,7 +157,7 @@ public:
     const VertUVCoords& getAncillaryUVCoords() const { return ancillaryUVCoordinates_; }
     virtual void setAncillaryUVCoords( VertUVCoords uvCoordinates ) { ancillaryUVCoordinates_ = std::move( uvCoordinates ); dirty_ |= DIRTY_UV; }
     void updateAncillaryUVCoords( VertUVCoords& updated ) { std::swap( ancillaryUVCoordinates_, updated ); dirty_ |= DIRTY_UV; }
-    
+
     bool hasAncillaryTexture() const { return !ancillaryUVCoordinates_.empty() && !ancillaryTexture_.pixels.empty(); }
     MRMESH_API void clearAncillaryTexture();
 
@@ -145,32 +170,56 @@ public:
     MRMESH_API virtual void resetDirtyExeptMask( uint32_t mask ) const;
 
     /// returns cached information whether the mesh is closed
-    MRMESH_API bool isMeshClosed() const;
+    [[nodiscard]] MRMESH_API bool isMeshClosed() const;
+
     /// returns cached bounding box of this mesh object in world coordinates;
     /// if you need bounding box in local coordinates please call getBoundingBox()
-    MRMESH_API virtual Box3f getWorldBox( ViewportId = {} ) const override;
+    [[nodiscard]] MRMESH_API virtual Box3f getWorldBox( ViewportId = {} ) const override;
+
     /// returns cached information about the number of selected faces in the mesh
-    MRMESH_API size_t numSelectedFaces() const;
+    [[nodiscard]] MRMESH_API size_t numSelectedFaces() const;
+
     /// returns cached information about the number of selected undirected edges in the mesh
-    MRMESH_API size_t numSelectedEdges() const;
+    [[nodiscard]] MRMESH_API size_t numSelectedEdges() const;
+
     /// returns cached information about the number of crease undirected edges in the mesh
-    MRMESH_API size_t numCreaseEdges() const;
+    [[nodiscard]] MRMESH_API size_t numCreaseEdges() const;
+
     /// returns cached summed area of mesh triangles
-    MRMESH_API double totalArea() const;
+    [[nodiscard]] MRMESH_API double totalArea() const;
+
     /// returns cached area of selected triangles
-    MRMESH_API double selectedArea() const;
+    [[nodiscard]] MRMESH_API double selectedArea() const;
+
+    /// returns cached volume of space surrounded by the mesh, which is valid only if mesh is closed
+    [[nodiscard]] MRMESH_API double volume() const;
+
     /// returns cached average edge length
-    MRMESH_API float avgEdgeLen() const;
+    [[nodiscard]] MRMESH_API float avgEdgeLen() const;
+
+    /// returns cached information about the number of undirected edges in the mesh
+    [[nodiscard]] MRMESH_API size_t numUndirectedEdges() const;
+
+    /// returns cached information about the number of holes in the mesh
+    [[nodiscard]] MRMESH_API size_t numHoles() const;
+
+    /// returns cached information about the number of components in the mesh
+    [[nodiscard]] MRMESH_API size_t numComponents() const;
+
+    /// returns cached information about the number of handles in the mesh
+    [[nodiscard]] MRMESH_API size_t numHandles() const;
 
     /// returns the amount of memory this object occupies on heap
     [[nodiscard]] MRMESH_API virtual size_t heapBytes() const override;
 
-    /// returns cached information about the number of holes in the mesh
-    MRMESH_API size_t numHoles() const;
-    /// returns cached information about the number of components in the mesh
-    MRMESH_API size_t numComponents() const;
-    /// returns cached information about the number of handles in the mesh
-    MRMESH_API size_t numHandles() const;
+    /// returns overriden file extension used to serialize mesh inside this object, nullptr means defaultSerializeMeshFormat()
+    [[nodiscard]] const char * serializeFormat() const { return serializeFormat_; }
+    [[deprecated]] const char * saveMeshFormat() const { return serializeFormat(); }
+
+    /// overrides file extension used to serialize mesh inside this object: must start from '.',
+    /// nullptr means serialize in defaultSerializeMeshFormat()
+    MRMESH_API void setSerializeFormat( const char * newFormat );
+    [[deprecated]] void setSaveMeshFormat( const char * newFormat ) { setSerializeFormat( newFormat ); }
 
     /// signal about face selection changing, triggered in selectFaces
     using SelectionChangedSignal = Signal<void()>;
@@ -184,22 +233,22 @@ protected:
     UndirectedEdgeBitSet creases_;
 
     /// Texture options
-    MeshTexture texture_;
+    Vector<MeshTexture, TextureId> textures_;
     VertUVCoords uvCoordinates_; ///< vertices coordinates in texture
+
+    Vector<TextureId, FaceId> texturePerFace_;
 
     MeshTexture ancillaryTexture_;
     VertUVCoords ancillaryUVCoordinates_; ///< vertices coordinates in ancillary texture
 
-    struct MeshStat
-    {
-        size_t numComponents = 0;
-        size_t numUndirectedEdges = 0;
-        size_t numHoles = 0;
-    };
-    mutable std::optional<MeshStat> meshStat_;
+    mutable std::optional<size_t> numHoles_;
+    mutable std::optional<size_t> numComponents_;
+    mutable std::optional<size_t> numUndirectedEdges_;
+    mutable std::optional<size_t> numHandles_;
     mutable std::optional<bool> meshIsClosed_;
     mutable std::optional<size_t> numSelectedFaces_, numSelectedEdges_, numCreaseEdges_;
     mutable std::optional<double> totalArea_, selectedArea_;
+    mutable std::optional<double> volume_;
     mutable std::optional<float> avgEdgeLen_;
     mutable ViewportProperty<XfBasedCache<Box3f>> worldBox_;
 
@@ -211,49 +260,67 @@ protected:
     /// pls call Parent::swapSignals_ first when overriding this function
     MRMESH_API virtual void swapSignals_( Object& other ) override;
 
-    MRMESH_API virtual Expected<std::future<void>, std::string> serializeModel_( const std::filesystem::path& path ) const override;
+    MRMESH_API virtual Expected<std::future<Expected<void>>> serializeModel_( const std::filesystem::path& path ) const override;
 
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const override;
 
     MRMESH_API void deserializeFields_( const Json::Value& root ) override;
 
-    MRMESH_API VoidOrErrStr deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} ) override;
+    MRMESH_API Expected<void> deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} ) override;
+
+    /// set all visualize properties masks
+    MRMESH_API void setAllVisualizeProperties_( const AllVisualizeProperties& properties, std::size_t& pos ) override;
 
     MRMESH_API virtual Box3f computeBoundingBox_() const override;
 
     MRMESH_API virtual void setupRenderObject_() const override;
 
-    MRMESH_API virtual void updateMeshStat_() const;
-
     ViewportMask showTexture_;
     ViewportMask showFaces_ = ViewportMask::all();
     ViewportMask showEdges_;
+    ViewportMask showPoints_;
     ViewportMask showSelectedEdges_ = ViewportMask::all();
     ViewportMask showSelectedFaces_ = ViewportMask::all();
     ViewportMask showBordersHighlight_;
     ViewportMask polygonOffset_;
     ViewportMask flatShading_; ///< toggle per-face or per-vertex properties
 
-    // really it shoud be one enum Shading {None, Flat, Smooth, Crease} 
+    // really it shoud be one enum Shading {None, Flat, Smooth, Crease}
     // but for back capability it is easier to add global flag
     ViewportMask shadingEnabled_ = ViewportMask::all();
 
     ViewportMask onlyOddFragments_;
 
     ViewportProperty<Color> edgesColor_;
+    ViewportProperty<Color> pointsColor_;
     ViewportProperty<Color> bordersColor_;
     ViewportProperty<Color> edgeSelectionColor_;
     ViewportProperty<Color> faceSelectionColor_;
 
-    Vector<Color, FaceId> facesColorMap_;
+    FaceColors facesColorMap_;
     float edgeWidth_{ 0.5f };
+    float pointSize_{ 5.f };
 
     std::shared_ptr<Mesh> mesh_;
 
 private:
     /// this is private function to set default colors of this type (ObjectMeshHolder) in constructor only
     void setDefaultColors_();
+
+    /// set default scene-related properties
+    void setDefaultSceneProperties_();
+
+    const char * serializeFormat_ = nullptr; // means use defaultSerializeMeshFormat()
 };
 
-} // namespace MR
+/// returns file extension used to serialize ObjectMeshHolder by default (if not overridden in specific object),
+/// the string starts with '.'
+[[nodiscard]] MRMESH_API const std::string & defaultSerializeMeshFormat();
 
+/// sets file extension used to serialize serialize ObjectMeshHolder by default (if not overridden in specific object),
+/// the string must start from '.';
+// serialization falls back to the PLY format if given format support is available
+// NOTE: CTM format support is available in the MRIOExtras library; make sure to load it if you prefer CTM
+MRMESH_API void setDefaultSerializeMeshFormat( std::string newFormat );
+
+} // namespace MR

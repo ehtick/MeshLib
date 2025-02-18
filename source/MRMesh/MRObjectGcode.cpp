@@ -4,6 +4,7 @@
 #include "MRPch/MRJson.h"
 #include "MRSerializer.h"
 #include "MRSceneSettings.h"
+#include "MRTimer.h"
 
 namespace MR
 {
@@ -48,9 +49,9 @@ void ObjectGcode::setGcodeSource( const std::shared_ptr<GcodeSource>& gcodeSourc
     updateAll_();
 }
 
-void ObjectGcode::setDirtyFlags( uint32_t mask )
+void ObjectGcode::setDirtyFlags( uint32_t mask, bool invalidateCaches )
 {
-    ObjectLinesHolder::setDirtyFlags( mask );
+    ObjectLinesHolder::setDirtyFlags( mask, invalidateCaches );
 
     if ( mask & DIRTY_POSITION || mask & DIRTY_PRIMITIVES )
     {
@@ -205,6 +206,7 @@ void ObjectGcode::updateHeapUsageCache_()
 
 void ObjectGcode::updateColors_()
 {
+    MR_TIMER
     const bool feedrateValid = maxFeedrate_ > 0.f;
     VertColors colors;
     const Color workColor = getFrontColor( true );
@@ -237,7 +239,7 @@ void ObjectGcode::updateAll_()
         setDirtyFlags( DIRTY_ALL );
         return;
     }
-
+    MR_TIMER
     GcodeProcessor executor;
     executor.setCNCMachineSettings( cncMachineSettings_ );
     executor.setGcodeSource( *gcodeSource_ );
@@ -252,7 +254,7 @@ void ObjectGcode::updateAll_()
             continue;
         polyline->addFromPoints( part.action.path.data(), part.action.path.size(), false );
         segmentToSourceLineMap_.insert( segmentToSourceLineMap_.end(), part.action.path.size() - 1, i );
-        if ( part.idle && part.feedrate > maxFeedrate_ )
+        if ( !part.idle && part.feedrate > maxFeedrate_ )
             maxFeedrate_ = part.feedrate;
     }
     polyline_ = polyline;
@@ -261,4 +263,4 @@ void ObjectGcode::updateAll_()
     setDirtyFlags( DIRTY_ALL );
 }
 
-}
+} //namespace MR

@@ -32,7 +32,7 @@ public:
     {
         BaseAction3f action;
         std::vector<Vector3f> toolDirection; // tool direction for each point from action.path
-        bool idle = false;
+        bool idle = true;
         float feedrate = 100.f;
         // return true if operation was parsed without warnings
         bool valid() const { return action.warning.empty(); }
@@ -44,22 +44,25 @@ public:
 
     // set g-code source
     MRMESH_API void setGcodeSource( const GcodeSource& gcodeSource );
+
     // process all lines g-code source and generate corresponding move actions
     MRMESH_API std::vector<MoveAction> processSource();
-    // process all commands from one line g-code source and generate corresponding move action
-    MRMESH_API MoveAction processLine( const std::string_view& line );
-
-    // settings
-    MRMESH_API void setCNCMachineSettings( const CNCMachineSettings& settings );
-    const CNCMachineSettings& getCNCMachineSettings() { return cncSettings_; }
-
-private:
 
     struct Command
     {
         char key; // in lowercase
         float value;
     };
+
+    // process all commands from one line g-code source and generate corresponding move action;
+    // \param externalStorage to avoid memory allocation on each line
+    MRMESH_API MoveAction processLine( const std::string_view& line, std::vector<Command> & externalStorage );
+
+    // settings
+    MRMESH_API void setCNCMachineSettings( const CNCMachineSettings& settings );
+    const CNCMachineSettings& getCNCMachineSettings() { return cncSettings_; }
+
+private:
     enum class WorkPlane
     {
         xy,
@@ -68,18 +71,19 @@ private:
     };
 
     // parse program methods
-    std::vector<Command> parseFrame_( const std::string_view& frame );
+    static void parseFrame_( const std::string_view& frame, std::vector<Command> & outCommands );
     void applyCommand_( const Command& command );
     void applyCommandG_( const Command& command );
     MoveAction generateMoveAction_();
+    MoveAction generateReturnToHomeAction_();
     void resetTemporaryStates_();
 
     // g-command actions
 
     // g0, g1
-    MoveAction moveLine_( const Vector3f& newPoint, bool idle );
+    MoveAction moveLine_( const Vector3f& newPoint, const Vector3f& newAngles );
     // g2, g3
-    MoveAction moveArc_( const Vector3f& newPoint, bool clockwise );
+    MoveAction moveArc_( const Vector3f& newPoint, const Vector3f& newAngles, bool clockwise );
 
     // g17, g18, g19
     void updateWorkPlane_( WorkPlane wp );
@@ -99,9 +103,10 @@ private:
     BaseAction3f getArcPoints3_( float r, const Vector3f& beginPoint, const Vector3f& endPoint, bool clockwise );
 
     // sample arc points of tool movement during rotation
-    MoveAction getToolRotationPoints_();
+    MoveAction getToolRotationPoints_( const Vector3f& newRotationAngles );
 
-    Vector3f calcCoordMotors_();
+    Vector3f calcNewTranslationPos_();
+    Vector3f calcNewRotationAngles_();
     Vector3f calcRealCoord_( const Vector3f& translationPos, const Vector3f& rotationAngles );
     void updateRotationAngleAndMatrix_( const Vector3f& rotationAngles );
     Vector3f calcRealCoordCached_( const Vector3f& translationPos, const Vector3f& rotationAngles );
@@ -121,6 +126,7 @@ private:
     enum class CoordType
     {
         Movement,
+        ReturnToHome,
         Scaling
     };
 
@@ -142,10 +148,11 @@ private:
 
     // input data (data entered in last line)
     Vector3f inputCoords_; // x, y, z
-    Vector3<bool> inputCoordsReaded_; // any of (x, y, z) was read
+    Vector3b inputCoordsReaded_; // x, y, z was read
     std::optional<float> radius_; // r
     std::optional<Vector3f> arcCenter_; // i, j, k
-    std::optional<Vector3f> inputRotation_; // a, b, c
+    Vector3f inputRotation_; // a, b, c
+    Vector3b inputRotationReaded_; // a, b, c was read
 
     std::vector<std::string_view> gcodeSource_; // string list with sets of command (frames)
 

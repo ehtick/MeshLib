@@ -1,5 +1,6 @@
 #include "MRCloseVertices.h"
 #include "MRMesh.h"
+#include "MRPointCloud.h"
 #include "MRAABBTreePoints.h"
 #include "MRPointsInBall.h"
 #include "MRParallelFor.h"
@@ -10,19 +11,19 @@
 namespace MR
 {
 
-VertMap findSmallestCloseVertices( const VertCoords & points, float closeDist, const VertBitSet * valid )
+std::optional<VertMap> findSmallestCloseVerticesUsingTree( const VertCoords & points, float closeDist, const AABBTreePoints & tree, const VertBitSet * valid, const ProgressCallback & cb )
 {
     MR_TIMER
 
-    AABBTreePoints tree( points, valid );
     VertMap res;
     res.resizeNoInit( points.size() );
-    ParallelFor( points, [&]( VertId v )
+    const auto closeDistSq = sqr( closeDist );
+    if ( !ParallelFor( points, [&]( VertId v )
     {
         VertId smallestCloseVert = v;
         if ( !valid || valid->test( v ) )
         {
-            findPointsInBall( tree, points[v], closeDist, [&]( VertId cv, const Vector3f& )
+            findPointsInBall( tree, { points[v], closeDistSq }, [&]( VertId cv, const Vector3f& )
             {
                 if ( cv == v )
                     return;
@@ -30,7 +31,9 @@ VertMap findSmallestCloseVertices( const VertCoords & points, float closeDist, c
             } );
         }
         res[v] = smallestCloseVert;
-    } );
+    }, subprogress( cb, 0.0f, 0.8f ) ) )
+        return {};
+
     // after parallel pass, some close vertices can be mapped further
 
     for ( auto v = 0_v; v < points.size(); ++v )
@@ -45,7 +48,7 @@ VertMap findSmallestCloseVertices( const VertCoords & points, float closeDist, c
 
         // find another closest
         smallestCloseVert = v;
-        findPointsInBall( tree, points[v], closeDist, [&]( VertId cv, const Vector3f& )
+        findPointsInBall( tree, { points[v], closeDistSq }, [&]( VertId cv, const Vector3f& )
         {
             if ( cv == v )
                 return;
@@ -56,12 +59,26 @@ VertMap findSmallestCloseVertices( const VertCoords & points, float closeDist, c
         res[v] = smallestCloseVert;
     }
 
+    if ( !reportProgress( cb, 1.0f ) )
+        return {};
     return res;
 }
 
-VertMap findSmallestCloseVertices( const Mesh & mesh, float closeDist )
+std::optional<VertMap> findSmallestCloseVertices( const VertCoords & points, float closeDist, const VertBitSet * valid, const ProgressCallback & cb )
 {
-    return findSmallestCloseVertices( mesh.points, closeDist, &mesh.topology.getValidVerts() );
+    MR_TIMER
+    AABBTreePoints tree( points, valid );
+    return findSmallestCloseVerticesUsingTree( points, closeDist, tree, valid, cb );
+}
+
+std::optional<VertMap> findSmallestCloseVertices( const Mesh & mesh, float closeDist, const ProgressCallback & cb )
+{
+    return findSmallestCloseVerticesUsingTree( mesh.points, closeDist, mesh.getAABBTreePoints(), &mesh.topology.getValidVerts(), cb );
+}
+
+std::optional<VertMap> findSmallestCloseVertices( const PointCloud & cloud, float closeDist, const ProgressCallback & cb )
+{
+    return findSmallestCloseVerticesUsingTree( cloud.points, closeDist, cloud.getAABBTree(), &cloud.validPoints, cb );
 }
 
 VertBitSet findCloseVertices( const VertMap & smallestMap )
@@ -80,47 +97,36 @@ VertBitSet findCloseVertices( const VertMap & smallestMap )
     return res;
 }
 
-VertBitSet findCloseVertices( const VertCoords & points, float closeDist, const VertBitSet * valid )
+std::optional<VertBitSet> findCloseVertices( const VertCoords & points, float closeDist, const VertBitSet * valid, const ProgressCallback & cb )
 {
-    return findCloseVertices( findSmallestCloseVertices( points, closeDist, valid ) );
+    auto x = findSmallestCloseVertices( points, closeDist, valid, cb );
+    if ( !x )
+        return {};
+    return findCloseVertices( *x );
 }
 
-VertBitSet findCloseVertices( const Mesh & mesh, float closeDist )
+std::optional<VertBitSet> findCloseVertices( const Mesh & mesh, float closeDist, const ProgressCallback & cb )
 {
-    return findCloseVertices( mesh.points, closeDist, &mesh.topology.getValidVerts() );
+    auto x = findSmallestCloseVertices( mesh, closeDist, cb );
+    if ( !x )
+        return {};
+    return findCloseVertices( *x );
 }
 
-struct VertPair
+std::optional<VertBitSet> findCloseVertices( const PointCloud & cloud, float closeDist, const ProgressCallback & cb )
 {
-    VertId a, b;
-    friend bool operator ==( const VertPair &, const VertPair & ) = default;
-};
+    auto x = findSmallestCloseVertices( cloud, closeDist, cb );
+    if ( !x )
+        return {};
+    return findCloseVertices( *x );
+}
 
-} // namespace MR
-
-namespace std
-{
-
-template<> 
-struct hash<MR::VertPair> 
-{
-    size_t operator()( MR::VertPair const& p ) const noexcept
-    {
-        return size_t( p.a ) ^ ( size_t( p.b ) << 16 );
-    }
-};
-
-} // namespace std
-
-namespace MR
-{
-
-EdgeHashMap findTwinEdgeHashMap( const Mesh & mesh, float closeDist )
+std::vector<EdgePair> findTwinEdgePairs( const Mesh & mesh, float closeDist )
 {
     MR_TIMER
-    EdgeHashMap res;
+    std::vector<EdgePair> res;
 
-    const auto map = findSmallestCloseVertices( mesh, closeDist );
+    const auto map = *findSmallestCloseVertices( mesh, closeDist );
     VertBitSet closeVerts = findCloseVertices( map );
 
     HashMap<VertPair, EdgeId> hmap;
@@ -134,7 +140,7 @@ EdgeHashMap findTwinEdgeHashMap( const Mesh & mesh, float closeDist )
             auto [it, inserted] = hmap.insert( { vp, e } );
             if ( !inserted )
             {
-                res[e] = it->second;
+                res.push_back( { e, it->second } );
                 it->second = e;
             }
         }
@@ -143,11 +149,11 @@ EdgeHashMap findTwinEdgeHashMap( const Mesh & mesh, float closeDist )
     return res;
 }
 
-EdgeBitSet findTwinEdges( const EdgeHashMap & emap )
+EdgeBitSet findTwinEdges( const std::vector<EdgePair> & pairs )
 {
     MR_TIMER
     EdgeBitSet res;
-    for ( const auto & [e1, e2] : emap )
+    for ( const auto & [e1, e2] : pairs )
     {
         res.autoResizeSet( e1 );
         res.autoResizeSet( e2 );
@@ -158,14 +164,14 @@ EdgeBitSet findTwinEdges( const EdgeHashMap & emap )
 
 EdgeBitSet findTwinEdges( const Mesh & mesh, float closeDist )
 {
-    return findTwinEdges( findTwinEdgeHashMap( mesh, closeDist ) );
+    return findTwinEdges( findTwinEdgePairs( mesh, closeDist ) );
 }
 
-UndirectedEdgeBitSet findTwinUndirectedEdges( const EdgeHashMap & emap )
+UndirectedEdgeBitSet findTwinUndirectedEdges( const std::vector<EdgePair> & pairs )
 {
     MR_TIMER
     UndirectedEdgeBitSet res;
-    for ( const auto & [e1, e2] : emap )
+    for ( const auto & [e1, e2] : pairs )
     {
         res.autoResizeSet( e1.undirected() );
         res.autoResizeSet( e2.undirected() );
@@ -176,7 +182,34 @@ UndirectedEdgeBitSet findTwinUndirectedEdges( const EdgeHashMap & emap )
 
 UndirectedEdgeBitSet findTwinUndirectedEdges( const Mesh & mesh, float closeDist )
 {
-    return findTwinUndirectedEdges( findTwinEdgeHashMap( mesh, closeDist ) );
+    return findTwinUndirectedEdges( findTwinEdgePairs( mesh, closeDist ) );
+}
+
+UndirectedEdgeHashMap findTwinUndirectedEdgeHashMap( const std::vector<EdgePair> & pairs )
+{
+    MR_TIMER
+    UndirectedEdgeHashMap res;
+    /// every edge is present twice in (pairs) in both orientations; and
+    /// every edge is present twice in (res): once in key and once in value
+    res.reserve( pairs.size() );
+    auto add = [&]( UndirectedEdgeId u1, UndirectedEdgeId u2 )
+    {
+        [[maybe_unused]] auto [it, inserted] = res.insert( { u1, u2 } );
+        assert( it->second == u2 );
+    };
+    for ( const auto & [e1, e2] : pairs )
+    {
+        const auto u1 = e1.undirected();
+        const auto u2 = e2.undirected();
+        add( u1, u2 );
+        add( u2, u1 );
+    }
+    return res;
+}
+
+UndirectedEdgeHashMap findTwinUndirectedEdgeHashMap( const Mesh & mesh, float closeDist )
+{
+    return findTwinUndirectedEdgeHashMap( findTwinEdgePairs( mesh, closeDist ) );
 }
 
 } //namespace MR

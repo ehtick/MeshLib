@@ -1,44 +1,76 @@
 #include "MRViewport.h"
 #include "MRViewer.h"
+#include "ImGuiMenu.h"
+#include "MRGLMacro.h"
+#include "MRGLStaticHolder.h"
+#include "MRMouseController.h"
 #include <MRMesh/MRMesh.h>
 #include <MRMesh/MRArrow.h>
-#include <MRMesh/MRUVSphere.h>
+#include <MRMesh/MRMakeSphereMesh.h>
 #include <MRMesh/MRToFromEigen.h>
 #include <MRMesh/MRClosestPointInTriangle.h>
 #include <MRMesh/MRTimer.h>
 #include "MRMesh/MRObjectsAccess.h"
-#include "MRGLMacro.h"
 #include "MRMesh/MRObjectMesh.h"
-#include "MRGLStaticHolder.h"
 #include "MRMesh/MRObjectPoints.h"
 #include "MRMesh/MRObjectLines.h"
 #include "MRMesh/MRPolylineProject.h"
+#include "MRMesh/MR2to3.h"
+#include "MRMesh/MRBitSetParallelFor.h"
+#include "MRMesh/MRSceneRoot.h"
+#include "MRMesh/MRPointCloud.h"
+#include "MRMesh/MRPolyline.h"
 #include "MRPch/MRSuppressWarning.h"
 #include "MRPch/MRTBB.h"
-#include "MRMesh/MR2to3.h"
-#include "MRMesh/MRObjectVoxels.h"
-#include "MRMesh/MRBitSetParallelFor.h"
+
+#ifndef MRVIEWER_NO_VOXELS
+#include "MRVoxels/MRObjectVoxels.h"
+#endif
 
 using VisualObjectTreeDataVector = std::vector<MR::VisualObject*>;
+
 namespace
 {
-void getPickerDataVector( MR::Object& obj, MR::ViewportMask id, VisualObjectTreeDataVector& outVector )
+
+using namespace MR;
+
+void getPickerDataVector( Object& obj, ViewportMask id, VisualObjectTreeDataVector& outVector )
 {
     if ( !obj.isVisible( id ) )
         return;
-    if ( auto visobj = obj.asType<MR::VisualObject>() )
+    if ( auto visobj = obj.asType<VisualObject>() )
         if ( visobj->isPickable( id ) )
             outVector.push_back( {visobj} );
     for ( const auto& child : obj.children() )
         getPickerDataVector( *child, id, outVector );
 }
+
+void getPickerDataVector( Object& obj, ViewportMask id, const Viewport::PickRenderObjectPredicate& predicate, VisualObjectTreeDataVector& outVector )
+{
+    if ( !obj.isVisible( id ) )
+        return;
+
+    if ( auto visObj = obj.asType<VisualObject>() )
+        if ( visObj->isPickable( id ) && predicate( visObj, id ) )
+            outVector.emplace_back( visObj );
+
+    for ( const auto& child : obj.children() )
+        getPickerDataVector( *child, id, predicate, outVector );
+}
+
 }
 
 namespace MR
 {
 
+Viewport& Viewport::get( ViewportId viewportId )
+{
+    return getViewerInstance().viewport( viewportId );
+}
+
 Viewport::Viewport()
 {
+    cameraLookAlong( Vector3f( -1.f, -1.f, -1.f ), Vector3f( -1, -1, 2 ) );
 }
 
 Viewport::~Viewport()
@@ -48,11 +80,11 @@ Viewport::~Viewport()
 void Viewport::init()
 {
     viewportGL_ = ViewportGL();
-    init_axes();
+    initBaseAxes();
     updateSceneBox_();
     setRotationPivot_( sceneBox_.valid() ? sceneBox_.center() : Vector3f() );
     setupProjMatrix_();
-    setupStaticProjMatrix_();
+    setupAxesProjMatrix_();
 }
 
 void Viewport::shut()
@@ -60,49 +92,112 @@ void Viewport::shut()
     viewportGL_.free();
 }
 
-// ================================================================
-// draw functions part
-
-
-void Viewport::draw(const VisualObject& obj, const AffineXf3f& xf, 
-     DepthFuncion depthFunc, bool alphaSort ) const
+void Viewport::clearFramebuffers()
 {
-    draw( obj, xf, projM_, depthFunc, alphaSort );
+    if ( !viewportGL_.checkInit() )
+        viewportGL_.init();
+    viewportGL_.fillViewport( viewportRect_, params_.backgroundColor );
 }
 
-void Viewport::draw( const VisualObject& obj, const AffineXf3f& xf, const Matrix4f& projM,
-     DepthFuncion depthFunc, bool alphaSort ) const
+static ObjAndPick pickRenderObjectImpl( const Viewport& v, std::span<VisualObject* const> objects, const Viewport::PickRenderObjectParams& params )
 {
-    auto modelTemp = Matrix4f( xf );
-    auto normTemp = viewM_ * modelTemp;
-    if ( normTemp.det() == 0 )
+    auto& viewer = getViewerInstance();
+
+    // Maybe block pick by the ImGuiMenu.
+    if ( auto menu = viewer.getMenuPlugin(); menu && menu->anyImGuiWindowIsHovered() )
+        return {};
+    if ( auto menu = viewer.getMenuPlugin(); menu && menu->anyUiObjectIsHovered() )
+        return {};
+
+    const auto& mousePos = viewer.mouseController().getMousePos();
+    Vector2f vp;
+    if ( params.point )
     {
-        auto norm = normTemp.norm();
-        if ( std::isnormal( norm ) )
-        {
-            normTemp /= norm;
-            normTemp.w = { 0, 0, 0, 1 };
-        }
-        else
-        {
-            spdlog::warn( "Object transform is degenerate" );
-            return;
-        }
+        vp.x = params.point->x;
+        vp.y = params.point->y;
     }
-    auto normM = normTemp.inverse().transposed();
-
-    RenderParams params
+    else
     {
-        {viewM_, modelTemp, projM, &normM,
-        id, params_.clippingPlane, toVec4<int>( viewportRect_ ),depthFunc},
-        params_.lightPosition, alphaSort
-    };
-    obj.render( params );
+        auto vec3 = viewer.screenToViewport( Vector3f( float( mousePos.x ), float( mousePos.y ), 0.f ), v.id );
+        vp.x = vec3.x;
+        vp.y = vec3.y;
+    }
+
+    int radius = params.pickRadius >= 0 ? params.pickRadius : viewer.glPickRadius;
+
+    if ( radius == 0 )
+        return v.multiPickObjects( objects, { vp }, params.baseRenderParams ).front();
+    else
+    {
+        std::vector<Vector2f> pixels;
+        pixels.reserve( sqr( 2 * radius + 1 ) );
+        pixels.push_back( vp );
+        for ( int i = -int( radius ); i <= int( radius ); i++ )
+        for ( int j = -int( radius ); j <= int( radius ); j++ )
+        {
+            if ( i == 0 && j == 0 )
+                continue;
+            if ( i * i + j * j <= radius * radius + 1 )
+                pixels.push_back( Vector2f( vp.x + i, vp.y + j ) );
+        }
+        auto res = v.multiPickObjects( objects, pixels, params.baseRenderParams );
+        if ( res.empty() )
+            return {};
+        if ( params.exactPickFirst && bool( res.front().first ) )
+            return res.front();
+        int minIndex = int( res.size() );
+        float minZ = FLT_MAX;
+        for ( int i = 0; i < res.size(); ++i )
+        {
+            const auto& [obj, pick] = res[i];
+            if ( !obj )
+                continue;
+            if ( pick.zBuffer < minZ )
+            {
+                minZ = pick.zBuffer;
+                minIndex = i;
+            }
+        }
+        if ( minIndex < res.size() )
+            return res[minIndex];
+        return {};
+    }
 }
 
-void Viewport::clear_framebuffers() const
+ObjAndPick Viewport::pickRenderObject( const PickRenderObjectParams& params ) const
 {
-    viewportGL_.fillViewport( toVec4<int>( viewportRect_ ), params_.backgroundColor );
+    std::vector<VisualObject*> objects;
+    if ( params.predicate )
+        getPickerDataVector( SceneRoot::get(), id, params.predicate, objects );
+    else
+        getPickerDataVector( SceneRoot::get(), id, objects );
+
+    return pickRenderObjectImpl( *this, objects, params );
+}
+ObjAndPick Viewport::pickRenderObject( std::span<VisualObject* const> objects, const PickRenderObjectParams& params ) const
+{
+    if ( !params.predicate )
+    {
+        return pickRenderObjectImpl( *this, objects, params );
+    }
+    else
+    {
+        std::vector<VisualObject*> objectsFiltered( objects.begin(), objects.end() );
+        std::erase_if( objectsFiltered, [&]( const VisualObject* v ){ return params.predicate( v, id ); } );
+        return pickRenderObjectImpl( *this, objectsFiltered, params );
+    }
+}
+ConstObjAndPick Viewport::pickRenderObjectConst( std::span<const VisualObject* const> objects, const PickRenderObjectParams& params ) const
+{
+    return pickRenderObject( std::span<VisualObject* const>( const_cast<VisualObject**>( objects.data() ), objects.size() ), params );
+}
+
+ObjAndPick Viewport::pick_render_object( uint16_t pickRadius ) const
+{
+    VisualObjectTreeDataVector renderVector;
+    getPickerDataVector( SceneRoot::get(), id, renderVector );
+
+    return pickRenderObject( renderVector, { .pickRadius = pickRadius } );
 }
 
 ObjAndPick Viewport::pick_render_object() const
@@ -110,24 +205,31 @@ ObjAndPick Viewport::pick_render_object() const
     VisualObjectTreeDataVector renderVector;
     getPickerDataVector( SceneRoot::get(), id, renderVector );
 
-    return pick_render_object( renderVector );
+    return pickRenderObject( renderVector );
 }
 
 ObjAndPick Viewport::pick_render_object( const Vector2f& viewportPoint ) const
 {
     VisualObjectTreeDataVector renderVector;
     getPickerDataVector( SceneRoot::get(), id, renderVector );
-
-    return pick_render_object( renderVector, viewportPoint );
+    return pickRenderObject( renderVector, { .point = viewportPoint } );
 }
 
 ObjAndPick Viewport::pick_render_object( const std::vector<VisualObject*>& renderVector ) const
 {
-    auto& viewer = getViewerInstance();
-    const auto& mousePos = viewer.mouseController.getMousePos();
-    auto viewerPoint = viewer.screenToViewport(
-        Vector3f( float( mousePos.x ), float( mousePos.y ), 0.f ), id );
-    return pick_render_object( renderVector, Vector2f( viewerPoint.x, viewerPoint.y ) );
+    return pickRenderObject( renderVector );
+}
+
+ObjAndPick Viewport::pick_render_object( bool exactPickFirst ) const
+{
+    VisualObjectTreeDataVector renderVector;
+    getPickerDataVector( SceneRoot::get(), id, renderVector );
+    return pickRenderObject( renderVector, { .exactPickFirst = exactPickFirst } );
+}
+
+ObjAndPick Viewport::pick_render_object( const std::vector<VisualObject*>& renderVector, uint16_t pickRadius, bool exactPickFirst /* = true */ ) const
+{
+    return pickRenderObject( renderVector, { .pickRadius = pickRadius, .exactPickFirst = exactPickFirst } );
 }
 
 ObjAndPick Viewport::pick_render_object( const std::vector<VisualObject*>& renderVector, const Vector2f& viewportPoint ) const
@@ -135,16 +237,13 @@ ObjAndPick Viewport::pick_render_object( const std::vector<VisualObject*>& rende
     return multiPickObjects( renderVector, {viewportPoint} ).front();
 }
 
-std::vector<ObjAndPick> Viewport::multiPickObjects( const std::vector<VisualObject*>& renderVector, const std::vector<Vector2f>& viewportPoints ) const
+std::vector<ObjAndPick> Viewport::multiPickObjects( std::span<VisualObject* const> renderVector, const std::vector<Vector2f>& viewportPoints, const BaseRenderParams* overrideRenderParams ) const
 {
     MR_TIMER;
     if ( viewportPoints.empty() )
         return {};
     std::vector<Vector2i> picks( viewportPoints.size() );
-    ViewportGL::PickParameters params{
-        renderVector,
-        {viewM_,projM_,toVec4<int>( viewportRect_ )},
-        params_.clippingPlane,id};
+    ViewportGL::PickParameters params{ renderVector, overrideRenderParams ? *overrideRenderParams : getBaseRenderParams(), params_.clippingPlane };
 
     for ( int i = 0; i < viewportPoints.size(); ++i )
         picks[i] = Vector2i( viewportPoints[i] );
@@ -154,33 +253,40 @@ std::vector<ObjAndPick> Viewport::multiPickObjects( const std::vector<VisualObje
     if ( width( viewportRect_ ) == 0 || height( viewportRect_ ) == 0 )
         return result;
 
+    bool needBindSceneTexture = getViewerInstance().isSceneTextureBound();
     auto pickResult = viewportGL_.pickObjects( params, picks );
+    if ( needBindSceneTexture )
+        getViewerInstance().bindSceneTexture( true );
+
     for ( int i = 0; i < pickResult.size(); ++i )
     {
         auto& pickRes = pickResult[i];
         if ( pickRes.geomId == -1 || pickRes.primId == -1 )
             continue;
 
-        PointOnFace res;
-        res.face = FaceId( int( pickRes.primId ) );
-#ifndef __EMSCRIPTEN__
+        PointOnObject res;
+        res.primId = int( pickRes.primId );
+        res.zBuffer = pickRes.zBuffer;
+#ifndef MRVIEWER_NO_VOXELS
         auto voxObj = renderVector[pickRes.geomId]->asType<ObjectVoxels>();
         if ( voxObj && voxObj->isVolumeRenderingEnabled() )
         {
-            res.point = renderVector[pickRes.geomId]->worldXf( id ).inverse()( 
+            res.point = renderVector[pickRes.geomId]->worldXf( id ).inverse()(
                 unprojectFromViewportSpace( Vector3f( viewportPoints[i].x, viewportPoints[i].y, pickRes.zBuffer ) ) );
-            // TODO: support VoxelId (PointOnFace is old class that requires rework)
+            // TODO: support VoxelId
         }
         else
 #endif
         if ( auto pointObj = renderVector[pickRes.geomId]->asType<ObjectPointsHolder>() )
         {
+            res.primId = int( pickRes.primId ) * pointObj->getRenderDiscretization();
             if ( auto pc = pointObj->pointCloud() )
             {
-                auto vid = VertId( int( pickRes.primId ) );
-                if ( !pc->validPoints.test( vid ) )
-                    continue;
-                res.point = pc->points[vid];
+                VertId vid( res.primId );
+                if ( pc->validPoints.test( vid ) )
+                    res.point = pc->points[vid];
+                else
+                    res.primId = -1;
             }
             else
             {
@@ -214,21 +320,11 @@ std::vector<ObjAndPick> Viewport::multiPickObjects( const std::vector<VisualObje
                 }
             }
         }
-        if ( auto parent = renderVector[pickRes.geomId]->parent() )
-        {
-            for ( auto& child : parent->children() )
-                if ( child.get() == renderVector[pickRes.geomId] )
-                {
-                    result[i] = {std::dynamic_pointer_cast<VisualObject>( child ),res};
-                    continue;
-                }
-        }
         else
         {
-            // object is not in scene
-            assert( false );
-            continue;
+            res.point = renderVector[pickRes.geomId]->worldXf( id ).inverse()( unprojectFromViewportSpace( Vector3f( viewportPoints[i].x, viewportPoints[i].y, pickRes.zBuffer ) ) );
         }
+        result[i] = { std::dynamic_pointer_cast<VisualObject>( renderVector[pickRes.geomId]->getSharedPtr() ),res };
     }
     return result;
 }
@@ -241,32 +337,20 @@ std::vector<std::shared_ptr<MR::VisualObject>> Viewport::findObjectsInRect( cons
     VisualObjectTreeDataVector renderVector;
     getPickerDataVector( SceneRoot::get(), id, renderVector );
 
-    ViewportGL::PickParameters params{
-        renderVector,
-        {viewM_,projM_,toVec4<int>( viewportRect_ )},
-        params_.clippingPlane,id };
+    ViewportGL::PickParameters params{ renderVector, getBaseRenderParams(), params_.clippingPlane };
 
     auto viewportRect = Box2i( Vector2i( 0, 0 ), Vector2i( int( width( viewportRect_ ) ), int( height( viewportRect_ ) ) ) );
     auto pickResult = viewportGL_.findUniqueObjectsInRect( params, rect.intersection( viewportRect ), maxRenderResolutionSide );
     std::vector<std::shared_ptr<VisualObject>> result( pickResult.size() );
     for ( int i = 0; i < pickResult.size(); ++i )
     {
-        if ( auto parent = renderVector[pickResult[i]]->parent() )
-        {
-            for ( auto& child : parent->children() )
-            {
-                if ( child.get() == renderVector[pickResult[i]] )
-                {
-                    result[i] = std::dynamic_pointer_cast< VisualObject >( child );
-                }
-            }
-        }
+        result[i] = std::dynamic_pointer_cast<VisualObject>( renderVector[pickResult[i]]->getSharedPtr() );
     }
 
     return result;
 }
 
-std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> Viewport::findVisibleFaces( const BitSet& includePixBs, 
+std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> Viewport::findVisibleFaces( const BitSet& includePixBs,
     int maxRenderResolutionSide /*= 512 */ ) const
 {
     MR_TIMER;
@@ -274,10 +358,7 @@ std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> Viewport::fi
     VisualObjectTreeDataVector renderVector;
     getPickerDataVector( SceneRoot::get(), id, renderVector );
 
-    ViewportGL::PickParameters params{
-        renderVector,
-        { viewM_,projM_,toVec4<int>( viewportRect_ ) },
-            params_.clippingPlane, id };
+    ViewportGL::PickParameters params{ renderVector, getBaseRenderParams(), params_.clippingPlane };
 
     int width = int( MR::width( viewportRect_ ) );
     int height = int( MR::height( viewportRect_ ) );
@@ -291,9 +372,13 @@ std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> Viewport::fi
     for ( const auto& box : tlBoxes )
         rect.include( box );
 
+
+    bool needBindSceneTexture = getViewerInstance().isSceneTextureBound();
     auto viewportRect = Box2i( Vector2i( 0, 0 ), Vector2i( width, height ) );
     auto realRect = rect.intersection( viewportRect );
     auto [pickResult, updatedBox] = viewportGL_.pickObjectsInRect( params, realRect, maxRenderResolutionSide );
+    if ( needBindSceneTexture )
+        getViewerInstance().bindSceneTexture( true );
 
     std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> resMap;
 
@@ -306,7 +391,7 @@ std::unordered_map<std::shared_ptr<MR::ObjectMesh>, MR::FaceBitSet> Viewport::fi
         Vector2i coord = realRect.min + Vector2i( mult( downscaledPosRatio, Vector2f( realRect.size() ) ) );
         assert( coord.x < width );
         assert( coord.y < height );
-        
+
         int realId = coord.x + coord.y * width;
         if ( !includePixBs.test( realId ) )
             continue;
@@ -349,8 +434,7 @@ ConstObjAndPick Viewport::const_pick_render_object() const
 
 ConstObjAndPick Viewport::const_pick_render_object( const std::vector<const VisualObject*>& objects ) const
 {
-    // not to duplicate code
-    return pick_render_object( reinterpret_cast<const std::vector<VisualObject*>&> ( objects ) );
+    return pickRenderObjectConst( objects );
 }
 
 std::vector<ConstObjAndPick> Viewport::constMultiPickObjects( const std::vector<const VisualObject*>& objects, const std::vector<Vector2f>& viewportPoints ) const
@@ -362,47 +446,17 @@ std::vector<ConstObjAndPick> Viewport::constMultiPickObjects( const std::vector<
     return res;
 }
 
-const ViewportPointsWithColors& Viewport::getPointsWithColors() const
-{
-    return viewportGL_.getPointsWithColors();
-}
-
-const ViewportLinesWithColors& Viewport::getLinesWithColors() const
-{
-    return viewportGL_.getLinesWithColors();
-}
-
-void Viewport::setPointsWithColors( const ViewportPointsWithColors& pointsWithColors )
-{
-    if ( beforeSetPointsWithColors )
-        beforeSetPointsWithColors( getPointsWithColors(), pointsWithColors );
-    viewportGL_.setPointsWithColors( pointsWithColors );
-}
-
-void Viewport::setLinesWithColors( const ViewportLinesWithColors& linesWithColors )
-{
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    if ( beforeSetLinesWithColors )
-        beforeSetLinesWithColors( getLinesWithColors(), linesWithColors );
-    MR_SUPPRESS_WARNING_POP
-    viewportGL_.setLinesWithColors( linesWithColors );
-}
-
 void Viewport::setupView()
 {
     setupViewMatrix_();
     setupProjMatrix_();
-    setupStaticProjMatrix_();
+    setupAxesProjMatrix_();
 }
 
 void Viewport::preDraw()
 {
     if ( !viewportGL_.checkInit() )
         viewportGL_.init();
-    if( previewLinesDepthTest_ )
-        draw_lines();
-    if( previewPointsDepthTest_ )
-        draw_points();
     draw_rotation_center();
     draw_global_basis();
 }
@@ -412,13 +466,8 @@ void Viewport::postDraw() const
     draw_border();
     draw_clipping_plane();
 
-    if( !previewLinesDepthTest_ )
-        draw_lines();
-    if( !previewPointsDepthTest_ )
-        draw_points();
-
     // important to be last
-    draw_axes();
+    drawAxesAndViewController();
 }
 
 void Viewport::updateSceneBox_()
@@ -426,16 +475,16 @@ void Viewport::updateSceneBox_()
     sceneBox_ = SceneRoot::get().getWorldTreeBox( id );
 }
 
-void Viewport::setViewportRect( const Viewport::ViewportRectangle& rect )
+void Viewport::setViewportRect( const ViewportRectangle& rect )
 {
     if ( rect == viewportRect_ )
         return;
     needRedraw_ = true;
     viewportRect_ = rect;
-    init_axes();
+    initBaseAxes();
 }
 
-const Viewport::ViewportRectangle& Viewport::getViewportRect() const
+const ViewportRectangle& Viewport::getViewportRect() const
 {
     return viewportRect_;
 }
@@ -452,7 +501,7 @@ void Viewport::setBackgroundColor( const Color& color )
 {
     if ( params_.backgroundColor == color )
         return;
-    params_.backgroundColor = color; 
+    params_.backgroundColor = color;
     needRedraw_ = true;
 }
 
@@ -460,12 +509,20 @@ void Viewport::setClippingPlane( const Plane3f& plane )
 {
     if ( params_.clippingPlane == plane )
         return;
-    params_.clippingPlane = plane; 
+    params_.clippingPlane = plane;
+    needRedraw_ = true;
+}
+
+void Viewport::setLabel( std::string s )
+{
+    params_.label = std::move( s );
     needRedraw_ = true;
 }
 
 void Viewport::showAxes( bool on )
 {
+    if ( !Viewer::constInstance()->basisAxes )
+        return;
     Viewer::constInstance()->basisAxes->setVisible( on, id );
     needRedraw_ |= Viewer::constInstance()->basisAxes->getRedrawFlag( id );
     Viewer::constInstance()->basisAxes->resetRedrawFlag();
@@ -473,6 +530,8 @@ void Viewport::showAxes( bool on )
 
 void Viewport::showClippingPlane( bool on )
 {
+    if ( !Viewer::constInstance()->clippingPlaneObject )
+        return;
     Viewer::constInstance()->clippingPlaneObject->setVisible( on, id );
     needRedraw_ |= Viewer::constInstance()->clippingPlaneObject->getRedrawFlag( id );
     Viewer::constInstance()->clippingPlaneObject->resetRedrawFlag();
@@ -480,6 +539,8 @@ void Viewport::showClippingPlane( bool on )
 
 void Viewport::showRotationCenter( bool on )
 {
+    if ( !Viewer::constInstance()->rotationSphere )
+        return;
     Viewer::constInstance()->rotationSphere->setVisible( on, id );
 }
 
@@ -493,6 +554,8 @@ void Viewport::rotationCenterMode( Parameters::RotationCenterMode mode )
 
 void Viewport::showGlobalBasis( bool on )
 {
+    if ( !Viewer::constInstance()->globalBasisAxes )
+        return;
     Viewer::constInstance()->globalBasisAxes->setVisible( on, id );
     needRedraw_ |= Viewer::constInstance()->globalBasisAxes->getRedrawFlag( id );
     Viewer::constInstance()->globalBasisAxes->resetRedrawFlag();
@@ -506,16 +569,26 @@ void Viewport::setParameters( const Viewport::Parameters& params )
     needRedraw_ = true;
 }
 
-void Viewport::set_axes_size( const int axisPixSize )
+void Viewport::setAxesSize( const int axisPixSize )
 {
     if ( axisPixSize == axisPixSize_ )
         return;
     needRedraw_ = true;
     axisPixSize_ = axisPixSize;
-    init_axes();
+    initBaseAxes();
 }
 
-void Viewport::set_axes_pose( const int pixelXoffset, const int pixelYoffset )
+const Vector2f& Viewport::getAxesPosition() const
+{
+    return basisAxesPos_;
+}
+
+float Viewport::getAxesSize() const
+{
+    return basisAxesSize_;
+}
+
+void Viewport::setAxesPos( const int pixelXoffset, const int pixelYoffset )
 {
     if ( pixelXoffset_ == pixelXoffset &&
          pixelYoffset_ == pixelYoffset )
@@ -523,65 +596,78 @@ void Viewport::set_axes_pose( const int pixelXoffset, const int pixelYoffset )
     needRedraw_ = true;
     pixelXoffset_ = pixelXoffset;
     pixelYoffset_ = pixelYoffset;
-    init_axes();
+    initBaseAxes();
 }
 
 // ================================================================
 // GL functions part
 
-void Viewport::draw_points( void ) const
-{
-    ViewportGL::RenderParams params{getBaseRenderParams()};
-    params.cameraZoom = params_.cameraZoom;
-    params.zOffset = pointsZoffset;
-    params.depthTest = previewPointsDepthTest_;
-    params.width = point_size;
-
-    viewportGL_.drawPoints( params );
-}
-
 void Viewport::draw_border() const
-{    
-    viewportGL_.drawBorder( getBaseRenderParams(), params_.borderColor );
+{
+    viewportGL_.drawBorder( viewportRect_, params_.borderColor );
 }
 
 // ================================================================
 // additional elements
 
-void Viewport::init_axes()
+void Viewport::initBaseAxes()
 {
     // find relative points for axes
+    auto scaling = 1.0f;
+    if ( auto menu = getViewerInstance().getMenuPlugin() )
+        scaling = menu->menu_scaling();
     float axesX, axesY;
     if(pixelXoffset_ < 0)
-        axesX = width( viewportRect_ ) + pixelXoffset_;
+        axesX = width( viewportRect_ ) + pixelXoffset_ * scaling;
     else
-        axesX = float(pixelXoffset_);
+        axesX = float( pixelXoffset_ * scaling );
     if(pixelYoffset_ < 0)
-        axesY = height( viewportRect_ ) + pixelYoffset_;
+        axesY = height( viewportRect_ ) + pixelYoffset_ * scaling;
     else
-        axesY = float(pixelYoffset_);
-    const float pixSize = float(axisPixSize_) / sqrtf(2);
-    relPoseBase = { axesX, axesY, 0.5f };
-    relPoseSide = { axesX + pixSize, axesY + pixSize, 0.5f };
+        axesY = float( pixelYoffset_ * scaling );
+    const float pixSize = float( axisPixSize_ * scaling ) / sqrtf( 2 );
+    basisAxesPos_ = { axesX, axesY };
+    basisAxesSize_ = pixSize;
 }
 
-void Viewport::draw_axes() const
+void Viewport::drawAxesAndViewController() const
 {
-    if ( Viewer::constInstance()->basisAxes->isVisible( id ) )
+    bool basisVisible = getViewerInstance().basisAxes->isVisible( id );
+    bool controllerVisible = getViewerInstance().basisViewController->isVisible( id );
+    if ( basisVisible || controllerVisible )
     {
         // compute inverse in double precision to avoid NaN for very small scales
-        auto fullInversedM = Matrix4f( ( Matrix4d( staticProj_ ) * Matrix4d( viewM_ ) ).inverse() );
-        auto transBase = fullInversedM( viewportSpaceToClipSpace( relPoseBase ) );
-        auto transSide = fullInversedM( viewportSpaceToClipSpace( relPoseSide ) );
+        auto fullInversedM = Matrix4f( ( Matrix4d( axesProjMat_ ) * Matrix4d( viewM_ ) ).inverse() );
+        auto pos = to3dim( basisAxesPos_ ); pos.z = 0.5f;
+        auto transBase = fullInversedM( viewportSpaceToClipSpace( pos ) );
+        auto transSide = fullInversedM( viewportSpaceToClipSpace( pos + to3dim( Vector2f::diagonal( basisAxesSize_ ) ) ) );
 
         float scale = (transSide - transBase).length();
         const auto basisAxesXf = AffineXf3f( Matrix3f::scale( scale ), transBase );
-        draw( *Viewer::constInstance()->basisAxes, basisAxesXf, staticProj_, DepthFuncion::Always );
-        draw( *Viewer::constInstance()->basisAxes, basisAxesXf, staticProj_ );
-        for ( const auto& child : getViewerInstance().basisAxes->children() )
+        if ( basisVisible )
         {
-            if ( auto visualChild = child->asType<VisualObject>() )
-                draw( *visualChild, basisAxesXf, staticProj_ );
+            getViewerInstance().basisAxes->setXf( basisAxesXf, id );
+            draw( *getViewerInstance().basisAxes, basisAxesXf, axesProjMat_, DepthFunction::Always );
+            for ( const auto& child : getViewerInstance().basisAxes->children() )
+            {
+                if ( auto visualChild = child->asType<VisualObject>() )
+                    draw( *visualChild, basisAxesXf, axesProjMat_, DepthFunction::Always );
+            }
+        }
+        if ( controllerVisible )
+        {
+            getViewerInstance().basisViewController->setXf( basisAxesXf, id );
+            draw( *getViewerInstance().basisViewController, basisAxesXf, axesProjMat_, DepthFunction::Always );
+            draw( *getViewerInstance().basisViewController, basisAxesXf, axesProjMat_ );
+        }
+        if ( basisVisible )
+        {
+            draw( *getViewerInstance().basisAxes, basisAxesXf, axesProjMat_ );
+            for ( const auto& child : getViewerInstance().basisAxes->children() )
+            {
+                if ( auto visualChild = child->asType<VisualObject>() )
+                    draw( *visualChild, basisAxesXf, axesProjMat_ );
+            }
         }
     }
 }
@@ -600,134 +686,19 @@ void Viewport::draw_clipping_plane() const
 
 void Viewport::draw_global_basis() const
 {
-    if ( !Viewer::instance()->globalBasisAxes->isVisible( id ) )
+    auto& viewer = getViewerInstance();
+    if ( !viewer.globalBasisAxes->isVisible( id ) )
         return;
 
-    draw( *Viewer::constInstance()->globalBasisAxes, params_.globalBasisAxesXf() );
-}
-
-void Viewport::draw_lines( void ) const
-{
-    ViewportGL::RenderParams params{getBaseRenderParams()};
-    params.cameraZoom = params_.cameraZoom;
-    params.zOffset = linesZoffset;
-    params.depthTest = previewLinesDepthTest_;
-    params.width = line_width;
-
-    viewportGL_.drawLines( params );
-}
-
-void  Viewport::add_line( const Vector3f& start_pos, const Vector3f& fin_pos,
-                                 const Color& color_start, const Color& color_fin )
-{
-    auto [newLines, newColors] = viewportGL_.getLinesWithColors();
-    newLines.push_back( { start_pos, fin_pos } );
-    newColors.push_back( { Vector4f( color_start ),Vector4f( color_fin ) } );
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    setLinesWithColors( { newLines,newColors } );
-    MR_SUPPRESS_WARNING_POP
-    needRedraw_ = viewportGL_.lines_dirty;
-}
-
-void Viewport::add_lines( const std::vector<Vector3f>& points, const std::vector<Color>& colorsArg )
-{
-    if ( points.size() < 2 )
-        return;
-    auto lc = viewportGL_.getLinesWithColors();
-    auto& newLines = lc.lines;
-    auto& newColors = lc.colors;
-
-    auto oldSize = newLines.size();
-    newLines.resize( oldSize + ( points.size() - 1 ) );
-    newColors.resize( newLines.size() );
-    tbb::parallel_for( tbb::blocked_range<size_t>( 0, points.size() - 1 ),
-        [&] ( const tbb::blocked_range<size_t>& range )
+    if ( params_.globalBasisScaleMode == Parameters::GlobalBasisScaleMode::Auto )
+        viewer.globalBasisAxes->setXf( AffineXf3f::linear( Matrix3f::scale( params_.objectScale * 0.5f ) ), id );
+    auto xf = viewer.globalBasisAxes->xf( id );
+    draw( *viewer.globalBasisAxes, xf );
+    for ( const auto& child : viewer.globalBasisAxes->children() )
     {
-        for ( size_t i = range.begin(); i < range.end(); ++i )
-        {
-            const auto& start_pos = points[i];
-            const auto& fin_pos = points[i + 1];
-            auto ind = oldSize + i;
-
-            newLines[ind] = LineSegm3f{ start_pos, fin_pos };
-            newColors[ind] = { Vector4f( colorsArg[i] ),Vector4f( colorsArg[i + 1] ) };
-        }
-    } );
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    setLinesWithColors( { newLines,newColors } );
-    MR_SUPPRESS_WARNING_POP
-    needRedraw_ = viewportGL_.lines_dirty;
-}
-
-void Viewport::add_lines( const std::vector<Vector3f>& points, const Color& color )
-{
-    std::vector<Color> colors( points.size(), color );
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    add_lines( points, colors );
-    MR_SUPPRESS_WARNING_POP
-}
-
-void  Viewport::remove_lines(  )
-{
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    setLinesWithColors( { {},{} } );
-    MR_SUPPRESS_WARNING_POP
-    needRedraw_ = viewportGL_.lines_dirty;
-}
-
-void  Viewport::add_point ( const Vector3f& pos, const Color& color )
-{
-    auto [newPoints, newColors] = viewportGL_.getPointsWithColors();
-    newPoints.push_back( pos );
-    newColors.push_back( Vector4f( color ) );
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 );
-    setPointsWithColors( { newPoints,newColors } );
-    MR_SUPPRESS_WARNING_POP
-    needRedraw_ = viewportGL_.points_dirty;
-} 
-
-void  Viewport::remove_points()
-{
-    MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
-    setPointsWithColors( { {},{} } );
-    MR_SUPPRESS_WARNING_POP
-    needRedraw_ = viewportGL_.points_dirty;
-}
-
-void Viewport::setPreviewLinesDepthTest( bool on )
-{
-    if ( previewLinesDepthTest_ == on )
-        return;
-    previewLinesDepthTest_ = on;
-    needRedraw_ = true;
-}
-
-void Viewport::setPreviewPointsDepthTest( bool on )
-{
-    if ( previewPointsDepthTest_ == on )
-        return;
-    previewPointsDepthTest_ = on;
-    needRedraw_ = true;
-}
-
-bool Viewport::Parameters::operator==( const Viewport::Parameters& other ) const
-{
-    return
-        backgroundColor == other.backgroundColor &&
-        lightPosition == other.lightPosition &&
-        cameraTrackballAngle == other.cameraTrackballAngle &&
-        cameraTranslation == other.cameraTranslation &&
-        cameraZoom == other.cameraZoom &&
-        cameraViewAngle == other.cameraViewAngle &&
-        cameraDnear == other.cameraDnear &&
-        cameraDfar == other.cameraDfar &&
-        depthTest == other.depthTest &&
-        orthographic == other.orthographic &&
-        objectScale == objectScale &&
-        borderColor == other.borderColor &&
-        clippingPlane == other.clippingPlane &&
-        rotationMode == other.rotationMode &&
-        selectable == other.selectable;
+        if ( auto visualChild = child->asType<VisualObject>() )
+            draw( *visualChild, xf );
+    }
 }
 
 }

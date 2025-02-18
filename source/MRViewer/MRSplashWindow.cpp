@@ -2,9 +2,10 @@
 #include "MRMesh/MRSystem.h"
 #include "MRGLMacro.h"
 #include "MRViewer.h"
-#include "MRMenu.h"
+#include "ImGuiMenu.h"
 #include "MRMesh/MRImage.h"
 #include "MRMesh/MRImageLoad.h"
+#include "MRMesh/MRSystemPath.h"
 #include "MRImGuiImage.h"
 #include "MRPch/MRSpdlog.h"
 #include <backends/imgui_impl_glfw.h>
@@ -12,6 +13,8 @@
 #include "imgui_fonts_droid_sans.h"
 #include "MRGladGlfw.h"
 #include "ImGuiHelpers.h"
+
+#include "MRIOExtras/MRPng.h"
 
 namespace MR
 {
@@ -172,7 +175,7 @@ void DefaultSplashWindow::setup_() const
 
 void DefaultSplashWindow::postInit_()
 {
-    auto imgRes = ImageLoad::fromPng( GetResourcesDirectory() / "MRSplash.png" );
+    auto imgRes = ImageLoad::fromPng( SystemPath::getResourcesDirectory() / "MRSplash.png" );
     if ( !imgRes )
     {
         spdlog::error( "No splash image found" );
@@ -228,7 +231,7 @@ bool DefaultSplashWindow::frame_( float /*scaling*/ )
     ImGui::Image( *splashImage_, availableSize );
     ImGui::SetCursorPos( ImVec2( ImGui::GetFrameHeight() * 3, availableSize.y - ImGui::GetFrameHeight() * 2 ) );
     ImGui::PushStyleColor( ImGuiCol_Text, Color( 90, 97, 105 ).getUInt32() );
-    ImGui::Text( "Copyright 2023, MeshInspector/MeshLib" );
+    ImGui::Text( "Copyright 2025, MeshInspector/MeshLib" );
     ImGui::SameLine( availableSize.x * 0.5f + ImGui::GetFrameHeight() * 4 );
     ImGui::Text( "%s", versionStr_.c_str() );
     ImGui::PopStyleColor();

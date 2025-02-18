@@ -1,7 +1,11 @@
 #include "MRStatePlugin.h"
 #include "MRMesh/MRString.h"
 #include "MRRibbonMenu.h"
-#include "MRViewer.h"
+#include "MRMesh/MRSystem.h"
+#include "MRCommandLoop.h"
+#include "MRMesh/MRConfig.h"
+#include "imgui.h"
+#include "imgui_internal.h"
 
 namespace MR
 {
@@ -22,7 +26,18 @@ StateBasePlugin::StateBasePlugin( std::string name, StatePluginTabs tab ):
     ViewerPlugin(),
     RibbonMenuItem( name )
 {
-    plugin_name = std::move( name );
+    CommandLoop::appendCommand( [this] ()
+    {
+        std::string name = this->name();
+        auto item = RibbonSchemaHolder::schema().items.find( name );
+        if ( item != RibbonSchemaHolder::schema().items.end() )
+        {
+            if ( !item->second.caption.empty() )
+                name = item->second.caption;
+        }
+        plugin_name = std::move( name );
+        plugin_name += UINameSuffix();
+    }, CommandLoop::StartPosition::AfterPluginInit );
     tab_ = tab;
 }
 
@@ -60,9 +75,8 @@ bool StateBasePlugin::enable( bool on )
     }
     if ( res )
     {
-        auto ribbonMenu = getViewerInstance().getMenuPluginAs<RibbonMenu>();
-        if ( ribbonMenu )
-            ribbonMenu->updateItemStatus( plugin_name );
+        if ( auto ribbonMenu = RibbonMenu::instance() )
+            ribbonMenu->updateItemStatus( name() );
     }
     return res;
 }
@@ -70,6 +84,20 @@ bool StateBasePlugin::enable( bool on )
 bool StateBasePlugin::dialogIsOpen() const
 {
     return dialogIsOpen_ && !shouldClose_(); // virtual call from IPluginCloseCheck
+}
+
+const char* StateBasePlugin::UINameSuffix()
+{
+    return "##CustomStatePlugin";
+}
+
+void StateBasePlugin::setUINameDeferred( std::string name )
+{
+    CommandLoop::appendCommand( [this, pn = std::move( name )] ()
+    {
+        plugin_name = pn;
+        plugin_name += UINameSuffix();
+    }, CommandLoop::StartPosition::AfterPluginInit );
 }
 
 StatePluginTabs  StateBasePlugin::getTab() const
@@ -90,8 +118,23 @@ void StateBasePlugin::shutdown()
 
 bool StateBasePlugin::checkStringMask( const std::string& mask ) const
 {
-    return ( findSubstringCaseInsensitive( plugin_name, mask ) != std::string::npos ) ||
+    return ( findSubstringCaseInsensitive( name(), mask) != std::string::npos ) ||
         ( findSubstringCaseInsensitive( getTooltip(), mask ) != std::string::npos );
+}
+
+bool StateBasePlugin::ImGuiBeginWindow_( ImGui::CustomStatePluginWindowParameters params )
+{
+    if ( !params.collapsed )
+        params.collapsed = &dialogIsCollapsed_;
+
+    if ( !params.helpBtnFn )
+    {
+        auto it = RibbonSchemaHolder::schema().items.find( name() );
+        if ( it != RibbonSchemaHolder::schema().items.end() && !it->second.helpLink.empty() )
+            params.helpBtnFn = [&] () { OpenLink( it->second.helpLink ); };
+    }
+
+    return BeginCustomStatePlugin( uiName().c_str(), &dialogIsOpen_, params );
 }
 
 std::string StateBasePlugin::getTooltip() const

@@ -1,6 +1,5 @@
 #pragma once
-#include "MRSceneStateCheck.h"
-#include "MRViewerEventsListener.h"
+#include "MRISceneStateCheck.h"
 #include <string>
 #include <memory>
 
@@ -8,8 +7,6 @@ namespace MR
 {
 
 using MenuItemsList = std::vector<std::string>;
-
-class Object;
 
 enum class RibbonItemType
 {
@@ -24,9 +21,7 @@ class RibbonMenuItem : virtual public ISceneStateCheck
 public:
     MR_DELETE_MOVE( RibbonMenuItem );
 
-    RibbonMenuItem( std::string name ) :
-        name_{ std::move( name ) }
-    {}
+    MRVIEWER_API RibbonMenuItem( std::string name );
 
     virtual ~RibbonMenuItem() = default;
     
@@ -38,6 +33,11 @@ public:
     virtual bool blocking() const { return false; }
 
     const std::string& name() const { return name_; }
+    
+    // can be overridden by some plugins with ui
+    // it is used for highlighting active and closing plugins by Esc key
+    // note that it is not RibbonSchema caption
+    virtual const std::string& uiName() const { return name_; }
 
     void setRibbonItemType( RibbonItemType type ) { type_ = type; }
 
@@ -52,7 +52,7 @@ public:
 
     // returns list of stored ribbon items to drop
     // !note that this function can be called each frame for opened drop list
-    virtual const DropItemsList& dropItems() const { return dropList_; };
+    virtual const DropItemsList& dropItems() const { return dropList_; }
 
     // return not-empty string with tooltip that shall replace the static tooltip from json
     virtual std::string getDynamicTooltip() const { return {}; }
@@ -60,27 +60,9 @@ public:
 protected:
     RibbonItemType type_{ RibbonItemType::Button };
     DropItemsList dropList_;
+
 private:
     std::string name_; // key to find in holder and json
 };
 
-// Simple ribbon item acting given lambda
-class LambdaRibbonItem : public RibbonMenuItem
-{
-public:
-    using SimpleLambda = std::function<void()>;
-    LambdaRibbonItem( std::string name, SimpleLambda lambda ) :
-        RibbonMenuItem( std::move( name ) ),
-        lambda_( std::move( lambda ) )
-    {}
-
-    virtual bool action() override
-    {
-        lambda_();
-        return false;
-    }
-private:
-    SimpleLambda lambda_;
-};
-
-}
+} // namespace MR

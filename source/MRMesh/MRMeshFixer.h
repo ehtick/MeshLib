@@ -17,8 +17,8 @@ namespace MR
 MRMESH_API int duplicateMultiHoleVertices( Mesh & mesh );
 
 /// finds multiple edges in the mesh
-using MultipleEdge = std::pair<VertId, VertId>;
-[[nodiscard]] MRMESH_API Expected<std::vector<MultipleEdge>, std::string> findMultipleEdges( const MeshTopology & topology, ProgressCallback cb = {} );
+using MultipleEdge = VertPair;
+[[nodiscard]] MRMESH_API Expected<std::vector<MultipleEdge>> findMultipleEdges( const MeshTopology & topology, ProgressCallback cb = {} );
 [[nodiscard]] inline bool hasMultipleEdges( const MeshTopology & topology ) { return !findMultipleEdges( topology ).value().empty(); }
 
 /// resolves given multiple edges, but splitting all but one edge in each group
@@ -27,10 +27,10 @@ MRMESH_API void fixMultipleEdges( Mesh & mesh, const std::vector<MultipleEdge> &
 MRMESH_API void fixMultipleEdges( Mesh & mesh );
 
 /// finds faces having aspect ratio >= criticalAspectRatio
-[[nodiscard]] MRMESH_API Expected<FaceBitSet, std::string> findDegenerateFaces( const MeshPart& mp, float criticalAspectRatio = FLT_MAX, ProgressCallback cb = {} );
+[[nodiscard]] MRMESH_API Expected<FaceBitSet> findDegenerateFaces( const MeshPart& mp, float criticalAspectRatio = FLT_MAX, ProgressCallback cb = {} );
 
 /// finds edges having length <= criticalLength
-[[nodiscard]] MRMESH_API Expected<UndirectedEdgeBitSet, std::string> findShortEdges( const MeshPart& mp, float criticalLength, ProgressCallback cb = {} );
+[[nodiscard]] MRMESH_API Expected<UndirectedEdgeBitSet> findShortEdges( const MeshPart& mp, float criticalLength, ProgressCallback cb = {} );
 
 /// finds vertices in region with complete ring of N edges
 [[nodiscard]] MRMESH_API VertBitSet findNRingVerts( const MeshTopology& topology, int n, const VertBitSet* region = nullptr );
@@ -61,6 +61,18 @@ MRMESH_API EdgeId eliminateDegree3Dest( MeshTopology& topology, EdgeId e, FaceBi
 /// if \param fs is provided then eliminated triangles are excluded from it;
 /// \return the number of vertices eliminated
 MRMESH_API int eliminateDegree3Vertices( MeshTopology& topology, VertBitSet & region, FaceBitSet * fs = nullptr );
+
+/// if given vertex is present on the boundary of some hole several times then returns an edge of this hole (without left);
+/// returns invalid edge otherwise (not a boundary vertex, or it is present only once on the boundary of each hole it pertains to)
+[[nodiscard]] MRMESH_API EdgeId isVertexRepeatedOnHoleBd( const MeshTopology& topology, VertId v );
+
+/// returns set bits for all vertices present on the boundary of a hole several times;
+[[nodiscard]] MRMESH_API VertBitSet findRepeatedVertsOnHoleBd( const MeshTopology& topology );
+
+/// returns all faces that complicate one of mesh holes;
+/// hole is complicated if it passes via one vertex more than once;
+/// deleting such faces simplifies the holes and makes them easier to fill
+[[nodiscard]] MRMESH_API FaceBitSet findHoleComplicatingFaces( const Mesh & mesh );
 
 /// \}
 

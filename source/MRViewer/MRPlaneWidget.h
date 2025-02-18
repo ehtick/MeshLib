@@ -1,7 +1,9 @@
 #pragma once
+
+#include "MRViewerEventsListener.h"
 #include "MRMesh/MRBox.h"
 #include "MRMesh/MRPlane3.h"
-#include "MRViewer/MRViewer.h"
+#include "MRMesh/MRVector2.h"
 
 namespace MR
 {
@@ -22,6 +24,7 @@ class MRVIEWER_CLASS PlaneWidget : public MultiListener<MouseDownListener, Mouse
     OnPlaneUpdateCallback onPlaneUpdate_;
 
     bool pressed_ = false;
+    bool showPlaneByDefault_ = true;
     Vector2f startMousePos_;
     Vector2f endMousePos_;
 
@@ -63,11 +66,16 @@ public:
     // sets the flag importPlaneMode_, if it is true you can use a plain object from the scene
     MRVIEWER_API void setImportPlaneMode( bool val );
 
+    // returns the flag that is true if the plane is shown by default
+    bool getShowPlaneByDefault() const { return showPlaneByDefault_; }
+    // sets the flag that is true if the plane is shown by default
+    void setShowPlaneByDefault( bool val ) { showPlaneByDefault_ = val; }
+
 private:
     MRVIEWER_API void updateWidget_( bool updateCameraRotation = true );
 
-    MRVIEWER_API virtual bool onMouseDown_( Viewer::MouseButton button, int modifier ) override;
-    MRVIEWER_API virtual bool onMouseUp_( Viewer::MouseButton button, int modifier ) override;
+    MRVIEWER_API virtual bool onMouseDown_( MouseButton button, int modifier ) override;
+    MRVIEWER_API virtual bool onMouseUp_( MouseButton button, int modifier ) override;
     MRVIEWER_API virtual bool onMouseMove_( int mouse_x, int mouse_y ) override;
 };
 }

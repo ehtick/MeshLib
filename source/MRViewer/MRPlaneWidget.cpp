@@ -1,4 +1,7 @@
 #include "MRPlaneWidget.h"
+#include "MRMouseController.h"
+#include "MRViewport.h"
+#include "MRViewer.h"
 #include "MRMesh/MR2to3.h"
 #include "MRMesh/MRSceneColors.h"
 #include "MRMesh/MRObjectsAccess.h"
@@ -8,6 +11,8 @@
 #include "MRMesh/MRObjectMesh.h"
 #include "MRMesh/MRObjectLines.h"
 #include "MRMesh/MRPlaneObject.h"
+#include "MRMesh/MRSceneRoot.h"
+#include "MRMesh/MRPolyline.h"
 #include "imgui_internal.h"
 
 namespace MR
@@ -43,6 +48,7 @@ void PlaneWidget::definePlane()
     planeObj_->setVisualizeProperty( true, MeshVisualizePropertyType::BordersHighlight, ViewportMask::all() );
     planeObj_->setFrontColor( Color::gray(), false );
     planeObj_->setBackColor( Color::gray() );
+    planeObj_->setVisible( showPlaneByDefault_ );
     SceneRoot::get().addChild( planeObj_ );
 
     updateWidget_();
@@ -50,6 +56,13 @@ void PlaneWidget::definePlane()
 
 void PlaneWidget::undefinePlane()
 {
+    if ( line_ )
+    {
+        line_->detachFromParent();
+        line_.reset();
+        pressed_ = false;
+    }
+
     if ( !planeObj_ )
         return;
     
@@ -139,14 +152,13 @@ bool PlaneWidget::onMouseDown_( Viewer::MouseButton button, int mod )
         plane_ = Plane3f::fromDirAndPt( planeObj->getNormal(), planeObj->getCenter() );
         definePlane();
         updatePlane( plane_ );
-        if ( isInLocalMode() )
-            setLocalMode( 0.0f );
+        setLocalMode( true );
         importPlaneMode_ = false;
         return true;
     }
 
     
-    const auto& mousePos = viewer->mouseController.getMousePos();
+    const auto& mousePos = viewer->mouseController().getMousePos();
     startMousePos_ = endMousePos_ = Vector2f( float ( mousePos.x ), float ( mousePos.y ) );
     pressed_ = true;
 

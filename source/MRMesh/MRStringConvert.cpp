@@ -2,22 +2,36 @@
 #include <codecvt>
 #include <locale>
 #include "MRPch/MRSpdlog.h"
-#ifdef _WIN32
-#include "windows.h"
-#endif
+
+#include "MRPch/MRWinapi.h"
 
 namespace MR
 {
 
 std::wstring utf8ToWide( const char* utf8 )
 {
-#if defined(__APPLE__) && defined(__clang__)
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__) && defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
     return converter.from_bytes( utf8 );
-#if defined(__APPLE__) && defined(__clang__)
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+}
+
+std::string wideToUtf8( const wchar_t * wide )
+{
+    if ( !wide )
+        return {};
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> conv;
+    return conv.to_bytes( wide );
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__) && defined(__clang__)
 #pragma clang diagnostic pop
 #endif
 }
@@ -25,9 +39,9 @@ std::wstring utf8ToWide( const char* utf8 )
 #ifdef _WIN32
 std::string Utf16ToUtf8( const std::wstring_view & utf16 )
 {
-    std::string u8msg;
-    u8msg.resize( 2 * utf16.size() + 1 );
-    auto res = WideCharToMultiByte( CP_UTF8, 0, utf16.data(), (int)utf16.size(), u8msg.data(), int( u8msg.size() ), NULL, NULL );
+    auto res = WideCharToMultiByte( CP_UTF8, 0, utf16.data(), ( int )utf16.size(), 0, 0, NULL, NULL );
+    std::string u8msg( res, '\0' );
+    res = WideCharToMultiByte( CP_UTF8, 0, utf16.data(), (int)utf16.size(), u8msg.data(), int( u8msg.size() ), NULL, NULL );
     if ( res == 0 )
     {
         spdlog::error( GetLastError() );
@@ -40,20 +54,42 @@ std::string Utf16ToUtf8( const std::wstring_view & utf16 )
 
 std::string systemToUtf8( const std::string & msg )
 {
+#ifdef _WIN32
     if ( msg.empty() )
         return msg;
-#ifdef _WIN32
+    auto rsize = MultiByteToWideChar( CP_ACP, MB_PRECOMPOSED, msg.data(), int( msg.size() ), nullptr, 0 );
     std::wstring wmsg;
-    wmsg.resize( msg.size() + 1 );
-    auto res = MultiByteToWideChar( CP_ACP, MB_PRECOMPOSED, msg.c_str(), -1, wmsg.data(), int( wmsg.size() ) );
-    if ( res == 0 )
+    wmsg.resize( size_t( rsize ) );
+    rsize = MultiByteToWideChar( CP_ACP, MB_PRECOMPOSED, msg.data(), int( msg.size() ), wmsg.data(), int( wmsg.size() ) );
+    if ( rsize == 0 )
     {
         spdlog::error( GetLastError() );
         return {};
     }
+    wmsg.resize( rsize );
     return Utf16ToUtf8( wmsg );
 #else
     return msg;
+#endif
+}
+
+std::string utf8ToSystem( const std::string & utf8 )
+{
+#ifdef _WIN32
+    auto utf16 = utf8ToWide( utf8.c_str() );
+    auto rsize = WideCharToMultiByte( CP_ACP, 0, utf16.data(), ( int )utf16.size(), NULL, 0, NULL, NULL );
+    std::string res( size_t ( rsize ), '\0' );
+    BOOL usedDefaultChar = FALSE;
+    rsize = WideCharToMultiByte( CP_ACP, 0, utf16.data(), (int)utf16.size(), res.data(), int( res.size() ), NULL, &usedDefaultChar );
+    if ( usedDefaultChar || rsize == 0 )
+    {
+        spdlog::error( GetLastError() );
+        return {};
+    }
+    res.resize( rsize );
+    return res;
+#else
+    return utf8;
 #endif
 }
 
@@ -83,6 +119,31 @@ std::string replaceProhibitedChars( const std::string& line, char replacement /*
         if ( c == '?' || c == '*' || c == '/' || c == '\\' || c == '"' || c == '<' || c == '>' )
             c = replacement;
     return res;
+}
+
+std::string commonFilesName( const std::vector<std::filesystem::path> & files )
+{
+    if ( files.empty() )
+        return "Empty";
+
+    auto getUpperExt = []( const std::filesystem::path & file )
+    {
+        auto ext = utf8string( file.extension() );
+        for ( auto& c : ext )
+            c = ( char )toupper( c );
+        return ext;
+    };
+
+    auto commonExt = getUpperExt( files[0] );
+    if ( files.size() == 1 )
+        return commonExt;
+
+    for ( int i = 1; i < files.size(); ++i )
+        if ( commonExt != getUpperExt( files[i] ) )
+            return "Files";
+
+    commonExt += 's';
+    return commonExt;
 }
 
 char * formatNoTrailingZeros( char * fmt, double v, int digitsAfterPoint, int precision )
@@ -132,6 +193,13 @@ double roundToPrecision( double v, int precision )
 #pragma warning(pop)
 
     return n >= 0 ? std::atof( buf ) : v;
+}
+
+std::string toLower( std::string str )
+{
+    for ( auto& ch : str )
+        ch = (char)std::tolower( ch );
+    return str;
 }
 
 }

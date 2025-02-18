@@ -1,5 +1,4 @@
 boost
-c-blosc
 cmake
 cpr
 fmt
@@ -7,7 +6,6 @@ gdcm
 glfw
 gtkmm3
 hidapi
-ilmbase
 jpeg-turbo
 jsoncpp
 libharu
@@ -15,9 +13,9 @@ libpng
 libsigc++
 libtiff
 libzip
-llvm@13
-openblas
-openexr
+llvm@14
+ninja
+opencascade
 openssl@3
 openvdb
 pkgconfig

@@ -1,6 +1,7 @@
 #include "MRDemoPlugin.h"
-#include "MRMenu.h"
-#include "MRMesh/MRUVSphere.h"
+#include "ImGuiMenu.h"
+#include "MRViewport.h"
+#include "MRMesh/MRMakeSphereMesh.h"
 #include "MRMesh/MRObjectMesh.h"
 #include "MRMesh/MRMesh.h"
 #include "MRRibbonButtonDrawer.h"
@@ -14,7 +15,7 @@ namespace MR
 
 void DemoPlugin::draw_()
 {
-    viewer->viewport().draw( *demoSphere_, demoSphere_->xf(), DepthFuncion::Always );
+    viewer->viewport().draw( *demoSphere_, demoSphere_->xf(), DepthFunction::Always );
     viewer->viewport().draw( *demoSphere_, demoSphere_->xf() );
 }
 

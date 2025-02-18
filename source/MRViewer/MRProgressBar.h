@@ -1,83 +1,76 @@
 #pragma once
-#include "MRFrameRedrawRequest.h"
-#include <imgui.h>
+
+#include "exports.h"
 #include <functional>
-#include <atomic>
-#include <thread>
+#include <string>
 
 namespace MR
 {
 
-// This class shows application progress bar for long operations
-// note! if class don't setup, then order and orderWithMainThreadPostProcessing methods call task directly
-class ProgressBar
+// Utilities to show application progress bar for long operations
+namespace ProgressBar
 {
-public:
-    using TaskWithMainThreadPostProcessing = std::function< std::function<void()>() >;
-    // this function should be called only once for each frame (it is called in MR::Menu (MR::RibbonMenu))
-    MRVIEWER_API static void setup( float scaling );
 
-    // this shall be called in order to start concurrent task execution with progress bar display
-    MRVIEWER_API static void order(const char * name, const std::function<void()>& task, int taskCount = 1 );
+/// function that returns post-processing function to be called in main UI thread
+using TaskWithMainThreadPostProcessing = std::function< std::function<void()>() >;
 
-    // in this version the task returns a function to be executed in main thread
-    MRVIEWER_API static void orderWithMainThreadPostProcessing( const char* name, TaskWithMainThreadPostProcessing task, int taskCount = 1 );
+/// this function should be called only once for each frame (it is called in MR::Menu (MR::RibbonMenu))
+MRVIEWER_API  void setup( float scaling );
 
-    MRVIEWER_API static bool isCanceled();
+/// call this function on frame end
+MRVIEWER_API  void onFrameEnd();
 
-    MRVIEWER_API static bool isFinished();
+/// this shall be called in order to start concurrent task execution with progress bar display
+/// please call setup() first, otherwise this function just execute task directly
+MRVIEWER_API  void order(const char * name, const std::function<void()>& task, int taskCount = 1 );
 
-    MRVIEWER_API static float getProgress();
+/// in this version the task returns a function to be executed in main thread
+/// please call setup() first, otherwise this function just execute task directly
+MRVIEWER_API  void orderWithMainThreadPostProcessing( const char* name, TaskWithMainThreadPostProcessing task, int taskCount = 1 );
 
-    // sets the current progress and returns false if the user has pressed Cancel button
-    MRVIEWER_API static bool setProgress(float p);
+/// the task is spawned by the progress bar but the `finish` method is called from a callback
+/// please call setup() first, otherwise this function just execute task directly
+MRVIEWER_API  void orderWithManualFinish( const char * name, std::function<void ()> task, int taskCount = 1 );
 
-    MRVIEWER_API static void nextTask();
-    MRVIEWER_API static void nextTask(const char * s);
+MRVIEWER_API  bool isCanceled();
 
-    MRVIEWER_API static void setTaskCount( int n );
+MRVIEWER_API  bool isFinished();
 
-    // these callbacks allow canceling
-    MRVIEWER_API static bool callBackSetProgress(float p);
-    // these callbacks do not allow canceling
-    MRVIEWER_API static bool simpleCallBackSetProgress( float p );
-private:
-    static ProgressBar& instance_();
+MRVIEWER_API  float getProgress();
 
-    ProgressBar();
-    ~ProgressBar();
+/// returns time of last operation in seconds, returns -1.0f if no operation was performed
+MRVIEWER_API  float getLastOperationTime();
 
-    // cover task execution with try catch block (in release only)
-    // if catches exception shows error in main thread overriding user defined main thread post processing
-    void tryRunTask_();
-    void tryRunTaskWithSehHandler_();
+/// returns title of the last operation
+MRVIEWER_API  const std::string& getLastOperationTitle();
 
-    void finish_();
+/// sets the current progress and returns false if the user has pressed Cancel button
+MRVIEWER_API  bool setProgress(float p);
 
-    float progress_;
-    int currentTask_, taskCount_;
-    std::string taskName_, title_;
+MRVIEWER_API  void nextTask();
+MRVIEWER_API  void nextTask(const char * s);
 
-    FrameRedrawRequest frameRequest_;
+MRVIEWER_API  void setTaskCount( int n );
 
-    // parameter is needed for logging progress
-    std::atomic<int> percents_;
+/// set the current task's name without auto-updating progress value
+MRVIEWER_API  void forceSetTaskName( std::string taskName );
+MRVIEWER_API  void resetTaskName();
 
-    std::thread thread_;
-    TaskWithMainThreadPostProcessing task_;
-    std::function<void()> onFinish_;
+MRVIEWER_API  void finish();
 
-    // needed to be able to call progress bar from any point, not only from ImGui frame scope
-    std::function<void()> deferredProgressBar_;
+/// returns true if progress bar was ordered and not finished
+MRVIEWER_API  bool isOrdered();
 
-    std::atomic<bool> allowCancel_;
-    std::atomic<bool> canceled_;
-    std::atomic<bool> finished_;
-    ImGuiID setupId_ = ImGuiID( -1 );
+/// these callbacks allow canceling
+MRVIEWER_API  bool callBackSetProgress(float p);
 
-    bool isInit_{ false };
-    // this is needed to show full progress before closing
-    bool closeDialogNextFrame_{ false };
-};
+/// these callbacks do not allow canceling
+MRVIEWER_API  bool simpleCallBackSetProgress( float p );
 
-}
+/// prints time tree of progress bar thread
+/// \param minTimeSec omit printing records with time spent less than given value in seconds
+MRVIEWER_API  void printTimingTree( double minTimeSec = 0.1 );
+
+} //namespace ProgressBar
+
+} //namespace MR

@@ -6,23 +6,31 @@
 
 namespace MR
 {
-class RenderPointsObject : public IRenderObject
+class RenderPointsObject : public virtual IRenderObject
 {
 public:
     RenderPointsObject( const VisualObject& visObj );
     ~RenderPointsObject();
 
-    virtual void render( const RenderParams& params ) override;
-    virtual void renderPicker( const BaseRenderParams& params, unsigned geomId ) override;
+    virtual bool render( const ModelRenderParams& params ) override;
+    virtual void renderPicker( const ModelBaseRenderParams& params, unsigned geomId ) override;
     virtual size_t heapBytes() const override;
     virtual size_t glBytes() const override;
     virtual void forceBindAll() override;
 private:
     const ObjectPointsHolder* objPoints_;
 
+    int vertPosSize_{ 0 };
+    int vertNormalsSize_{ 0 };
+    int vertColorsSize_{ 0 };
     int validIndicesSize_{ 0 };
     Vector2i vertSelectionTextureSize_;
 
+    int cachedRenderDiscretization_{ 1 };
+
+    RenderBufferRef<Vector3f> loadVertPosBuffer_();
+    RenderBufferRef<Vector3f> loadVertNormalsBuffer_();
+    RenderBufferRef<Color> loadVertColorsBuffer_();
     RenderBufferRef<VertId> loadValidIndicesBuffer_();
     RenderBufferRef<unsigned> loadVertSelectionTextureBuffer_();
 
@@ -39,7 +47,7 @@ private:
 
     int maxTexSize_{ 0 };
 
-    void bindPoints_();
+    void bindPoints_( bool alphaSort );
     void bindPointsPicker_();
 
     // Create a new set of OpenGL buffer objects

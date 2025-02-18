@@ -12,6 +12,12 @@
 		"g": 0,
 		"r": 0
 	},
+	"Points": {
+		"a": 255,
+		"b": 0,
+		"g": 72,
+		"r": 246
+	},
 	"Labels": {
 		"a": 255,
 		"b": 255,
@@ -24,6 +30,12 @@
 			"b": 41,
 			"g": 37,
 			"r": 34
+		},
+		"BackgroundSecStyle": {
+			"a": 255,
+			"b": 58,
+			"g": 52,
+			"r": 48
 		},
 		"Borders": {
 			"a": 255,
@@ -115,6 +127,42 @@
 			"g": 99,
 			"r": 95
 		},
+		"DialogTab": {
+			"a": 255,
+			"b": 71,
+			"g": 67,
+			"r": 63
+		},
+		"DialogTabHovered": {
+			"a": 255,
+			"b": 135,
+			"g": 131,
+			"r": 127
+		},
+		"DialogTabActive": {
+			"a": 255,
+			"b": 20,
+			"g": 169,
+			"r": 60
+		},
+		"DialogTabActiveHovered": {
+			"a": 255,
+			"b": 84,
+			"g": 233,
+			"r": 124
+		},
+		"DialogTabText": {
+			"a": 255,
+			"b": 255,
+			"g": 255,
+			"r": 255
+		},
+		"DialogTabActiveText": {
+			"a": 255,
+			"b": 255,
+			"g": 255,
+			"r": 255
+		},
 		"ToolbarHovered": {
 			"a": 255,
 			"b": 90,
@@ -127,11 +175,11 @@
 			"g": 99,
 			"r": 95
 		},
-		"ToolbarCustomizeBg": {
+		"ModalBackground": {
 			"a": 255,
-			"b": 30,
-			"g": 30,
-			"r": 30
+			"b": 36,
+			"g": 31,
+			"r": 28
 		},
 		"Text": {
 			"a": 255,
@@ -218,6 +266,13 @@
 			"r": 0
 		},
 
+		"TextContrastBackground": {
+			"a": 0,
+			"b": 0,
+			"g": 0,
+			"r": 0
+		},
+
 		"GradBtnStart": {
 			"a": 255,
 			"b": 255,
@@ -271,6 +326,43 @@
 			"b": 255,
 			"g": 255,
 			"r": 255
+		},
+
+		"GradBtnSecStyleStart": {
+			"a": 255,
+			"b": 0,
+			"g": 206,
+			"r": 86
+		},
+		"GradBtnSecStyleHoverStart": {
+			"a": 255,
+			"b": 0,
+			"g": 229,
+			"r": 96
+		},
+		"GradBtnSecStyleActiveStart": {
+			"a": 255,
+			"b": 0,
+			"g": 239,
+			"r": 100
+		},
+		"GradBtnSecStyleEnd": {
+			"a": 255,
+			"b": 0,
+			"g": 141,
+			"r": 38
+		},
+		"GradBtnSecStyleHoverEnd": {
+			"a": 255,
+			"b": 0,
+			"g": 154,
+			"r": 42
+		},
+		"GradBtnSecStyleActiveEnd": {
+			"a": 255,
+			"b": 0,
+			"g": 171,
+			"r": 46
 		}
 	},
 	"Viewport Colors": {
@@ -304,6 +396,60 @@
 		"b": 52,
 		"g": 52,
 		"r": 204
+	},
+	"SelectedFeatures": {
+		"a": 255,
+		"b": 107,
+		"g": 40,
+		"r": 193
+	},
+	"UnselectedFeatures": {
+		"a": 255,
+		"b": 70,
+		"g": 128,
+		"r": 216
+	},
+	"FeatureBackFaces": {
+		"a": 255,
+		"b": 91,
+		"g": 124,
+		"r": 176
+	},
+	"SelectedFeatureDecorations": {
+		"a": 255,
+		"b": 192,
+		"g": 64,
+		"r": 255
+	},
+	"UnselectedFeatureDecorations": {
+		"a": 255,
+		"b": 192,
+		"g": 64,
+		"r": 255
+	},
+	"SelectedMeasurements": {
+		"a": 255,
+		"b": 240,
+		"g": 255,
+		"r": 50
+	},
+	"UnselectedMeasurements": {
+		"a": 255,
+		"b": 255,
+		"g": 255,
+		"r": 255
+	},
+	"SelectedTemporaryMeasurements": {
+		"a": 255,
+		"b": 255,
+		"g": 197,
+		"r": 0
+	},
+	"UnselectedTemporaryMeasurements": {
+		"a": 255,
+		"b": 0,
+		"g": 255,
+		"r": 27
 	},
 	"SelectedObjectMesh": {
 		"a": 255,

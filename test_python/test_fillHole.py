@@ -1,5 +1,5 @@
-from helper import *
 import pytest
+from helper import *
 
 
 def test_fill_hole():
@@ -12,7 +12,9 @@ def test_fill_hole():
     torus.topology.deleteFaces(faceBitSetToDelete)
 
     holes = torus.topology.findHoleRepresentiveEdges()
+    assert torus.holePerimiter(holes[0]) > 0.0
+    assert torus.holeDirArea(holes[0]).lengthSq() > 0.0
 
     mrmesh.fillHole(torus, holes[0])
 
-    assert (torus.topology.findHoleRepresentiveEdges().size() == 0)
+    assert torus.topology.findHoleRepresentiveEdges().size() == 0

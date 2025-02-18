@@ -9,17 +9,17 @@
 namespace MR
 {
 
-/// \defgroup SurfacePathGroup
-
-/// \defgroup EdgePathsGroup Edge Paths
 /// \ingroup SurfacePathGroup
 /// \{
 
 /// returns true if every next edge starts where previous edge ends
 [[nodiscard]] MRMESH_API bool isEdgePath( const MeshTopology & topology, const std::vector<EdgeId> & edges );
 
-/// Same as \ref isEdgePath, but start vertex coincide with finish vertex
+/// returns true if every next edge starts where previous edge ends, and start vertex coincides with finish vertex
 [[nodiscard]] MRMESH_API bool isEdgeLoop( const MeshTopology & topology, const std::vector<EdgeId> & edges );
+
+/// given a number of edge loops, splits every loop that passes via a vertex more than once on smaller loops without self-intersections
+[[nodiscard]] MRMESH_API std::vector<EdgeLoop> splitOnSimpleLoops( const MeshTopology & topology, std::vector<EdgeLoop> && loops );
 
 /// reverses the order of edges and flips each edge orientation, thus
 /// making the opposite directed edge path
@@ -137,6 +137,10 @@ MRMESH_API bool erodeRegion( const Mesh& mesh, UndirectedEdgeBitSet& region, flo
 /// finds all intersection points between given path and plane, adds them in outIntersections and returns their number
 MRMESH_API int getPathPlaneIntersections( const Mesh & mesh, const EdgePath & path, const Plane3f & plane,
     std::vector<MeshEdgePoint> * outIntersections = nullptr );
+
+/// finds all intersection points between given contour and plane, adds them in outIntersections and returns their number
+MRMESH_API int getContourPlaneIntersections( const Contour3f & path, const Plane3f & plane,
+    std::vector<Vector3f> * outIntersections = nullptr );
 
 /// finds all path edges located in given plane with given tolerance, adds them in outInPlaneEdges and returns their number
 MRMESH_API int getPathEdgesInPlane( const Mesh & mesh, const EdgePath & path, const Plane3f & plane, float tolerance = 0.0f,

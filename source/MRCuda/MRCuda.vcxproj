@@ -49,7 +49,7 @@
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>MRCUDA_EXPORT;WIN32;WIN64;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRCuda_EXPORTS;WIN32;WIN64;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -58,9 +58,8 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <Defines>
-      </Defines>
-      <AdditionalOptions>-std=c++17 -Xcompiler "/std:c++17" -Xcudafe "--diag_suppress=field_without_dll_interface" -Xcudafe "--diag_suppress=base_class_has_different_dll_interface" %(AdditionalOptions)</AdditionalOptions>
+      <Defines>_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</Defines>
+      <AdditionalOptions>-std=c++17 -Xcompiler "/std:c++17" -Xcudafe "--diag_suppress=field_without_dll_interface" -Xcudafe "--diag_suppress=base_class_has_different_dll_interface" -allow-unsupported-compiler %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -70,7 +69,7 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>MRCUDA_EXPORT;WIN32;WIN64;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MRCuda_EXPORTS;WIN32;WIN64;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -81,14 +80,16 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <Defines>
-      </Defines>
-      <AdditionalOptions>-std=c++17 -Xcompiler "/std:c++17" -Xcudafe "--diag_suppress=field_without_dll_interface" -Xcudafe "--diag_suppress=base_class_has_different_dll_interface" %(AdditionalOptions)</AdditionalOptions>
+      <Defines>_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</Defines>
+      <AdditionalOptions>-std=c++17 -Xcompiler "/std:c++17" -Xcudafe "--diag_suppress=field_without_dll_interface" -Xcudafe "--diag_suppress=base_class_has_different_dll_interface" -allow-unsupported-compiler %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="MRCudaFastWindingNumber.cu" />
+    <CudaCompile Include="MRCudaMeshDistanceMap.cu" />
+    <CudaCompile Include="MRCudaPointsToDistanceVolume.cu" />
     <CudaCompile Include="MRCudaPointsToMeshProjector.cu" />
+    <CudaCompile Include="MRCudaSolarRadiation.cu" />
     <CudaCompile Include="MRCudaTest.cu" />
     <CudaCompile Include="MRCudaContoursDistanceMap.cu" />
   </ItemGroup>
@@ -101,23 +102,35 @@
     <ClInclude Include="MRCudaFastWindingNumber.h" />
     <ClInclude Include="MRCudaFloat.cuh" />
     <ClInclude Include="MRCudaMath.cuh" />
+    <ClInclude Include="MRCudaMeshDistanceMap.cuh" />
+    <ClInclude Include="MRCudaMeshDistanceMap.h" />
+    <ClInclude Include="MRCudaPointsToDistanceVolume.cuh" />
+    <ClInclude Include="MRCudaPointsToDistanceVolume.h" />
     <ClInclude Include="MRCudaPointsToMeshProjector.cuh" />
     <ClInclude Include="MRCudaPointsToMeshProjector.h" />
     <ClInclude Include="MRCudaContoursDistanceMap.cuh" />
+    <ClInclude Include="MRCudaSolarRadiation.cuh" />
+    <ClInclude Include="MRCudaSolarRadiation.h" />
     <ClInclude Include="MRCudaTest.cuh" />
     <ClInclude Include="MRCudaTest.h" />
     <ClInclude Include="MRCudaContoursDistanceMap.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MRCudaBasic.cpp" />
-    <ClCompile Include="MRCudaContoursDisntaceMap.cpp" />
+    <ClCompile Include="MRCudaContoursDistanceMap.cpp" />
     <ClCompile Include="MRCudaFastWindingNumber.cpp" />
+    <ClCompile Include="MRCudaMeshDistanceMap.cpp" />
+    <ClCompile Include="MRCudaPointsToDistanceVolume.cpp" />
     <ClCompile Include="MRCudaPointsToMeshProjector.cpp" />
+    <ClCompile Include="MRCudaSolarRadiation.cpp" />
     <ClCompile Include="MRCudaTest.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\MRMesh\MRMesh.vcxproj">
       <Project>{c7780500-ca0e-4f5f-8423-d7ab06078b14}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\MRVoxels\MRVoxels.vcxproj">
+      <Project>{7cc4f0fe-ace6-4441-9dd7-296066b6d69f}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

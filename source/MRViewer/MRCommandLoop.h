@@ -18,8 +18,10 @@ public:
     // Specify execution in specific time of application start
     enum class StartPosition
     {
+        AfterWindowInit, // executes right after window is initialized
+        AfterSplashAppear, // executes after splash appeared
         AfterPluginInit, // executes during splash, after plugins init)
-        AfterSplash, // executes after splash, to have valid main window context
+        AfterSplashHide, // executes after splash, to have valid main window context
         AfterWindowAppear // executes after window appeared to have valid opengl context
     };
 
@@ -32,7 +34,7 @@ public:
     // Adds command to the end of command loop, can be performed from any thread
     // do not block, so be careful with lambda captures
     // note: state - specify execution in specific time of application start
-    MRVIEWER_API static void appendCommand( CommandFunc func, StartPosition state = StartPosition::AfterSplash );
+    MRVIEWER_API static void appendCommand( CommandFunc func, StartPosition state = StartPosition::AfterSplashHide );
 
     // If caller thread is main - instantly run command, otherwise add command to the end of loop with
     // StartPosition state = StartPosition::AfterSplash and blocks caller thread until command is done
@@ -40,9 +42,14 @@ public:
 
     // Execute all commands from loop
     MRVIEWER_API static void processCommands();
+
+    // Clears the queue without executing the commands
+    // if closeLoop is true, does not accept any new commands
+    MRVIEWER_API static void removeCommands( bool closeLoop );
+
 private:
     CommandLoop() = default;
-    ~CommandLoop() = default;
+    ~CommandLoop();
 
     static CommandLoop& instance_();
 
@@ -51,14 +58,15 @@ private:
     struct Command
     {
         CommandFunc func;
-        StartPosition state{ StartPosition::AfterSplash };
-        bool afterAppear{ false };
+        StartPosition state{ StartPosition::AfterSplashHide };
         std::condition_variable callerThreadCV;
         std::thread::id threadId;
     };
 
-    StartPosition state_{ StartPosition::AfterPluginInit };
+    StartPosition state_{ StartPosition::AfterWindowInit };
 
+    // if set then cannot accept new commands
+    bool queueClosed_{ false }; // marked true in `removeCommands`
     std::thread::id mainThreadId_;
     std::queue<std::shared_ptr<Command>> commands_;
     std::mutex mutex_;

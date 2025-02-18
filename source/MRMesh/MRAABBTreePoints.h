@@ -15,9 +15,6 @@ namespace MR
 class AABBTreePoints
 {
 public:
-    class NodeTag;
-    using NodeId = Id<NodeTag>;
-
     struct Node
     {
         Box3f box; ///< bounding box of whole subtree
@@ -30,6 +27,7 @@ public:
         void setLeafPointRange( int first, int last ) { leftOrFirst = NodeId( -( first + 1 ) ); rightOrLast = NodeId( -( last + 1 ) ); }
     };
     using NodeVec = Vector<Node, NodeId>;
+    using NodeBitSet = TaggedBitSet<NodeTag>;
     [[nodiscard]] const NodeVec& nodes() const { return nodes_; }
     [[nodiscard]] const Node& operator[]( NodeId nid ) const { return nodes_[nid]; }
     [[nodiscard]] static NodeId rootNodeId() { return NodeId{0}; }
@@ -58,8 +56,22 @@ public:
     AABBTreePoints( AABBTreePoints && ) noexcept = default;
     AABBTreePoints & operator =( AABBTreePoints && ) noexcept = default;
 
+    /// returns the mapping original VertId to new id following the points order in the tree;
+    /// buffer in vertMap must be resized before the call, and caller is responsible for filling missing vertex elements
+    MRMESH_API void getLeafOrder( VertBMap & vertMap ) const;
+    /// returns the mapping original VertId to new id following the points order in the tree;
+    /// then resets leaf order as if the points were renumberd following the mapping;
+    /// buffer in vertMap must be resized before the call, and caller is responsible for filling missing vertex elements
+    MRMESH_API void getLeafOrderAndReset( VertBMap & vertMap );
+
     /// returns the amount of memory this object occupies on heap
     [[nodiscard]] MRMESH_API size_t heapBytes() const;
+
+    /// updates bounding boxes of the nodes containing changed vertices;
+    /// this is a faster alternative to full tree rebuild (but the tree after refit might be less efficient)
+    /// \param newCoords coordinates of all vertices including changed ones;
+    /// \param changedVerts vertex ids with modified coordinates (since tree construction or last refit)
+    MRMESH_API void refit( const VertCoords & newCoords, const VertBitSet & changedVerts );
 
 private:
     std::vector<Point> orderedPoints_;
@@ -68,6 +80,7 @@ private:
     AABBTreePoints( const AABBTreePoints & ) = default;
     AABBTreePoints & operator =( const AABBTreePoints & ) = default;
     friend class UniqueThreadSafeOwner<AABBTreePoints>;
+    friend class SharedThreadSafeOwner<AABBTreePoints>;
 };
 
 /// \}

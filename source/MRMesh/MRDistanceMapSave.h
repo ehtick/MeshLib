@@ -19,13 +19,13 @@ MRMESH_API extern const IOFilters Filters;
 
 /**
  * @brief Save DistanceMap to binary file
- * @detail Format: 
+ * Format: 
  * 2 integer - DistanceMap.resX & DistanceMap.resY
  * [resX * resY] float - matrix of values
  */
-MRMESH_API VoidOrErrStr toRAW( const std::filesystem::path& path, const DistanceMap& dmap );
-MRMESH_API VoidOrErrStr toMrDistanceMap( const std::filesystem::path& path, const DistanceMap& dmapObject, const DistanceMapToWorld& params );
-MRMESH_API VoidOrErrStr toAnySupportedFormat( const std::filesystem::path& path, const DistanceMap& dmapObject, const DistanceMapToWorld* params = nullptr );
+MRMESH_API Expected<void> toRAW( const std::filesystem::path& path, const DistanceMap& dmap );
+MRMESH_API Expected<void> toMrDistanceMap( const std::filesystem::path& path, const DistanceMap& dmapObject, const DistanceMapToWorld& params );
+MRMESH_API Expected<void> toAnySupportedFormat( const std::filesystem::path& path, const DistanceMap& dmapObject, const AffineXf3f * xf = nullptr );
 
 /// \}
 

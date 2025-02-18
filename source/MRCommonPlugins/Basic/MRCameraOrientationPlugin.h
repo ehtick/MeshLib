@@ -1,5 +1,6 @@
 #pragma once
-#include "MRMesh//MRMeshFwd.h"
+
+#include "MRMesh/MRMeshFwd.h"
 #include "MRViewer/MRStatePlugin.h"
 #include "MRMesh/MRVector3.h"
 
@@ -25,7 +26,8 @@ private:
 
     void drawCameraPresets_( float scaling );
 
-    inline void autofit_();
+    void autofit_();
+    void getCamera_();
 };
 
 }

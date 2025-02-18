@@ -1,6 +1,8 @@
 #pragma once
 
-#include <algorithm>
+#include "MRMeshFwd.h"
+#include <compare>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,27 +16,26 @@ namespace MR
 struct IOFilter
 {
     IOFilter() = default;
-    IOFilter( const std::string& _name, const std::string& _ext ) :
-        name{_name}, extension{_ext}{}
+    IOFilter( std::string _name, std::string _ext )
+        : name{ std::move( _name ) }
+        , extensions{ std::move( _ext ) }
+    {}
+
     std::string name;
-    std::string extension; // "*.ext"
+    std::string extensions; // "*.ext" or "*.ext1;*.ext2;*.ext3"
+
+    std::partial_ordering operator <=>( const IOFilter& ) const = default;
+
+    [[nodiscard]] MRMESH_API bool isSupportedExtension( const std::string& ext ) const;
 };
 
 using IOFilters = std::vector<IOFilter>;
 
-inline IOFilters operator | ( const IOFilters& a, const IOFilters& b )
-{
-    IOFilters copy = a;
-    for ( const auto& bElem : b )
-    {
-        if ( std::find_if( a.begin(), a.end(), [&] ( const IOFilter& aF )
-        {
-            return aF.extension == bElem.extension;
-        } ) == a.end() )
-            copy.push_back( bElem );
-    }
-    return copy;
-}
+/// returns union of input filters
+[[nodiscard]] MRMESH_API IOFilters operator | ( const IOFilters& a, const IOFilters& b );
+
+/// find a corresponding filter for a given extension
+[[nodiscard]] MRMESH_API std::optional<IOFilter> findFilter( const IOFilters& filters, const std::string& extension );
 
 /// \}
 

@@ -1,5 +1,6 @@
 #include "MRToolbar.h"
-#include "imgui.h"
+#include "MRViewer/MRUITestEngine.h"
+#include "MRImGui.h"
 #include "MRRibbonConstants.h"
 #include "ImGuiHelpers.h"
 #include "MRRibbonButtonDrawer.h"
@@ -8,8 +9,9 @@
 #include "MRColorTheme.h"
 #include "MRRibbonMenu.h"
 #include "MRMesh/MRVector2.h"
-#include "imgui/imgui_internal.h"
+#include "imgui_internal.h"
 #include "MRUIStyle.h"
+#include "MRViewer.h"
 
 namespace MR
 {
@@ -59,9 +61,14 @@ void Toolbar::drawToolbar()
             ++droppedItemCount;
     }
 
-    if ( !itemCount ) return;
+    if ( !itemCount )
+    {
+        currentWidth_ = 0.0f;
+        return;
+    }
+    ++itemCount;
 
-    const float windowWidth = windowPadding.x * 2
+    currentWidth_ = windowPadding.x * 2
         + itemSize.x * itemCount
         + itemSize.x * cSmallItemDropSizeModifier * droppedItemCount
         + itemSpacing.x * ( itemCount - 1 )
@@ -69,21 +76,24 @@ void Toolbar::drawToolbar()
         + itemSpacing.x / 2.f;
 
     const Vector2i sceneSize = ribbonMenu_->getSceneSize();
-    if ( windowWidth >= getViewerInstance().framebufferSize.x - sceneSize.x )
+    if ( currentWidth_ >= getViewerInstance().framebufferSize.x - sceneSize.x )
+    {
+        currentWidth_ = 0.0f;
         return; // dont show quick panel if window is too small
+    }
 
-    const float windowPosX = std::max( getViewerInstance().framebufferSize.x / 2.f - windowWidth / 2.f, sceneSize.x - 1.0f );
+    const float windowPosX = std::max( getViewerInstance().framebufferSize.x / 2.f - currentWidth_ / 2.f, sceneSize.x - 1.0f );
 
     const int currentTopPanelHeight = ribbonMenu_->getTopPanelCurrentHeight();
     ImGui::SetNextWindowPos( ImVec2( windowPosX, float( currentTopPanelHeight ) * scaling_ - 1 ) );
-    ImGui::SetNextWindowSize( ImVec2( windowWidth, cQuickAccessBarHeight * scaling_ ), ImGuiCond_Always );
+    ImGui::SetNextWindowSize( ImVec2( currentWidth_, cQuickAccessBarHeight * scaling_ ), ImGuiCond_Always );
 
     ImGui::PushStyleColor( ImGuiCol_WindowBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
     ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, itemSpacing );
     ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, windowPadding );
     ImGui::PushStyleVar( ImGuiStyleVar_WindowBorderSize, 1.0f );
     ImGui::Begin(
-        "QuickAccess", nullptr,
+        "QuickAccess##[rect_allocator_ignore]", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing
     );
@@ -93,6 +103,7 @@ void Toolbar::drawToolbar()
     DrawButtonParams params{ DrawButtonParams::SizeType::Small, itemSize, cMiddleIconSize,DrawButtonParams::RootType::Toolbar };
 
     ImGui::PushFont( fontManager.getFontByType( RibbonFontManager::FontType::Small ) );
+    UI::TestEngine::pushTree( "Toolbar" );
     for ( const auto& item : itemsList_ )
     {
         auto it = RibbonSchemaHolder::schema().items.find( item );
@@ -107,6 +118,35 @@ void Toolbar::drawToolbar()
         buttonDrawer.drawButtonItem( it->second, params );
         ImGui::SameLine();
     }
+
+    auto activeListIt = RibbonSchemaHolder::schema().items.find( "Active Plugins List" );
+    if ( activeListIt != RibbonSchemaHolder::schema().items.end() )
+    {
+        ribbonMenu_->setActiveListPos( ImGui::GetCursorScreenPos() );
+        CustomButtonParameters cParams;
+        cParams.iconType = RibbonIcons::IconType::RibbonItemIcon;
+        cParams.pushColorsCb = [] ( bool enabled, bool )->int
+        {
+            if ( !enabled )
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::TextDisabled ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_Button, Color( 0, 0, 0, 0 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarHovered ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarClicked ).getUInt32() );
+            }
+            else
+            {
+                ImGui::PushStyleColor( ImGuiCol_Text, Color::white().getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_Button, Color( 60, 169, 20, 255 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, Color( 60, 169, 20, 200 ).getUInt32() );
+                ImGui::PushStyleColor( ImGuiCol_ButtonActive, Color( 60, 169, 20, 255 ).getUInt32() );
+            }
+            return 4;
+        };
+        buttonDrawer.drawCustomButtonItem( activeListIt->second, cParams, params );
+        ImGui::SameLine();
+    }
+    UI::TestEngine::popTree(); // "Toolbar"
 
     ImGui::SetCursorPosX( ImGui::GetCursorPosX() - ImGui::GetStyle().ItemSpacing.x / 2.f );
 
@@ -151,18 +191,26 @@ void Toolbar::drawCustomize()
     ImGui::SetNextWindowPos( ImVec2( -100, -100 ) );
     ImGui::SetNextWindowSize( ImVec2( 1, 1 ) );
     ImGui::Begin( "Toolbar Customize##BaseWindow", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs );
+    UI::TestEngine::pushTree( "Toolbar Customize" );
     if ( openCustomizeFlag_ )
     {
         openCustomizeFlag_ = false;
         ImGui::OpenPopup( "Toolbar Customize" );
     }
     drawCustomizeModal_();
+    UI::TestEngine::popTree();
     ImGui::End();
 }
 
 void Toolbar::readItemsList( const Json::Value& root )
 {
     RibbonSchemaLoader::readMenuItemsList( root, itemsList_ );
+    for ( auto it = itemsListMigrations_.upper_bound( itemsListVersion_ ); it != itemsListMigrations_.end(); ++it )
+    {
+        const auto& [migrationVersion, migrationRule] = *it;
+        migrationRule( itemsList_ );
+        itemsListVersion_ = migrationVersion;
+    }
 }
 
 void Toolbar::resetItemsList()
@@ -199,11 +247,16 @@ void Toolbar::drawCustomizeModal_()
         return;
     }
 
-    if ( ImGui::ModalBigTitle( "Toolbar Customize", scaling_ ) )
-    {
+    bool shouldClose = ImGui::ModalBigTitle( "Customize Viewport Toolbar", scaling_ );
+    if ( shouldClose )
         ImGui::CloseCurrentPopup();
-        searchString_.clear();
-    }
+
+    MR_FINALLY_ON_SUCCESS{
+        // Must clear late, otherwise `UI::checkbox()` sometimes get called twice with the same string,
+        // which triggers an assertion in the UI test engine.
+        if ( shouldClose )
+            searchString_.clear();
+    };
 
     ImGui::Text( "%s", "Select icons to show in Toolbar" );
 
@@ -220,7 +273,7 @@ void Toolbar::drawCustomizeModal_()
 
     DrawButtonParams params{ DrawButtonParams::SizeType::Small, smallItemSize, cMiddleIconSize, DrawButtonParams::RootType::Toolbar };
 
-    ImGui::PushStyleColor( ImGuiCol_ChildBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarCustomizeBg ).getUInt32() );
+    ImGui::PushStyleColor( ImGuiCol_ChildBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
     ImGui::BeginChild( "##QuickAccessCustomizeItems", ImVec2( itemsWindowWidth, smallItemSize.y + childWindowPadding.y * 2 ), true );
     ImGui::PopStyleColor();
 
@@ -239,14 +292,14 @@ void Toolbar::drawCustomizeModal_()
         }
 
         ImVec2 cursorPos = ImGui::GetCursorPos();
-        ImGui::PushStyleColor( ImGuiCol_Button, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_Button, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
         ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarHovered ).getUInt32() );
-        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
-        ImGui::PushStyleColor( ImGuiCol_Border, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_Border, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
         ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, 0.f );
         ImGui::Button( ( "##ItemBtn" + std::to_string( i ) ).c_str(), params.itemSize );
         ImGui::PopStyleVar();
-        ImGui::SetItemAllowOverlap();
+        ImGui::SetNextItemAllowOverlap();
 
         ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, ImVec2() );
         ImGui::SetNextWindowSize( tooltipSize );
@@ -314,10 +367,10 @@ void Toolbar::drawCustomizeModal_()
     for ( int i = int( itemsListCustomize_.size() ); i < cToolbarMaxItemCount; ++i )
     {
         auto screenPos = Vector2f( ImGui::GetCursorScreenPos() );
-        ImGui::PushStyleColor( ImGuiCol_Button, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_Button, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
         ImGui::PushStyleColor( ImGuiCol_ButtonHovered, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
-        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
-        ImGui::PushStyleColor( ImGuiCol_Border, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_ButtonActive, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
+        ImGui::PushStyleColor( ImGuiCol_Border, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::QuickAccessBackground ).getUInt32() );
         ImGui::PushStyleVar( ImGuiStyleVar_FrameRounding, 0.f );
         ImGui::Button( ( "##ItemBtn" + std::to_string( i ) ).c_str(), params.itemSize );
         ImGui::PopStyleVar();
@@ -329,11 +382,11 @@ void Toolbar::drawCustomizeModal_()
     }
 
     ImGui::PopStyleVar();
-    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, ImVec2( ImGui::GetStyle().ItemSpacing.x, 12 ) );
+    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, ImVec2( ImGui::GetStyle().ItemSpacing.x, 12 * scaling_ ) );
     ImGui::EndChild();
     ImGui::PopStyleVar();
 
-    ImGui::BeginChild( "##QuickAccessCustomizeTabsList", ImVec2( 130, -1 ) );
+    ImGui::BeginChild( "##QuickAccessCustomizeTabsList", ImVec2( 130 * scaling_, -1 ) );
     drawCustomizeTabsList_();
     ImGui::EndChild();
 
@@ -344,10 +397,10 @@ void Toolbar::drawCustomizeModal_()
     ImGui::PopStyleVar();
     const float buttonWidth = cGradientButtonFramePadding * 2 * scaling_ + ImGui::CalcTextSize( "Reset to default" ).x;
     const float searchWidth = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x - buttonWidth;
-    
+
     ImGui::SetNextItemWidth( searchWidth );
-    ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x, 8) );
-    if ( ImGui::InputText( "##QuickAccessSearch", searchString_ ) )
+    ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( style.FramePadding.x, 8 * scaling_ ) );
+    if ( UI::inputText( "##QuickAccessSearch", searchString_ ) )
     {
         searchResult_.clear();
         searchResult_.resize( RibbonSchemaHolder::schema().tabsMap.size() );
@@ -361,7 +414,7 @@ void Toolbar::drawCustomizeModal_()
     }
     ImGui::PopStyleVar();
     ImGui::SameLine();
-    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, ImVec2( ImGui::GetStyle().ItemSpacing.x, 12 ) );
+    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, ImVec2( ImGui::GetStyle().ItemSpacing.x, 12 * scaling_ ) );
     if ( UI::button( "Reset to default", Vector2f( buttonWidth, 0 ) ) )
     {
         resetItemsList();
@@ -369,7 +422,7 @@ void Toolbar::drawCustomizeModal_()
     }
     ImGui::PopStyleVar();
 
-    ImGui::PushStyleColor( ImGuiCol_ChildBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::ToolbarCustomizeBg ).getUInt32() );
+    ImGui::PushStyleColor( ImGuiCol_ChildBg, ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType::Background ).getUInt32() );
     ImGui::BeginChild( "##QuickAccessCustomizeItemsList", ImVec2( -1, -1 ), true );
     ImGui::PopStyleColor();
 
@@ -451,7 +504,7 @@ void Toolbar::drawCustomizeTabsList_()
             ImGui::SameLine();
             ImVec2 pos = ImGui::GetCursorScreenPos();
             pos.y += circleShiftY;
-            ImGui::GetForegroundDrawList()->AddCircleFilled( pos, 2, colorActive );
+            ImGui::GetWindowDrawList()->AddCircleFilled( pos, 2 * scaling_, colorActive );
             ImGui::NewLine();
         }
         if ( changedColor )

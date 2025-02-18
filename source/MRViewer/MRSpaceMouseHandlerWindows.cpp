@@ -1,10 +1,11 @@
 #ifdef _WIN32
 #include "MRSpaceMouseHandlerWindows.h"
+#include "MRMouseController.h"
 #include "MRPch/MRSpdlog.h"
 #include "MRViewerInstance.h"
 #include "MRViewer.h"
 #include "ImGuiMenu.h"
-#include <windows.h>
+#include "MRPch/MRWinapi.h"
 #include <GLFW/glfw3.h>
 #include <functional>
 
@@ -130,21 +131,25 @@ SpaceMouseHandlerWindows::~SpaceMouseHandlerWindows()
         updateThread_.join();
 }
 
-void SpaceMouseHandlerWindows::initialize()
+bool SpaceMouseHandlerWindows::initialize()
 {
     bool spaceMouseAttached = isSpaceMouseAttached();
     if ( spaceMouseAttached )
+    {
         spdlog::info( "Found attached SpaceMouse" );
+    }
     else
     {
         spdlog::info( "Not found any attached SpaceMouse" );
-        return;
+        return false;
     }
 
     initialized_ = InitializeRawInput();
     spdlog::info( "Initialize SpaceMouse {}", initialized_ ? "success" : "failed" );
 
     updateConnected_();
+
+    return true;
 }
 
 void SpaceMouseHandlerWindows::handle()
@@ -230,7 +235,7 @@ void SpaceMouseHandlerWindows::updateConnected( int /*jid*/, int /*event*/ )
 void SpaceMouseHandlerWindows::activateMouseScrollZoom( bool activeMouseScrollZoom )
 {
     activeMouseScrollZoom_ = activeMouseScrollZoom;
-    getViewerInstance().mouseController.setMouseScroll( joystickIndex_ == -1 || activeMouseScrollZoom_ );
+    getViewerInstance().mouseController().setMouseScroll( joystickIndex_ == -1 || activeMouseScrollZoom_ );
 }
 
 void SpaceMouseHandlerWindows::postFocus_( bool focused )
@@ -294,7 +299,7 @@ void SpaceMouseHandlerWindows::updateConnected_()
         startUpdateThread_();
     }
 
-    getViewerInstance().mouseController.setMouseScroll( joystickIndex_ == -1 || activeMouseScrollZoom_ );
+    getViewerInstance().mouseController().setMouseScroll( joystickIndex_ == -1 || activeMouseScrollZoom_ );
 }
 
 void SpaceMouseHandlerWindows::startUpdateThread_()

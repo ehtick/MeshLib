@@ -10,6 +10,9 @@
 #include "MRGTest.h"
 #include "MRPositionVertsSmoothly.h"
 #include "MRRegionBoundary.h"
+#include "MRBitSetParallelFor.h"
+#include "MRParallelFor.h"
+#include "MRBuffer.h"
 #include <queue>
 
 namespace MR
@@ -18,10 +21,10 @@ namespace MR
 struct EdgeLength
 {
     UndirectedEdgeId edge;
-    float lenSq = 0; // at the moment the edge was put in the queue
-
-    EdgeLength() = default;
-    EdgeLength( UndirectedEdgeId edge, float lenSq ) : edge( edge ), lenSq( lenSq ) {}
+    float lenSq; // at the moment the edge was put in the queue
+    EdgeLength( UndirectedEdgeId edge = {}, float lenSq = 0 ) : edge( edge ), lenSq( lenSq ) {}
+    EdgeLength( NoInit ) : edge( noInit ) {}
+    explicit operator bool() const { return edge.valid(); }
 };
 
 inline bool operator < ( const EdgeLength & a, const EdgeLength & b )
@@ -31,10 +34,11 @@ inline bool operator < ( const EdgeLength & a, const EdgeLength & b )
 
 int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
 {
-    MR_TIMER;
-
+    MR_TIMER
     const float maxEdgeLenSq = sqr( settings.maxEdgeLen );
-    std::priority_queue<EdgeLength> queue;
+    Mesh original;
+    if ( settings.projectOnOriginalMesh )
+        original = mesh;
 
     // region is changed during subdivision,
     // so if it has invalid faces (they can become valid later) some collisions can occur
@@ -42,41 +46,58 @@ int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
     if ( settings.region )
         *settings.region &= mesh.topology.getValidFaces();
 
-    auto addInQueue = [&]( UndirectedEdgeId e )
+    FaceBitSet aboveMaxTriAspectRatio, aboveMaxSplittableTriAspectRatio;
+    if ( settings.maxTriAspectRatio >= 1 )
+        aboveMaxTriAspectRatio.resize( mesh.topology.faceSize(), false );
+    if ( settings.maxSplittableTriAspectRatio < FLT_MAX )
+        aboveMaxSplittableTriAspectRatio.resize( mesh.topology.faceSize(), false );
+
+    if ( !aboveMaxTriAspectRatio.empty() || !aboveMaxSplittableTriAspectRatio.empty() )
     {
-        bool canSubdivide = settings.subdivideBorder ? mesh.topology.isInnerOrBdEdge( e, settings.region ) : mesh.topology.isInnerEdge( e, settings.region );
-        if ( !settings.subdivideBorder && canSubdivide )
+        BitSetParallelFor( mesh.topology.getFaceIds( settings.region ), [&]( FaceId f )
         {
-            EdgeId eDir = EdgeId( e << 1 );
-            auto f = mesh.topology.left( eDir );
-            Vector3f vp[3];
-            if ( f.valid() )
-            {
-                mesh.getTriPoints( f, vp[0], vp[1], vp[2] );
-                canSubdivide = triangleAspectRatio( vp[0], vp[1], vp[2] ) < settings.critAspectRatio;
-            }
-            if ( canSubdivide )
-            {
-                f = mesh.topology.right( eDir );
-                if ( f.valid() )
-                {
-                    mesh.getTriPoints( f, vp[0], vp[1], vp[2] );
-                    canSubdivide = triangleAspectRatio( vp[0], vp[1], vp[2] ) < settings.critAspectRatio;
-                }
-            }
-        }
-        if ( !canSubdivide )
-            return;
-        float lenSq = mesh.edgeLengthSq( e );
+            const auto a = mesh.triangleAspectRatio( f );
+            if ( !aboveMaxTriAspectRatio.empty() && a > settings.maxTriAspectRatio )
+                aboveMaxTriAspectRatio.set( f );
+            if ( !aboveMaxSplittableTriAspectRatio.empty() && a > settings.maxSplittableTriAspectRatio )
+                aboveMaxSplittableTriAspectRatio.set( f );
+        } );
+    }
+    auto numAboveMax = aboveMaxTriAspectRatio.count();
+
+    auto getQueueElem = [&]( UndirectedEdgeId ue )
+    {
+        EdgeLength x;
+        EdgeId e( ue );
+        if ( settings.subdivideBorder ? !mesh.topology.isInnerOrBdEdge( e, settings.region )
+                                      : !mesh.topology.isInnerEdge( e, settings.region ) )
+            return x;
+        const float lenSq = mesh.edgeLengthSq( e );
         if ( lenSq < maxEdgeLenSq )
-            return;
-        queue.emplace( e, lenSq );
+            return x;
+        if ( !aboveMaxSplittableTriAspectRatio.empty() )
+        {
+            if ( auto f = mesh.topology.left( e ); f && aboveMaxSplittableTriAspectRatio.test( f ) )
+                return x;
+            if ( auto f = mesh.topology.right( e ); f && aboveMaxSplittableTriAspectRatio.test( f ) )
+                return x;
+        }
+        x.edge = ue;
+        x.lenSq = lenSq;
+        return x;
     };
 
-    for ( UndirectedEdgeId e : undirectedEdges( mesh.topology ) )
+    Vector<EdgeLength, UndirectedEdgeId> evec;
+    evec.resizeNoInit( mesh.topology.undirectedEdgeSize() );
+    ParallelFor( evec, [&]( UndirectedEdgeId ue )
     {
-        addInQueue( e );
-    }
+        EdgeLength x;
+        if ( !mesh.topology.isLoneEdge( ue ) )
+            x = getQueueElem( ue );
+        evec[ue] = x;
+    } );
+    std::erase_if( evec.vec_, []( const EdgeLength & x ) { return !x; } );
+    std::priority_queue<EdgeLength> queue( std::less<EdgeLength>(), std::move( evec.vec_ ) );
 
     if ( settings.progressCallback && !settings.progressCallback( 0.25f ) )
         return 0;
@@ -86,13 +107,16 @@ int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
     int splitsDone = 0;
     int lastProgressSplitsDone = 0;
     VertBitSet newVerts;
-    const float whileProgress = settings.smoothMode ? 0.5f : 0.75f;
+    ProgressCallback notSmoothProgress = subprogress( settings.progressCallback, 0.25f, settings.smoothMode ? 0.75f : 1.0f );
+    ProgressCallback whileProgress  =  subprogress( notSmoothProgress, 0.0f, settings.projectOnOriginalMesh ? 0.75f : 1.0f );
     while ( splitsDone < settings.maxEdgeSplits && !queue.empty() )
     {
+        if ( settings.maxTriAspectRatio >= 1 && numAboveMax <= 0 )
+            break;
         if ( settings.progressCallback && splitsDone >= 1000 + lastProgressSplitsDone ) 
         {
-            if ( !settings.progressCallback( 0.25f + whileProgress * splitsDone / settings.maxEdgeSplits ) )
-                return splitsDone;
+            if ( !whileProgress( float( splitsDone ) / settings.maxEdgeSplits ) )
+                return 0;
             lastProgressSplitsDone = splitsDone;
         }
 
@@ -103,11 +127,14 @@ int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
         if ( el.lenSq != mesh.edgeLengthSq( e ) )
             continue; // outdated record in the queue
 
+        if ( settings.beforeEdgeSplit && !settings.beforeEdgeSplit( e ) )
+            continue;
+
         const auto e1 = mesh.splitEdge( e, mesh.edgeCenter( e ), settings.region );
         const auto newVertId = mesh.topology.org( e );
 
         // in smooth mode remember all new inner vertices to reposition them at the end
-        if ( settings.smoothMode && mesh.topology.left( e ) && mesh.topology.right( e ) )
+        if ( ( settings.smoothMode || settings.projectOnOriginalMesh ) && mesh.topology.left( e ) && mesh.topology.right( e ) )
             newVerts.autoResizeSet( newVertId );
 
         if ( settings.newVerts )
@@ -122,11 +149,46 @@ int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
         makeDeloneOriginRing( mesh, e, {
             .maxDeviationAfterFlip = settings.maxDeviationAfterFlip,
             .maxAngleChange = settings.maxAngleChangeAfterFlip,
-            .criticalTriAspectRatio = 1000,
+            .criticalTriAspectRatio = settings.criticalAspectRatioFlip,
             .region = settings.region,
             .notFlippable = settings.notFlippable } );
+
+        if ( !aboveMaxTriAspectRatio.empty() || !aboveMaxSplittableTriAspectRatio.empty() )
+        {
+            for ( auto ei : orgRing( mesh.topology, e ) )
+            {
+                const auto f = mesh.topology.left( ei );
+                if ( !MR::contains( settings.region, f ) )
+                    continue;
+                const auto a = mesh.triangleAspectRatio( f );
+                if ( !aboveMaxTriAspectRatio.empty() )
+                {
+                    const bool v = a > settings.maxTriAspectRatio;
+                    if ( v != aboveMaxTriAspectRatio.autoResizeTestSet( f, v ) )
+                        v ? ++numAboveMax : --numAboveMax;
+                }
+                if ( !aboveMaxSplittableTriAspectRatio.empty() )
+                {
+                    const bool v = a > settings.maxSplittableTriAspectRatio;
+                    if ( v != aboveMaxSplittableTriAspectRatio.autoResizeTestSet( f, v ) && !v )
+                        if ( auto x = getQueueElem( mesh.topology.prev( ei.sym() ) ) )
+                            queue.push( std::move( x ) );
+                }
+            }
+        }
+
         for ( auto ei : orgRing( mesh.topology, e ) )
-            addInQueue( ei.undirected() );
+            if ( auto x = getQueueElem( ei ) )
+                queue.push( std::move( x ) );
+    }
+
+    if ( settings.projectOnOriginalMesh )
+    {
+        if ( !BitSetParallelFor( newVerts, [&]( VertId v )
+        {
+            mesh.points[v] = findProjection( mesh.points[v], original ).proj.point;
+        }, subprogress( notSmoothProgress, 0.75f, 1.0f ) ) )
+            return 0;
     }
 
     if ( settings.smoothMode )
@@ -141,16 +203,53 @@ int subdivideMesh( Mesh & mesh, const SubdivideSettings & settings )
             const auto sharpVerts = getIncidentVerts( mesh.topology, creaseUEdges );
             if ( settings.progressCallback && !settings.progressCallback( 0.77f ) )
                 return 0;
-            positionVertsSmoothly( mesh, newVerts, Laplacian::EdgeWeights::Cotan, &sharpVerts );
+            positionVertsSmoothly( mesh, newVerts, EdgeWeights::Cotan, &sharpVerts );
         }
         else
-            positionVertsSmoothly( mesh, newVerts, Laplacian::EdgeWeights::Cotan );
+            positionVertsSmoothly( mesh, newVerts, EdgeWeights::Cotan );
     }
 
     return splitsDone;
 }
 
-TEST(MRMesh, SubdivideMesh) 
+Expected<Mesh> copySubdividePackMesh( const MeshPart & mp, float voxelSize, const ProgressCallback & cb )
+{
+    MR_TIMER
+    Mesh subMesh;
+
+    // copy mesh
+    if ( mp.region )
+        subMesh.addMeshPart( mp );
+    else
+        subMesh = mp.mesh;
+    if ( !reportProgress( cb, 0.25f ) )
+        return unexpectedOperationCanceled();
+
+    // smaller edge lengths require too much space and time for subdivision,
+    // larger edge lengths do not give significant benefits in AABB-tree optimized searches
+    const float approxMaxEdgeLen = 5 * voxelSize;
+
+    // subdivide copied mesh
+    SubdivideSettings subSettings
+    {
+        .maxEdgeLen = approxMaxEdgeLen,
+        .maxEdgeSplits = int( subMesh.area() / sqr( approxMaxEdgeLen ) ),
+        .maxDeviationAfterFlip = 0.1f * voxelSize,
+        .progressCallback = subprogress( cb, 0.25f, 0.75f )
+    };
+    subdivideMesh( subMesh, subSettings );
+    if ( !reportProgress( cb, 0.75f ) )
+        return unexpectedOperationCanceled();
+
+    // pack subdivided mesh
+    subMesh.packOptimally();
+    if ( !reportProgress( cb, 1.0f ) )
+        return unexpectedOperationCanceled();
+
+    return subMesh;
+}
+
+TEST(MRMesh, SubdivideMesh)
 {
     Triangulation t{
         { 0_v, 1_v, 2_v },

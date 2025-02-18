@@ -1,8 +1,15 @@
 #include "MRRibbonMenuItem.h"
 #include "MRRibbonSchema.h"
+#include <cassert>
 
 namespace MR
 {
+
+
+RibbonMenuItem::RibbonMenuItem( std::string name ) :
+    name_{ std::move( name ) }
+{
+}
 
 void RibbonMenuItem::setDropItemsFromItemList( const MenuItemsList& itemsList )
 {

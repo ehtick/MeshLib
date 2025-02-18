@@ -25,6 +25,44 @@ bool isEdgeLoop( const MeshTopology & topology, const std::vector<EdgeId> & edge
         && topology.org( edges.front() ) == topology.dest( edges.back() );
 }
 
+std::vector<EdgeLoop> splitOnSimpleLoops( const MeshTopology & topology, std::vector<EdgeLoop> && loops )
+{
+    MR_TIMER
+    std::vector<EdgeLoop> res;
+    res.reserve( loops.size() );
+    HashMap<VertId, int> vmap; // vertex -> edge# in loop with origin in vertex
+    for ( auto & loop : loops )
+    {
+        assert( isEdgeLoop( topology, loop ) );
+        for (;;)
+        {
+            bool split = false;
+            for ( int i = 0; i < loop.size(); ++i )
+            {
+                auto [it, inserted] = vmap.insert( { topology.org( loop[i] ), i } );
+                if ( !inserted )
+                {
+                    const auto beg = loop.begin() + it->second;
+                    const auto end = loop.begin() + i;
+                    res.push_back( EdgeLoop{ beg, end } );
+                    assert( isEdgeLoop( topology, res.back() ) );
+                    loop.erase( beg, end );
+                    assert( isEdgeLoop( topology, loop ) );
+                    split = true;
+                    break;
+                }
+            }
+            vmap.clear();
+            if ( split )
+                continue;
+            res.push_back( std::move( loop ) );
+            break;
+        }
+    }
+
+    return res;
+}
+
 void reverse( EdgePath & path )
 {
     std::reverse( path.begin(), path.end() );
@@ -438,11 +476,11 @@ EdgeLoop extractLongestClosedLoop( const Mesh & mesh, const std::vector<EdgeId> 
 bool dilateRegionByMetric( const MeshTopology & topology, const EdgeMetric & metric, FaceBitSet & region, float dilation, ProgressCallback callback )
 {
     MR_TIMER
-    auto vertRegion = getIncidentVerts( topology, region );
+    auto vertRegion = getRegionBoundaryVerts( topology, region );
     if ( !dilateRegionByMetric( topology, metric, vertRegion, dilation, callback ) )
         return false;
 
-    region = getInnerFaces( topology, vertRegion );
+    region |= getInnerFaces( topology, vertRegion );
     return true;
 }
 
@@ -454,14 +492,17 @@ bool dilateRegionByMetric( const MeshTopology & topology, const EdgeMetric & met
     for( VertId v : region )
         builder.addStart( v, 0 );
 
-    for ( int i = 0; !builder.done() && builder.doneDistance() <= dilation; ++i )
+    for ( int i = 0;; ++i )
     {
-        if ( !reportProgress( callback, [&]{ return builder.doneDistance() / dilation; }, i, 1024 ) )
-            return false;
+        const auto vinfo = builder.reachNext();
+        if ( !vinfo.v || vinfo.penalty > dilation )
+            break;
 
-        auto vinfo = builder.growOneEdge();
-        if ( vinfo.v )
-            region.autoResizeSet( vinfo.v );
+        region.autoResizeSet( vinfo.v );
+        builder.addOrgRingSteps( vinfo );
+
+        if ( !reportProgress( callback, [&]{ return vinfo.penalty / dilation; }, i, 1024 ) )
+            return false;
     }
 
     if ( callback && !callback( 1.0f ) )
@@ -484,11 +525,11 @@ bool dilateRegionByMetric( const MeshTopology& topology, const EdgeMetric& metri
 bool erodeRegionByMetric( const MeshTopology & topology, const EdgeMetric & metric, FaceBitSet & region, float dilation, ProgressCallback callback )
 {
     MR_TIMER
-    region = topology.getValidFaces() - region;
-    if ( !dilateRegionByMetric( topology, metric, region, dilation, callback ) )
+    auto vertRegion = getRegionBoundaryVerts( topology, region );
+    if ( !dilateRegionByMetric( topology, metric, vertRegion, dilation, callback ) )
         return false;
 
-    region = topology.getValidFaces() - region;
+    region -= getInnerFaces( topology, vertRegion );
     return true;
 }
 
@@ -547,7 +588,7 @@ bool erodeRegion( const Mesh& mesh, UndirectedEdgeBitSet& region, float dilation
 int getPathPlaneIntersections( const Mesh & mesh, const EdgePath & path, const Plane3f & plane,
     std::vector<MeshEdgePoint> * outIntersections )
 {
-    MR_TIMER;
+    MR_TIMER
     int found = 0;
     for ( auto e : path )
     {
@@ -555,9 +596,30 @@ int getPathPlaneIntersections( const Mesh & mesh, const EdgePath & path, const P
         auto d = plane.distance( mesh.destPnt( e ) );
         if ( ( o <= 0 && d > 0 ) || ( o >= 0 && d < 0 ) )
         {
-            float a = -o / ( d - o );
             if ( outIntersections )
-                outIntersections->emplace_back( e, a );
+                outIntersections->emplace_back( e, o / ( o - d ) );
+            ++found;
+        }
+    }
+    return found;
+}
+
+int getContourPlaneIntersections( const Contour3f & path, const Plane3f & plane,
+    std::vector<Vector3f> * outIntersections )
+{
+    MR_TIMER
+    int found = 0;
+    for ( int i = 0; i + 1 < path.size(); ++i )
+    {
+        auto o = plane.distance( path[i] );
+        auto d = plane.distance( path[i + 1] );
+        if ( ( o <= 0 && d > 0 ) || ( o >= 0 && d < 0 ) )
+        {
+            if ( outIntersections )
+            {
+                const float a = o / ( o - d );
+                outIntersections->emplace_back( a * path[i + 1] + ( 1 - a ) * path[i] );
+            }
             ++found;
         }
     }

@@ -7,9 +7,6 @@
 [submodule "thirdparty/eigen"]
 	path = thirdparty/eigen
 	url = https://gitlab.com/cantonios/eigen.git
-[submodule "thirdparty/pybind11"]
-	path = thirdparty/pybind11
-	url = https://github.com/pybind/pybind11.git
 [submodule "thirdparty/expected"]
 	path = thirdparty/expected
 	url = https://github.com/Developer-Ecosystem-Engineering/expected.git
@@ -46,3 +43,33 @@
 [submodule "thirdparty/onetbb"]
 	path = thirdparty/onetbb
 	url = https://github.com/oneapi-src/oneTBB.git
+[submodule "thirdparty/libE57Format"]
+	path = thirdparty/libE57Format
+	url = https://github.com/MeshInspector/libE57Format
+[submodule "thirdparty/laz-perf"]
+	path = thirdparty/laz-perf
+	url = https://github.com/MeshInspector/laz-perf
+[submodule "thirdparty/mbedtls"]
+	path = thirdparty/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls
+[submodule "thirdparty/GDCM"]
+	path = thirdparty/GDCM
+	url = https://github.com/malaterre/GDCM.git
+[submodule "thirdparty/tinyxml2"]
+	path = thirdparty/tinyxml2
+	url = https://github.com/leethomason/tinyxml2.git
+[submodule "thirdparty/libjpeg-turbo"]
+	path = thirdparty/libjpeg-turbo
+	url = https://github.com/libjpeg-turbo/libjpeg-turbo.git
+[submodule "thirdparty/c-blosc"]
+	path = thirdparty/c-blosc
+	url = https://github.com/Blosc/c-blosc.git
+[submodule "thirdparty/fmt"]
+	path = thirdparty/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "thirdparty/mrbind-pybind11"]
+	path = thirdparty/mrbind-pybind11
+	url = https://github.com/MeshInspector/mrbind-pybind11
+[submodule "thirdparty/mrbind"]
+	path = thirdparty/mrbind
+	url = https://github.com/MeshInspector/mrbind

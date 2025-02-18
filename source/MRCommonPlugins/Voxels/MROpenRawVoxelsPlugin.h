@@ -1,7 +1,8 @@
 #pragma once
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
+#ifndef MESHLIB_NO_VOXELS
+
 #include "MRViewer/MRStatePlugin.h"
-#include "MRMesh/MRVoxelsLoad.h"
+#include "MRVoxels/MRVoxelsLoad.h"
 
 namespace MR
 {
@@ -16,7 +17,7 @@ private:
     virtual bool onEnable_() override;
     virtual bool onDisable_() override;
 
-    bool autoMode_{ true };
+    bool autoMode_{ false };
     VoxelsLoad::RawParameters parameters_;
 };
 }

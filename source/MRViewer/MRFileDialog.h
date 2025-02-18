@@ -1,11 +1,38 @@
 #pragma once
 #include "exports.h"
 #include "MRMesh/MRIOFilters.h"
+#include "MRMesh/MRSignal.h"
 #include <filesystem>
 #include <functional>
 
 namespace MR
 {
+
+/// This structure contains global signals for file dialogs, that are called on valid selection of file or folder
+struct MRVIEWER_CLASS FileDialogSignals
+{
+public:
+    using SelectFileSignal = Signal<void( const std::filesystem::path& path )>;
+    using SelectFilesSignal = Signal<void( const std::vector<std::filesystem::path>& )>;
+    using SelectFolderSignal = SelectFileSignal;
+    using SelectFoldersSignal = SelectFilesSignal;
+
+    /// returns instance of this holder
+    MRVIEWER_API static FileDialogSignals& instance();
+
+    SelectFileSignal onOpenFile; ///< called when one file is selected for opening (`openFileDialog` and `openFileDialogAsync`)
+    SelectFilesSignal onOpenFiles; ///< called when several files are selected for opening (`openFilesDialog` and `openFilesDialogAsync`)
+
+    SelectFileSignal onSaveFile; ///< called when file name is selected for saving (`saveFileDialog` and `saveFileDialogAsync`)
+
+    SelectFolderSignal onSelectFolder; ///< called when one folder is selected (we do not now differ reason)(`openFolderDialog` and `openFolderDialogAsync`)
+    SelectFoldersSignal onSelectFolders;///< called when several folders are selected (we do not now differ reason)(`openFoldersDialog`)
+
+private:
+    FileDialogSignals() = default;
+    ~FileDialogSignals() = default;
+};
+
 
 struct FileParameters
 {
@@ -36,6 +63,10 @@ MRVIEWER_API void openFilesDialogAsync( std::function<void( const std::vector<st
 // Select one folder
 // returns empty path on cancel
 MRVIEWER_API std::filesystem::path openFolderDialog( std::filesystem::path baseFolder = {} );
+
+// Unified function to select a folder in desktop code and in emscripten
+// callback is called inside this function in desktop build and deferred in emscripten build
+MRVIEWER_API void openFolderDialogAsync( std::function<void ( const std::filesystem::path& )> callback, std::filesystem::path baseFolder = {} );
 
 // Allow user to select several folders
 // returns empty path on cancel

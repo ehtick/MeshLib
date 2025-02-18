@@ -1,6 +1,7 @@
 #include "MRObjectLines.h"
 #include "MRObjectFactory.h"
 #include "MRPolyline.h"
+#include "MRTimer.h"
 #include "MRPch/MRJson.h"
 #include "MRPch/MRTBB.h"
 
@@ -43,9 +44,9 @@ std::shared_ptr< Polyline3 > ObjectLines::updatePolyline( std::shared_ptr< Polyl
     return polyline;
 }
 
-void ObjectLines::setDirtyFlags( uint32_t mask )
+void ObjectLines::setDirtyFlags( uint32_t mask, bool invalidateCaches )
 {
-    ObjectLinesHolder::setDirtyFlags( mask );
+    ObjectLinesHolder::setDirtyFlags( mask, invalidateCaches );
 
     if ( mask & DIRTY_POSITION || mask & DIRTY_PRIMITIVES )
     {
@@ -93,9 +94,7 @@ std::vector<std::string> ObjectLines::getInfoLines() const
         if( polyline_->topology.vertSize() < polyline_->topology.vertCapacity() )
             res.back() += " / " + std::to_string( polyline_->topology.vertCapacity() ) + " capacity";
 
-        if ( !totalLength_ )
-            totalLength_ = polyline_->totalLength();
-        res.push_back( "total length : " + std::to_string( *totalLength_ ) );
+        res.push_back( "total length : " + std::to_string( totalLength() ) );
 
         boundingBoxToInfoLines_( res );
     }
@@ -107,4 +106,32 @@ std::vector<std::string> ObjectLines::getInfoLines() const
     return res;
 }
 
+std::shared_ptr<ObjectLines> merge( const std::vector<std::shared_ptr<ObjectLines>>& objsLines )
+{
+    MR_TIMER
+    auto line = std::make_shared<Polyline3>();
+    auto& points = line->points;
+    for ( const auto& obj : objsLines )
+    {
+        if ( !obj->polyline() )
+            continue;
+
+        VertMap vertMap{};
+        UndirectedEdgeBitSet validPoints;
+        validPoints.resize( obj->polyline()->topology.undirectedEdgeSize(), true );
+        line->addPartByMask( *obj->polyline(), validPoints, &vertMap );
+
+        auto worldXf = obj->worldXf();
+        for ( const auto& vInd : vertMap )
+        {
+            if ( vInd.valid() )
+                points[vInd] = worldXf( points[vInd] );
+        }
+    }
+
+    auto objectLines = std::make_shared<ObjectLines>();
+    objectLines->setPolyline( std::move( line ) );
+    return objectLines;
 }
+
+} // namespace MR

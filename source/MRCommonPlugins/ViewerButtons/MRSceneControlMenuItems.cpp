@@ -1,12 +1,17 @@
 #include "MRSceneControlMenuItems.h"
 #include "MRViewer/MRViewer.h"
-#include "MRMesh/MRHistoryStore.h"
+#include "MRViewer/MRHistoryStore.h"
 #include "MRViewer/MRAppendHistory.h"
 #include "MRViewer/MRSwapRootAction.h"
-#include "MRViewer/MRRibbonMenu.h"
+#include "MRViewer/MRRibbonSchema.h"
+#include "MRViewer/ImGuiMenu.h"
+#include "MRViewer/MRRibbonFontManager.h"
 #include "MRViewer/MRViewer.h"
+#include "MRViewer/MRViewport.h"
+#include "MRMesh/MRIOFormatsRegistry.h"
 #include "MRMesh/MRObjectsAccess.h"
 #include "MRMesh/MRObjectMesh.h"
+#include "MRMesh/MRObjectSave.h"
 #include "MRViewer/MRCommandLoop.h"
 #include "MRViewer/MRFileDialog.h"
 #include "MRMesh/MRSerializer.h"
@@ -15,6 +20,8 @@
 #include "MRPch/MRSpdlog.h"
 #include "MRViewer/MRRibbonConstants.h"
 #include "MRViewer/MRUIStyle.h"
+#include "MRViewer/MRSceneCache.h"
+#include "MRViewer/MRUISaveChangesPopup.h"
 #include <array>
 
 namespace
@@ -43,7 +50,8 @@ constexpr const char* sGetViewportConfigName( SetViewportConfigPresetMenuItem::T
         "Single Viewport",
         "Horizontal Viewports",
         "Vertical Viewports",
-        "Quad Viewports"
+        "Quad Viewports",
+        "Hex Viewports"
     };
     return names[int( type )];
 }
@@ -90,78 +98,22 @@ void ResetSceneMenuItem::preDraw_()
     ImGui::SetNextWindowSize( windowSize, ImGuiCond_Always );
     popupId_ = ImGui::GetID( "New scene##new scene" );
 
-    
-    ImGui::PushStyleVar( ImGuiStyleVar_ItemSpacing, { 2.0f * cDefaultItemSpacing * scaling, 3.0f * cDefaultItemSpacing * scaling } );
-    ImGui::PushStyleVar( ImGuiStyleVar_WindowPadding, { cModalWindowPaddingX * scaling, cModalWindowPaddingY * scaling } );
-    if ( ImGui::BeginModalNoAnimation( "New scene##new scene", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar ) )
-    {
-        auto headerFont = RibbonFontManager::getFontByTypeStatic( RibbonFontManager::FontType::Headline );
-        if ( headerFont )
-            ImGui::PushFont( headerFont );
-
-        const auto headerWidth = ImGui::CalcTextSize( "New Scene" ).x;
-        ImGui::SetCursorPosX( ( windowSize.x - headerWidth ) * 0.5f );
-        ImGui::Text( "New Scene" );
-
-        if ( headerFont )
-            ImGui::PopFont();
-
-        const char* text = "Save your changes?";
-        ImGui::SetCursorPosX( ( windowSize.x - ImGui::CalcTextSize( text ).x ) * 0.5f );
-        ImGui::Text( "%s", text );
-
-        const auto style = ImGui::GetStyle();
-        ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, { style.FramePadding.x, cButtonPadding * scaling } );
-
-        const float p = ImGui::GetStyle().ItemSpacing.x;
-        const Vector2f btnSize{ ( ImGui::GetContentRegionAvail().x - p * 2 ) / 3.f, 0 };
-        if ( UI::button( "Save", btnSize, ImGuiKey_Enter ) )
-        {
-            auto savePath = SceneRoot::getScenePath();
-            if ( savePath.empty() )
-                savePath = saveFileDialog( { {}, {},SceneFileFilters } );
-
-            ImGui::CloseCurrentPopup();
-            ProgressBar::orderWithMainThreadPostProcessing( "Saving scene", [this, savePath, &root = SceneRoot::get()]()->std::function<void()>
-            {
-                auto res = serializeObjectTree( root, savePath, ProgressBar::callBackSetProgress );
-                if ( !res.has_value() )
-                    spdlog::error( res.error() );
-
-                return[this, savePath, success = res.has_value()]()
-                {
-                    if ( success )
-                        resetScene_();
-                };
-            } );
-        }
-
-        UI::setTooltipIfHovered( "Save current scene and then remove all objects", scaling );
-        ImGui::SameLine();
-        if ( UI::buttonCommonSize( "Don't Save", btnSize ) )
-        {
-            ImGui::CloseCurrentPopup();
-            resetScene_();
-        }
-        UI::setTooltipIfHovered( "Remove all objects without saving and ability to restore them", scaling );
-        ImGui::SameLine();
-        if ( UI::buttonCommonSize( "Cancel", btnSize, ImGuiKey_Escape ) )
-            ImGui::CloseCurrentPopup();
-
-        UI::setTooltipIfHovered( "Do not remove any objects, return back", scaling );
-
-        if ( ImGui::IsMouseClicked( 0 ) && !( ImGui::IsAnyItemHovered() || ImGui::IsWindowHovered( ImGuiHoveredFlags_AnyWindow ) ) )
-            ImGui::CloseCurrentPopup();
-        ImGui::PopStyleVar();
-        ImGui::EndPopup();
-    }
-    ImGui::PopStyleVar( 2 );
+    UI::SaveChangesPopupSettings settings;
+    settings.scaling = scaling;
+    settings.header = "New Scene";
+    settings.shortCloseText = "New";
+    settings.saveTooltip = "Save current scene and then remove all objects";
+    settings.dontSaveTooltip = "Remove all objects without saving and ability to restore them";
+    settings.cancelTooltip = "Do not remove any objects, return back";
+    settings.onOk =  [this] () { resetScene_(); };
+    UI::saveChangesPopup( "New scene##new scene", settings );
 }
 
 void ResetSceneMenuItem::resetScene_()
 {
-    auto rootClone = SceneRoot::get().clone();
+    auto rootClone = SceneRoot::get().cloneRoot();
     std::swap( rootClone, SceneRoot::getSharedPtr() );
+    getViewerInstance().setSceneDirty();
     if ( const auto& store = getViewerInstance().getGlobalHistoryStore() )
         store->clear();
     getViewerInstance().onSceneSaved( {} );
@@ -174,7 +126,7 @@ FitDataMenuItem::FitDataMenuItem() :
 
 bool FitDataMenuItem::action()
 {
-    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, Viewport::FitMode::Visible } );
+    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, FitMode::Visible } );
     return false;
 }
 
@@ -182,9 +134,10 @@ std::string FitDataMenuItem::isAvailable( const std::vector<std::shared_ptr<cons
 {
     auto allObjs = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Any );
     for ( const auto& obj : allObjs )
-        if ( obj->globalVisibilty() )
+        if ( obj->globalVisibility() )
             return "";
-
+    if ( getViewerInstance().globalBasisAxes && getViewerInstance().globalBasisAxes->isVisible() )
+        return "";
     return "There are no visible objects.";
 }
 
@@ -195,7 +148,7 @@ FitSelectedObjectsMenuItem::FitSelectedObjectsMenuItem() :
 
 bool FitSelectedObjectsMenuItem::action()
 {
-    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, Viewport::FitMode::SelectedObjects } );
+    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, FitMode::SelectedObjects } );
     return false;
 }
 
@@ -203,7 +156,7 @@ std::string FitSelectedObjectsMenuItem::isAvailable( const std::vector<std::shar
 {
     auto allObjs = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Selected );
     for ( const auto& obj : allObjs )
-        if ( obj->globalVisibilty() )
+        if ( obj->globalVisibility() )
             return "";
 
     return "There are no visible selected objects.";
@@ -216,7 +169,7 @@ FitSelectedPrimitivesMenuItem::FitSelectedPrimitivesMenuItem() :
 
 bool FitSelectedPrimitivesMenuItem::action()
 {
-    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, Viewport::FitMode::SelectedPrimitives } );
+    Viewer::instanceRef().viewport().preciseFitDataToScreenBorder( { 0.9f, false, FitMode::SelectedPrimitives } );
     return false;
 }
 
@@ -224,7 +177,7 @@ std::string FitSelectedPrimitivesMenuItem::isAvailable( const std::vector<std::s
 {
     auto allObjs = getAllObjectsInTree<ObjectMesh>( &SceneRoot::get(), ObjectSelectivityType::Any );
     for ( const auto& obj : allObjs )
-        if ( obj->globalVisibilty() && obj->mesh() && ( obj->getSelectedEdges().any() || obj->getSelectedFaces().any() ) )
+        if ( obj->globalVisibility() && obj->mesh() && ( obj->getSelectedEdges().any() || obj->getSelectedFaces().any() ) )
             return "";
 
     return "There are no visible selected primitives.";
@@ -239,10 +192,22 @@ SetViewPresetMenuItem::SetViewPresetMenuItem( Type type ) :
 bool SetViewPresetMenuItem::action()
 {
     auto& viewport = getViewerInstance().viewport();
-    if ( type_ != Type::Isometric )
-        viewport.setCameraTrackballAngle( getCanonicalQuaternions<float>()[int( type_ )] );
+
+    static const Quaternionf quats[(int)Type::Isometric] =
+    {
+        Quaternionf( Vector3f::plusX(),  -PI2_F ),        // Front
+        Quaternionf(),                                    // Top
+        Quaternionf(), // unused
+        Quaternionf( Vector3f::plusY(),  PI_F ),         // Bottom
+        Quaternionf( Vector3f(-1, 1, 1 ), 2 * PI_F / 3 ), // Left
+        Quaternionf( Vector3f( 0, 1, 1 ), PI_F ),         // Back
+        Quaternionf( Vector3f(-1,-1,-1 ), 2 * PI_F / 3 )  // Right
+    };
+
+    if ( type_ < Type::Isometric )
+        viewport.setCameraTrackballAngle( quats[int( type_ )] );
     else
-        viewport.cameraLookAlong( Vector3f( -1.f, -1.f, -1.f ), Vector3f( -1.f, 2.f, -1.f ) );
+        viewport.cameraLookAlong( Vector3f( -1.f, -1.f, -1.f ), Vector3f( -1, -1, 2 ) );
 
     viewport.preciseFitDataToScreenBorder( { 0.9f } );
     return false;
@@ -260,7 +225,7 @@ public:
 
 using SetFrontViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Front>;
 using SetTopViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Top>;
-using SetButtomViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Buttom>;
+using SetButtomViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Bottom>;
 using SetLeftViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Left>;
 using SetBackViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Back>;
 using SetRightViewMenuItem = SetViewPresetMenuItemTemplate<SetViewPresetMenuItem::Type::Right>;
@@ -270,6 +235,23 @@ SetViewportConfigPresetMenuItem::SetViewportConfigPresetMenuItem( Type type ):
     RibbonMenuItem( sGetViewportConfigName( type ) ),
     type_{ type }
 {
+    updateViewports_ = [] ( const ViewportMask appendedViewports )
+    {
+        auto allObjs = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Any );
+        const ViewportId activeViewportId = getViewerInstance().viewport().id;
+
+        for ( ViewportId newVpId : appendedViewports )
+        {
+            for ( auto& obj : allObjs )
+            {
+                auto masks = obj->getAllVisualizeProperties();
+                for ( auto& mask : masks )
+                    mask.set( newVpId, mask.contains( activeViewportId ) );
+
+                obj->setAllVisualizeProperties( masks );
+            }
+        }
+    };
 }
 
 bool SetViewportConfigPresetMenuItem::action()
@@ -283,79 +265,92 @@ bool SetViewportConfigPresetMenuItem::action()
     for ( int i = int( viewer.viewport_list.size() ) - 1; i > 0; --i )
         viewer.erase_viewport( i );
 
-    auto allObjs = getAllObjectsInTree<VisualObject>( &SceneRoot::get(), ObjectSelectivityType::Any );
-
     ViewportRectangle rect;
-    const ViewportId activeViewportId = viewer.viewport().id;
-
-    const auto updateMasks = [&allObjs, activeViewportId] ( ViewportId newVpId )
-    {
-        for ( auto& obj : allObjs )
-        {
-            auto masks = obj->getAllVisualizeProperties();
-            for (auto& mask: masks )
-                mask.set( newVpId, mask.contains( activeViewportId ) );
-
-            obj->setAllVisualizeProperties( masks );
-        }
-    };
 
     switch ( type_ )
     {
         case Type::Vertical:
-            rect.min.x = bounds.min.x;
-            rect.min.y = bounds.min.y;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height;
+            rect.min = bounds.min;
+            rect.max.x = std::ceil( bounds.min.x + width * 0.5f );
+            rect.max.y = bounds.max.y;
             viewer.viewport().setViewportRect( rect );
 
-            rect.min.x = bounds.min.x + width * 0.5f;
+            rect.min.x = rect.max.x;
             rect.min.y = bounds.min.y;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height;
-            updateMasks( viewer.append_viewport( rect ) );
+            rect.max = bounds.max;
+            updateViewports_( viewer.append_viewport( rect ) );
 
             break;
         case Type::Horizontal:
-            rect.min.x = bounds.min.x;
-            rect.min.y = bounds.min.y;
-            rect.max.x = rect.min.x + width;
-            rect.max.y = rect.min.y + height * 0.5f;
+            rect.min = bounds.min;
+            rect.max.x = bounds.max.x;
+            rect.max.y = std::ceil( rect.min.y + height * 0.5f );
             viewer.viewport().setViewportRect( rect );
 
             rect.min.x = bounds.min.x;
-            rect.min.y = bounds.min.y + height * 0.5f;
-            rect.max.x = rect.min.x + width;
-            rect.max.y = rect.min.y + height * 0.5f;
-            updateMasks( viewer.append_viewport( rect ) );
+            rect.min.y = rect.max.y;
+            rect.max = bounds.max;
+            updateViewports_( viewer.append_viewport( rect ) );
 
             break;
         case Type::Quad:
-            rect.min.x = bounds.min.x;
-            rect.min.y = bounds.min.y;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height * 0.5f;
+        {
+            rect.min = bounds.min;
+            rect.max.x = std::ceil( bounds.min.x + width * 0.5f );
+            rect.max.y = std::ceil( bounds.min.y + height * 0.5f );
             viewer.viewport().setViewportRect( rect );
 
-            rect.min.x = bounds.min.x;
-            rect.min.y = bounds.min.y + height * 0.5f;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height * 0.5f;
-            updateMasks( viewer.append_viewport( rect ) );
+            rect.min.y = rect.max.y;
+            rect.max.x = rect.max.x;
+            rect.max.y = bounds.max.y;
+            ViewportMask appendedViewports = viewer.append_viewport( rect );
 
-            rect.min.x = bounds.min.x + width * 0.5f;
+            rect.min.x = rect.max.x;
             rect.min.y = bounds.min.y;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height * 0.5f;
-            updateMasks( viewer.append_viewport( rect ) );
+            rect.max.x = bounds.max.x;
+            rect.max.y = std::ceil( bounds.min.y + height * 0.5f );
+            appendedViewports |= viewer.append_viewport( rect );
 
-            rect.min.x = bounds.min.x + width * 0.5f;
-            rect.min.y = bounds.min.y + height * 0.5f;
-            rect.max.x = rect.min.x + width * 0.5f;
-            rect.max.y = rect.min.y + height * 0.5f;
-            updateMasks( viewer.append_viewport( rect ) );
-
+            rect.min.y = rect.max.y;
+            rect.max = bounds.max;
+            appendedViewports |= viewer.append_viewport( rect );
+            updateViewports_( appendedViewports );
             break;
+        }
+        case Type::Hex:
+        {
+            rect.min = bounds.min;
+            rect.max.x = std::ceil( bounds.min.x + width * 0.333f );
+            rect.max.y = std::ceil( bounds.min.y + height * 0.5f );
+            viewer.viewport().setViewportRect( rect );
+
+            rect.min.y = rect.max.y;
+            rect.max.x = rect.max.x;
+            rect.max.y = bounds.max.y;
+            ViewportMask appendedViewports = viewer.append_viewport( rect );
+
+            rect.min.x = rect.max.x;
+            rect.min.y = bounds.min.y;
+            rect.max.x = std::ceil( bounds.min.x + width * 0.666f );
+            rect.max.y = std::ceil( bounds.min.y + height * 0.5f );
+            appendedViewports |= viewer.append_viewport( rect );
+
+            rect.min.y = rect.max.y;
+            rect.max.y = bounds.max.y;
+            appendedViewports |= viewer.append_viewport( rect );
+
+            rect.min.x = rect.max.x;
+            rect.min.y = bounds.min.y;
+            rect.max.x = bounds.max.x;
+            rect.max.y = std::ceil( bounds.min.y + height * 0.5f );
+            appendedViewports |= viewer.append_viewport( rect );
+
+            rect.min.y = rect.max.y;
+            rect.max = bounds.max;
+            appendedViewports |= viewer.append_viewport( rect );
+            updateViewports_( appendedViewports );
+            break;
+        }
         case Type::Single:
         default:
             rect.min.x = bounds.min.x;
@@ -363,6 +358,7 @@ bool SetViewportConfigPresetMenuItem::action()
             rect.max.x = rect.min.x + width;
             rect.max.y = rect.min.y + height;
             viewer.viewport().setViewportRect( rect );
+            updateViewports_( {} );
             break;
     }
     return false;
@@ -382,6 +378,7 @@ using SetSingleViewport = SetViewportConfigPresetMenuItemTemplate<SetViewportCon
 using SetHorizontalViewport = SetViewportConfigPresetMenuItemTemplate<SetViewportConfigPresetMenuItem::Type::Horizontal>;
 using SetVerticalViewport = SetViewportConfigPresetMenuItemTemplate<SetViewportConfigPresetMenuItem::Type::Vertical>;
 using SetQuadViewport = SetViewportConfigPresetMenuItemTemplate<SetViewportConfigPresetMenuItem::Type::Quad>;
+using SetHexViewport = SetViewportConfigPresetMenuItemTemplate<SetViewportConfigPresetMenuItem::Type::Hex>;
 
 MR_REGISTER_RIBBON_ITEM( ResetSceneMenuItem )
 
@@ -412,5 +409,7 @@ MR_REGISTER_RIBBON_ITEM( SetHorizontalViewport )
 MR_REGISTER_RIBBON_ITEM( SetVerticalViewport )
 
 MR_REGISTER_RIBBON_ITEM( SetQuadViewport )
+
+MR_REGISTER_RIBBON_ITEM( SetHexViewport )
 
 }

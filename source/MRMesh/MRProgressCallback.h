@@ -1,16 +1,13 @@
 #pragma once
 
-#include <functional>
+#include "MRMeshFwd.h"
+
+#include <cassert>
 
 namespace MR
 {
 
-/// Argument value - progress in [0,1];
-/// returns true to continue the operation and returns false to stop the operation
-/// \ingroup BasicStructuresGroup
-typedef std::function<bool( float )> ProgressCallback;
-
-/// safely invokes \param cv with given value; just returning true for empty callback
+/// safely invokes \param cb with given value; just returning true for empty callback
 inline bool reportProgress( ProgressCallback cb, float v )
 {
     if ( cb )
@@ -18,7 +15,7 @@ inline bool reportProgress( ProgressCallback cb, float v )
     return true;
 }
 
-/// safely invokes \param cv with given value if \param counter is divisible by \param divider (preferably a power of 2);
+/// safely invokes \param cb with given value if \param counter is divisible by \param divider (preferably a power of 2);
 /// just returning true for empty callback
 inline bool reportProgress( ProgressCallback cb, float v, size_t counter, int divider )
 {
@@ -27,7 +24,7 @@ inline bool reportProgress( ProgressCallback cb, float v, size_t counter, int di
     return true;
 }
 
-/// safely invokes \param cv with the value produced by given functor;
+/// safely invokes \param cb with the value produced by given functor;
 /// just returning true for empty callback and not evaluating the function
 template<typename F>
 inline bool reportProgress( ProgressCallback cb, F && f )
@@ -37,7 +34,7 @@ inline bool reportProgress( ProgressCallback cb, F && f )
     return true;
 }
 
-/// safely invokes \param cv with the value produced by given functor if \param counter is divisible by \param divider (preferably a power of 2);
+/// safely invokes \param cb with the value produced by given functor if \param counter is divisible by \param divider (preferably a power of 2);
 /// just returning true for empty callback and not evaluating the function
 template<typename F>
 inline bool reportProgress( ProgressCallback cb, F && f, size_t counter, int divider )
@@ -64,6 +61,16 @@ inline ProgressCallback subprogress( ProgressCallback cb, F && f )
     if ( cb )
         res = [cb, f = std::forward<F>( f )]( float v ) { return cb( f( v ) ); };
     return res;
+}
+
+/// returns a callback that maps [0,1] linearly into [(index+0)/count,(index+1)/count] in the call to \param cb (which can be empty)
+inline ProgressCallback subprogress( ProgressCallback cb, size_t index, size_t count )
+{
+    assert( index < count );
+    if ( cb )
+        return [cb, index, count] ( float v ) { return cb( ( (float)index + v ) / (float)count ); };
+    else
+        return {};
 }
 
 } //namespace MR

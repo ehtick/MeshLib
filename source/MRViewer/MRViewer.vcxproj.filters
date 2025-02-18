@@ -71,6 +71,18 @@
     <Filter Include="UIStyle">
       <UniqueIdentifier>{0cc885c2-7327-42c4-9981-609b4faa2b91}</UniqueIdentifier>
     </Filter>
+    <Filter Include="resource\independent_icons">
+      <UniqueIdentifier>{8622b9c8-2434-4f92-abef-5aa69020ce74}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resource\independent_icons\X1">
+      <UniqueIdentifier>{37179315-11cc-4cdc-a436-43212ae75126}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resource\independent_icons\X3">
+      <UniqueIdentifier>{45fcdb0a-41ef-49c2-9cbf-10737e61ba27}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="resource\textures">
+      <UniqueIdentifier>{6bd35111-e84a-4284-9b50-7898d961d1fa}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ImGuiMenu.cpp">
@@ -127,9 +139,6 @@
     <ClCompile Include="MRAlphaSortGL.cpp">
       <Filter>Render</Filter>
     </ClCompile>
-    <ClCompile Include="MRImmediateGL.cpp">
-      <Filter>Render</Filter>
-    </ClCompile>
     <ClCompile Include="MRViewportGL.cpp">
       <Filter>Render</Filter>
     </ClCompile>
@@ -161,6 +170,9 @@
       <Filter>ShortcutManager</Filter>
     </ClCompile>
     <ClCompile Include="MRMouseController.cpp">
+      <Filter>ShortcutManager</Filter>
+    </ClCompile>
+    <ClCompile Include="MRTouchpadController.cpp">
       <Filter>ShortcutManager</Filter>
     </ClCompile>
     <ClCompile Include="MRRibbonButtonDrawer.cpp">
@@ -199,6 +211,9 @@
     <ClCompile Include="ImGuiHelpers.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MRImGuiMeasurementIndicators.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MRPickHoleBorderElement.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -223,7 +238,7 @@
     <ClCompile Include="MRObjectMeshHistory.cpp">
       <Filter>History</Filter>
     </ClCompile>
-    <ClCompile Include="MRViewerIO.cpp">
+    <ClCompile Include="MRSaveObjects.cpp">
       <Filter>IO</Filter>
     </ClCompile>
     <ClCompile Include="MRRenderGLHelpers.cpp">
@@ -286,15 +301,177 @@
     <ClCompile Include="MRCudaAccessor.cpp">
       <Filter>Viewer</Filter>
     </ClCompile>
+    <ClCompile Include="MRTouchpadWin32Handler.cpp">
+      <Filter>ShortcutManager</Filter>
+    </ClCompile>
+    <ClCompile Include="MRObjectPointsHistory.cpp">
+      <Filter>History</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSurfaceManipulationWidget.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSceneTextureGL.cpp">
+      <Filter>Render</Filter>
+    </ClCompile>
+    <ClCompile Include="MRViewerEventQueue.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRibbonMenuSearch.cpp">
+      <Filter>RibbonMenu</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSelectCurvaturePreference.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRDirectionWidget.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRibbonNotification.cpp">
+      <Filter>RibbonMenu</Filter>
+    </ClCompile>
+    <ClCompile Include="MRViewportDraw.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRPickPointManager.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderFeatureObjects.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderNameObject.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRMeshBoundarySelectionWidget.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRFrameCounter.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRAncillaryLabels.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRAncillaryLines.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRAncillaryMesh.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRAncillaryPoints.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRHistoryStore.cpp">
+      <Filter>History</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderDimensions.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderMeasurementObjects.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUnits.cpp">
+      <Filter>UIStyle</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUnitSettings.cpp">
+      <Filter>UIStyle</Filter>
+    </ClCompile>
+    <ClCompile Include="MRVisualSubfeatures.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderDefaultObjects.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRImGuiMenuListeners.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRMoveObjectByMouseImpl.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUITestEngine.cpp">
+      <Filter>UIStyle</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSceneCache.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSpaceMouseHandler3dxMacDriver.cpp">
+      <Filter>SpaceMouse</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSceneObjectsListDrawer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRibbonSceneObjectsListDrawer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUIRectAllocator.cpp">
+      <Filter>UIStyle</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUINonOverlappingLabels.cpp">
+      <Filter>UIStyle</Filter>
+    </ClCompile>
+    <ClCompile Include="MRViewerSettingsPlugin.cpp">
+      <Filter>Plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="MRGLTexture.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRConsoleWindows.cpp">
+      <Filter>IO</Filter>
+    </ClCompile>
+    <ClCompile Include="MRRenderImGuiLabelObject.cpp">
+      <Filter>Render\Implementations</Filter>
+    </ClCompile>
+    <ClCompile Include="MRMarkedVoxelSlice.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRPointsShader.cpp">
+      <Filter>Render\Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="MRMacOSOpenDocumentsHandler.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRCPRTests.cpp">
+      <Filter>Requests</Filter>
+    </ClCompile>
+    <ClCompile Include="MRClipboard.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRObjectImGuiLabel.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRSceneOperations.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRShowModal.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRUISaveChangesPopup.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="SceneReorder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRProjectMeshAttributes.cpp">
+      <Filter>Helpers</Filter>
+    </ClCompile>
+    <ClCompile Include="MRViewerTitle.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MROpenObjects.cpp">
+      <Filter>IO</Filter>
+    </ClCompile>
+    <ClCompile Include="MRViewportCornerController.cpp">
+      <Filter>Viewer</Filter>
+    </ClCompile>
+    <ClCompile Include="MRObjectMeshSubdivide.cpp">
+      <Filter>History</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ImGuiHelpers.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="ImGuiMenu.h">
+    <ClInclude Include="MRImGuiMeasurementIndicators.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="ImGuiTraits.h">
+    <ClInclude Include="ImGuiMenu.h">
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="MRMenu.h">
@@ -313,6 +490,7 @@
       <Filter>MeshModifier</Filter>
     </ClInclude>
     <ClInclude Include="exports.h" />
+    <ClInclude Include="MRImGui.h" />
     <ClInclude Include="MRViewport.h">
       <Filter>Viewer</Filter>
     </ClInclude>
@@ -364,20 +542,8 @@
     <ClInclude Include="MRGLMacro.h">
       <Filter>Render</Filter>
     </ClInclude>
-    <ClInclude Include="MRImmediateGL.h">
-      <Filter>Render</Filter>
-    </ClInclude>
     <ClInclude Include="MRViewportGL.h">
       <Filter>Render</Filter>
-    </ClInclude>
-    <ClInclude Include="MRMeshViewer.h">
-      <Filter>Viewer</Filter>
-    </ClInclude>
-    <ClInclude Include="MRMeshViewerPlugin.h">
-      <Filter>Viewer</Filter>
-    </ClInclude>
-    <ClInclude Include="MRMeshViewport.h">
-      <Filter>Viewer</Filter>
     </ClInclude>
     <ClInclude Include="MRPythonAppendCommand.h">
       <Filter>Python</Filter>
@@ -420,6 +586,9 @@
       <Filter>ShortcutManager</Filter>
     </ClInclude>
     <ClInclude Include="MRTouchesController.h">
+      <Filter>ShortcutManager</Filter>
+    </ClInclude>
+    <ClInclude Include="MRTouchpadController.h">
       <Filter>ShortcutManager</Filter>
     </ClInclude>
     <ClInclude Include="MRRibbonButtonDrawer.h">
@@ -476,7 +645,7 @@
     <ClInclude Include="MRObjectMeshHistory.h">
       <Filter>History</Filter>
     </ClInclude>
-    <ClInclude Include="MRViewerIO.h">
+    <ClInclude Include="MRSaveObjects.h">
       <Filter>IO</Filter>
     </ClInclude>
     <ClInclude Include="MRPlaneWidget.h">
@@ -539,9 +708,213 @@
     <ClInclude Include="MRCudaAccessor.h">
       <Filter>Viewer</Filter>
     </ClInclude>
+    <ClInclude Include="MRTouchpadWin32Handler.h">
+      <Filter>ShortcutManager</Filter>
+    </ClInclude>
+    <ClInclude Include="MRObjectPointsHistory.h">
+      <Filter>History</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSurfaceManipulationWidget.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSceneTextureGL.h">
+      <Filter>Render</Filter>
+    </ClInclude>
+    <ClInclude Include="MRViewerEventQueue.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRibbonMenuSearch.h">
+      <Filter>RibbonMenu</Filter>
+    </ClInclude>
+    <ClInclude Include="MRTouchpadParameters.h">
+      <Filter>ShortcutManager</Filter>
+    </ClInclude>
+    <ClInclude Include="MRViewportParametersAction.h">
+      <Filter>History</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSelectCurvaturePreference.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSpaceMouseParameters.h">
+      <Filter>ShortcutManager</Filter>
+    </ClInclude>
+    <ClInclude Include="MRFitData.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRPointInAllSpaces.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRDirectionWidget.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRibbonNotification.h">
+      <Filter>RibbonMenu</Filter>
+    </ClInclude>
+    <ClInclude Include="MRNotificationType.h">
+      <Filter>RibbonMenu</Filter>
+    </ClInclude>
+    <ClInclude Include="MRPickPointManager.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRImGuiVectorOperators.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderDefaultObjects.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderFeatureObjects.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderNameObject.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMeshBoundarySelectionWidget.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderWrapObject.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRFrameCounter.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRAncillaryLabels.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRAncillaryLines.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRAncillaryMesh.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRAncillaryPoints.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRISceneStateCheck.h">
+      <Filter>StatePlugins</Filter>
+    </ClInclude>
+    <ClInclude Include="MRHistoryStore.h">
+      <Filter>History</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderDimensions.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderMeasurementObjects.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRLambdaRibbonItem.h">
+      <Filter>RibbonMenu</Filter>
+    </ClInclude>
+    <ClInclude Include="MRVectorTraits.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUnits.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUnitSettings.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUIStyle.ipp">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRVisualSubfeatures.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSignalCombiners.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRImGuiMenuListeners.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMoveObjectByMouseImpl.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUITestEngine.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSceneCache.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSpaceMouseHandler3dxMacDriver.h">
+      <Filter>SpaceMouse</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSceneObjectsListDrawer.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRibbonSceneObjectsListDrawer.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUIRectAllocator.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUINonOverlappingLabels.h">
+      <Filter>UIStyle</Filter>
+    </ClInclude>
+    <ClInclude Include="MRViewerSettingsPlugin.h">
+      <Filter>Plugins</Filter>
+    </ClInclude>
+    <ClInclude Include="MRGLTexture.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRConsoleWindows.h">
+      <Filter>IO</Filter>
+    </ClInclude>
+    <ClInclude Include="MRRenderImGuiLabelObject.h">
+      <Filter>Render\Implementations</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMarkedVoxelSlice.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRPointsShader.h">
+      <Filter>Render\Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMacOSOpenDocumentsHandler.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRClipboard.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRObjectImGuiLabel.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRSceneOperations.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MRShowModal.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMakeSlot.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRUISaveChangesPopup.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="SceneReorder.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MRProjectMeshAttributes.h">
+      <Filter>Helpers</Filter>
+    </ClInclude>
+    <ClInclude Include="MROpenObjects.h">
+      <Filter>IO</Filter>
+    </ClInclude>
+    <ClInclude Include="MRViewerTitle.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRViewportCornerController.h">
+      <Filter>Viewer</Filter>
+    </ClInclude>
+    <ClInclude Include="MRObjectMeshSubdivide.h">
+      <Filter>History</Filter>
+    </ClInclude>
+    <ClInclude Include="MRMruFormatParameters.h">
+      <Filter>IO</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\MeshLib\source\.editorconfig" />
+    <None Include="MRMacOSOpenDocumentsHandler.mm">
+      <Filter>Viewer</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <CopyFileToFolders Include="..\..\thirdparty\imgui\misc\fonts\Cousine-Regular.ttf">
@@ -622,6 +995,111 @@
     </Image>
     <Image Include="resource\object_icons\X3\ObjectGcode.png">
       <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\ObjectLabel.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\ObjectLabel.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\CircleObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\ConeObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\CylinderObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\LineObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\PlaneObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\PointObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\SphereObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\CircleObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\ConeObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\CylinderObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\LineObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\PlaneObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\PointObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\SphereObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\AngleMeasurementObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\DistanceMeasurementObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\RadiusMeasurementObject.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\AngleMeasurementObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\DistanceMeasurementObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\RadiusMeasurementObject.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X1\Plane Import.png">
+      <Filter>resource\independent_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X1\Plane XY.png">
+      <Filter>resource\independent_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X1\Plane XZ.png">
+      <Filter>resource\independent_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X1\Plane YZ.png">
+      <Filter>resource\independent_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X3\Plane Import.png">
+      <Filter>resource\independent_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X3\Plane XY.png">
+      <Filter>resource\independent_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X3\Plane XZ.png">
+      <Filter>resource\independent_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\independent_icons\X3\Plane YZ.png">
+      <Filter>resource\independent_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X1\Object_open.png">
+      <Filter>resource\object_icons\X1</Filter>
+    </Image>
+    <Image Include="resource\object_icons\X3\Object_open.png">
+      <Filter>resource\object_icons\X3</Filter>
+    </Image>
+    <Image Include="resource\textures\controller_cube_default.png">
+      <Filter>resource\textures</Filter>
+    </Image>
+    <Image Include="resource\textures\controller_cube_edges.png">
+      <Filter>resource\textures</Filter>
+    </Image>
+    <Image Include="resource\textures\controller_cube_sides.png">
+      <Filter>resource\textures</Filter>
     </Image>
   </ItemGroup>
 </Project>

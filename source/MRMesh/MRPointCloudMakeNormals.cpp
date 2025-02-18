@@ -9,121 +9,249 @@
 #include "MRTimer.h"
 #include "MRPlane3.h"
 #include "MRPointCloudRadius.h"
+#include "MRPointsProject.h"
+#include "MRHeap.h"
+#include "MRBuffer.h"
+#include "MRLocalTriangulations.h"
 #include <cfloat>
-#include <queue>
 
 namespace MR
 {
 
-struct NormalCandidate
+std::optional<VertNormals> makeUnorientedNormals( const PointCloud& pointCloud, float radius, const ProgressCallback & progress, OrientNormals orient )
 {
-    NormalCandidate() = default;
-    NormalCandidate(VertId _id, VertId _baseId,float w ):
-        id{_id}, baseId{_baseId}, weight{w}{}
-    VertId id;
-    VertId baseId;
-    float weight{FLT_MAX};
-};
+    MR_TIMER
 
-bool operator < ( const NormalCandidate& l, const NormalCandidate& r )
-{
-    return l.weight > r.weight;
-}
-
-VertCoords makeNormals( const PointCloud& pointCloud, int avgNeighborhoodSize )
-{
-    MR_TIMER;
-
-    VertCoords normals( pointCloud.points.size() );
-    const auto& tree = pointCloud.getAABBTree();
-    AABBTreePoints::NodeId nodeId = tree.rootNodeId();
-    while ( !tree[nodeId].leaf() )
-        nodeId = tree[nodeId].leftOrFirst;
-
-    auto firstLeafRadius = findAvgPointsRadius( pointCloud, avgNeighborhoodSize );
-
-    BitSetParallelFor( pointCloud.validPoints, [&]( VertId vid )
+    VertNormals normals;
+    normals.resizeNoInit( pointCloud.points.size() );
+    if ( !BitSetParallelFor( pointCloud.validPoints, [&, radiusSq = sqr( radius )]( VertId vid )
     {
         PointAccumulator accum;
-        findPointsInBall( pointCloud, pointCloud.points[vid], firstLeafRadius, 
-                          [&]( VertId, const Vector3f& coord )
+        findPointsInBall( pointCloud, { pointCloud.points[vid], radiusSq }, [&]( VertId, const Vector3f& coord )
         {
             accum.addPoint( Vector3d( coord ) );
         } );
-        normals[vid] = Vector3f( accum.getBestPlane().n ).normalized();
-    } );
-
-    VertScalars minWeights( normals.size(), FLT_MAX );
-    std::priority_queue<NormalCandidate> queue;
-
-    auto enweight = [&]( VertId base, VertId candidate )
-    {
-        Vector3f cb = pointCloud.points[base] - pointCloud.points[candidate];
-        return 0.01f * cb.lengthSq() + sqr( dot( cb, normals[base] ) ) + sqr( dot( cb, normals[candidate] ) );
-    };
-
-    VertBitSet notVisited = pointCloud.validPoints;
-
-    auto enqueueNeighbors = [&]( VertId base )
-    {
-        notVisited.reset( base );
-        findPointsInBall( pointCloud, pointCloud.points[base], firstLeafRadius,
-                          [&]( VertId v, const Vector3f& )
+        auto n = Vector3f( accum.getBestPlane().n );
+        if ( orient != OrientNormals::Smart )
         {
-            if ( v == base )
-                return;
-            float weight = enweight( base, v );
-            if ( weight < minWeights[v] )
-            {
-                queue.emplace( v, base, weight );
-                minWeights[v] = weight;
-            }
-        } );
-    };
-
-    auto findFirst = [&]()->VertId
-    {
-        MR_TIMER;
-        VertId xMostVert = {};
-        float maxX = -FLT_MAX;
-        for ( auto v : notVisited )
-        {
-            assert( minWeights[v] == FLT_MAX );
-            auto xDot = dot( pointCloud.points[v], Vector3f::plusX() );
-            if ( xDot > maxX )
-            {
-                xMostVert = v;
-                maxX = xDot;
-            }
+            if ( ( dot( n, pointCloud.points[vid] ) > 0 ) == ( orient == OrientNormals::TowardOrigin ) )
+                n = -n;
         }
-        if ( xMostVert )
-        {
-            minWeights[xMostVert] = 0.0f;
-            if ( dot( normals[xMostVert], Vector3f::plusX() ) < 0.0f )
-                normals[xMostVert] = -normals[xMostVert];
-        }
-        return xMostVert;
-    };
-
-    NormalCandidate current;
-    VertId first = findFirst();
-    while ( first.valid() )
-    {
-        enqueueNeighbors( first );
-        while ( !queue.empty() )
-        {
-            current = queue.top(); // cannot use std::move unfortunately since top() returns const reference
-            queue.pop();
-            if ( current.weight > minWeights[current.id] )
-                continue;
-            if ( dot( normals[current.baseId], normals[current.id] ) < 0.0f )
-                normals[current.id] = -normals[current.id];
-            enqueueNeighbors( current.id );
-        }
-        first = findFirst();
-    }
+        normals[vid] = n;
+    }, progress ) )
+        return {};
 
     return normals;
 }
 
+std::optional<VertNormals> makeUnorientedNormals( const PointCloud& pointCloud, const AllLocalTriangulations& triangs, const ProgressCallback & progress, OrientNormals orient )
+{
+    MR_TIMER
+
+    VertNormals normals;
+    normals.resizeNoInit( pointCloud.points.size() );
+    if ( !BitSetParallelFor( pointCloud.validPoints, [&]( VertId v )
+    {
+        auto n = computeNormal( triangs, pointCloud.points, v );
+        if ( orient != OrientNormals::Smart )
+        {
+            if ( ( dot( n, pointCloud.points[v] ) > 0 ) == ( orient == OrientNormals::TowardOrigin ) )
+                n = -n;
+        }
+        normals[v] = n;
+    }, progress ) )
+        return {};
+
+    return normals;
 }
+
+std::optional<VertNormals> makeUnorientedNormals( const PointCloud& pointCloud,
+    const Buffer<VertId> & closeVerts, int numNei, const ProgressCallback & progress, OrientNormals orient )
+{
+    MR_TIMER
+
+    VertNormals normals;
+    normals.resizeNoInit( pointCloud.points.size() );
+    if ( !BitSetParallelFor( pointCloud.validPoints, [&]( VertId vid )
+    {
+        PointAccumulator accum;
+        accum.addPoint( pointCloud.points[vid] );
+        VertId * p = closeVerts.data() + ( (size_t)vid * numNei );
+        const VertId * pEnd = p + numNei;
+        for ( ; p < pEnd && *p; ++p )
+            accum.addPoint( pointCloud.points[*p] );
+        auto n = Vector3f( accum.getBestPlane().n );
+        if ( orient != OrientNormals::Smart )
+        {
+            if ( ( dot( n, pointCloud.points[vid] ) > 0 ) == ( orient == OrientNormals::TowardOrigin ) )
+                n = -n;
+        }
+        normals[vid] = n;
+    }, progress ) )
+        return {};
+
+    return normals;
+}
+
+template<class T>
+bool orientNormalsCore( const PointCloud& pointCloud, VertNormals& normals, const T & enumNeis, ProgressCallback progress )
+{
+    MR_TIMER
+
+    const auto bbox = pointCloud.computeBoundingBox();
+    if ( !reportProgress( progress, 0.025f ) )
+        return false;
+
+    const auto center = bbox.center();
+    const auto maxDistSqToCenter = bbox.size().lengthSq() / 4;
+
+    constexpr auto InvalidWeight = -FLT_MAX;
+    using HeapT = Heap<float, VertId>;
+    std::vector<HeapT::Element> elements;
+    elements.reserve( normals.size() );
+    for ( VertId v = 0_v; v < normals.size(); ++v )
+        elements.push_back( { v, InvalidWeight } );
+
+    if ( !reportProgress( progress, 0.05f ) )
+        return false;
+
+    // fill elements with negative weights: larger weight (smaller by magnitude) for points further from the center
+    if ( !BitSetParallelFor( pointCloud.validPoints, [&]( VertId v )
+    {
+        const auto dcenter = pointCloud.points[v] - center;
+        const auto w = dcenter.lengthSq() - maxDistSqToCenter;
+        assert( w <= 0 );
+        elements[(int)v].val = w;
+        // initially orient points' normals' outside of the center
+        if ( dot( normals[v], dcenter ) < 0 )
+            normals[v] = -normals[v];
+    }, subprogress( progress, 0.05f, 0.075f ) ) )
+        return false;
+
+    HeapT heap( std::move( elements ) );
+
+    if ( !reportProgress( progress, 0.1f ) )
+        return false;
+
+    progress = subprogress( progress, 0.1f, 1.0f );
+
+    auto enweight = [&]( VertId base, VertId candidate )
+    {
+        // give positive weight to neighbours, with larger value to close points with close normal directions
+        const Vector3f cb = pointCloud.points[base] - pointCloud.points[candidate];
+        const auto d = 0.01f * cb.lengthSq() + sqr( dot( cb, normals[base] ) ) + sqr( dot( cb, normals[candidate] ) );
+        return d > 0 ? 1 / d : FLT_MAX;
+    };
+
+    VertBitSet notVisited = pointCloud.validPoints;
+    const auto totalCount = notVisited.count();
+    size_t visitedCount = 0;
+
+    auto enqueueNeighbors = [&]( VertId base )
+    {
+        assert( notVisited.test( base ) );
+        notVisited.reset( base );
+        ++visitedCount;
+        enumNeis( base, [&]( VertId v )
+        {
+            assert ( v != base );
+            if ( !notVisited.test( v ) )
+                return;
+            float weight = enweight( base, v );
+            if ( weight > heap.value( v ) )
+            {
+                heap.setLargerValue( v, weight );
+                if ( dot( normals[base], normals[v] ) < 0 )
+                    normals[v] = -normals[v];
+            }
+        } );
+    };
+
+    for (;;)
+    {
+        auto [v, weight] = heap.top();
+        if ( weight == InvalidWeight )
+            break;
+        heap.setSmallerValue( v, InvalidWeight );
+        enqueueNeighbors( v );
+        if ( !reportProgress( progress, [&] { return (float)visitedCount / totalCount; }, visitedCount, 0x10000 ) )
+            return false;
+    }
+    return true;
+}
+
+bool orientNormals( const PointCloud& pointCloud, VertNormals& normals, float radius, const ProgressCallback & progress )
+{
+    return orientNormalsCore( pointCloud, normals,
+        [&, radiusSq = sqr( radius )]( VertId base, auto callback )
+        {
+            findPointsInBall( pointCloud, { pointCloud.points[base], radiusSq },
+                [&]( VertId v, const Vector3f& )
+                {
+                    if ( v == base )
+                        return;
+                    callback( v );
+                } );
+        }, progress );
+}
+
+bool orientNormals( const PointCloud& pointCloud, VertNormals& normals, const Buffer<VertId> & closeVerts, int numNei,
+    const ProgressCallback & progress )
+{
+    return orientNormalsCore( pointCloud, normals,
+        [&]( VertId base, auto callback )
+        {
+            VertId * p = closeVerts.data() + ( (size_t)base * numNei );
+            const VertId * pEnd = p + numNei;
+            for ( ; p < pEnd && *p; ++p )
+                callback( *p );
+        }, progress );
+}
+
+bool orientNormals( const PointCloud& pointCloud, VertNormals& normals, const AllLocalTriangulations& triangs,
+     const ProgressCallback & progress )
+{
+    MR_TIMER
+    return orientNormalsCore( pointCloud, normals,
+        [&triangs]( VertId v, auto callback )
+        {
+            const auto * p = triangs.neighbors.data() + triangs.fanRecords[v].firstNei;
+            const auto * pEnd = triangs.neighbors.data() + triangs.fanRecords[v+1].firstNei;
+            for ( ; p < pEnd; ++p )
+                callback( *p );
+        }, progress );
+}
+
+std::optional<VertNormals> makeOrientedNormals( const PointCloud& pointCloud,
+    float radius, const ProgressCallback & progress )
+{
+    MR_TIMER
+
+    auto optNormals = makeUnorientedNormals( pointCloud, radius, subprogress( progress, 0.0f, 0.1f ) );
+    if ( !optNormals )
+        return optNormals;
+
+    if ( !orientNormals( pointCloud, *optNormals, radius, subprogress( progress, 0.1f, 1.0f ) ) )
+        optNormals.reset();
+
+    return optNormals;
+}
+
+std::optional<VertNormals> makeOrientedNormals( const PointCloud& pointCloud,
+    AllLocalTriangulations& triangs, const ProgressCallback & progress )
+{
+    MR_TIMER
+
+    if ( !autoOrientLocalTriangulations( pointCloud, triangs, pointCloud.validPoints, subprogress( progress, 0.0f, 0.9f ) ) )
+        return {};
+
+    // since triangulations are oriented then normals will be oriented as well
+    return makeUnorientedNormals( pointCloud, triangs, subprogress( progress, 0.9f, 1.0f ) );
+}
+
+VertNormals makeNormals( const PointCloud& pointCloud, int avgNeighborhoodSize )
+{
+    return *makeOrientedNormals( pointCloud, findAvgPointsRadius( pointCloud, avgNeighborhoodSize ) );
+}
+
+} //namespace MR

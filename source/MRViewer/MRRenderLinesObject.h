@@ -9,14 +9,14 @@
 
 namespace MR
 {
-class RenderLinesObject : public IRenderObject
+class RenderLinesObject : public virtual IRenderObject
 {
 public:
     RenderLinesObject( const VisualObject& visObj );
     ~RenderLinesObject();
 
-    virtual void render( const RenderParams& params ) override;
-    virtual void renderPicker( const BaseRenderParams& params, unsigned geomId ) override;
+    virtual bool render( const ModelRenderParams& params ) override;
+    virtual void renderPicker( const ModelBaseRenderParams& params, unsigned geomId ) override;
     virtual size_t heapBytes() const override;
     virtual size_t glBytes() const override;
     virtual void forceBindAll() override;
@@ -34,8 +34,8 @@ private:
     GlTexture2 vertColorsTex_;
     GlTexture2 lineColorsTex_;
 
-    void render_( const RenderParams& params, bool points );
-    void renderPicker_( const BaseRenderParams& params, unsigned geomId, bool points );
+    void render_( const ModelRenderParams& params, bool points );
+    void renderPicker_( const ModelBaseRenderParams& params, unsigned geomId, bool points );
 
     void bindPositions_( GLuint shaderId );
 

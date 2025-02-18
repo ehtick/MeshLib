@@ -1,6 +1,7 @@
 #pragma once
 #include "exports.h"
 #include "MRMesh/MRColor.h"
+#include "MRMesh/MRSignal.h"
 #include "MRPch/MRJson.h"
 #include <filesystem>
 #include <vector>
@@ -15,6 +16,8 @@ namespace MR
 class ColorTheme
 {
 public:
+    MRVIEWER_API static ColorTheme& instance();
+
     enum class Preset
     {
         Dark,
@@ -41,9 +44,9 @@ public:
     MRVIEWER_API static void setupDefaultLight();
     MRVIEWER_API static void setupUserTheme( const std::string& themeName );
     // Setup this struct from serialized color-theme file
-    MRVIEWER_API static void setupFromFile( const std::filesystem::path& path );
+    MRVIEWER_API static void setupFromFile( const std::filesystem::path& path, Type type = Type::User );
     // Setup this struct from Json value
-    MRVIEWER_API static void setupFromJson( const Json::Value& value );
+    MRVIEWER_API static void setupFromJson( const Json::Value& value, Type type = Type::User );
 
     // Setup this struct from current application colors, and serialize them to file
     // gets scene colors from first ObjectMesh, if it is present
@@ -66,6 +69,7 @@ public:
     enum class RibbonColorsType
     {
         Background,
+        BackgroundSecStyle,
         HeaderBackground,
         HeaderSeparator,
         TopPanelBackground,
@@ -76,18 +80,23 @@ public:
 
         TabHovered,
         TabClicked,
-
         TabActive,
         TabActiveHovered,
         TabActiveClicked,
-
         TabText,
         TabActiveText,
+
+        DialogTab,
+        DialogTabHovered,
+        DialogTabActive,
+        DialogTabActiveHovered,
+        DialogTabText,
+        DialogTabActiveText,
 
         ToolbarHovered,
         ToolbarClicked,
 
-        ToolbarCustomizeBg,
+        ModalBackground,
 
         Text,
         TextEnabled,
@@ -111,6 +120,8 @@ public:
         GradientStart,
         GradientEnd,
 
+        TextContrastBackground,
+
         GradBtnStart,
         GradBtnHoverStart,
         GradBtnActiveStart,
@@ -120,6 +131,13 @@ public:
         GradBtnActiveEnd,
         GradBtnDisableEnd,
         GradBtnText,
+
+        GradBtnSecStyleStart,
+        GradBtnSecStyleHoverStart,
+        GradBtnSecStyleActiveStart,
+        GradBtnSecStyleEnd,
+        GradBtnSecStyleHoverEnd,
+        GradBtnSecStyleActiveEnd,
 
         Count
     };
@@ -143,13 +161,21 @@ public:
     // Returns directory where user's custom themes are stored
     MRVIEWER_API static std::filesystem::path getUserThemesDirectory();
 
+    // Find available custom themes
+    MRVIEWER_API static void updateUserThemesList();
+    // Return list of found custom themes
+    MRVIEWER_API static std::vector<std::string> foundUserThemes();
+
     // Reset ImGui style sizes and colors, and apply menu scaling to it
     MRVIEWER_API static void resetImGuiStyle();
+
+    /// Connects given slot to receive signal on every Color Theme change, triggered in apply
+    MRVIEWER_API static boost::signals2::connection onChanged( const std::function<void()>& slot, boost::signals2::connect_position position = boost::signals2::at_back );
+
 private:
     ColorTheme() = default;
     ~ColorTheme() = default;
 
-    static ColorTheme& instance_();
 
     std::vector<Color> sceneColors_;
     Preset themePreset_ = Preset::Dark;
@@ -158,6 +184,11 @@ private:
 
     Type type_{ Type::Default };
     std::string themeName_;
+
+    std::vector<std::string> foundUserThemes_;
+
+    using ChangedSignal = Signal<void()>;
+    ChangedSignal changedSignal_;
 };
 
 }

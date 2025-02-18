@@ -12,10 +12,11 @@
 namespace MR
 {
 
-Mesh makeRegularGridMesh( size_t width, size_t height,
+Expected<Mesh> makeRegularGridMesh( size_t width, size_t height,
                           const RegularGridLatticeValidator& validator, 
                           const RegularGridLatticePositioner& positioner,
-                          const RegularGridMeshFaceValidator& faceValidator )
+                          const RegularGridMeshFaceValidator& faceValidator,
+                          ProgressCallback cb )
 {
     MR_TIMER
     Mesh res;
@@ -27,7 +28,7 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
 
     BitSet validGridVerts( width * height );
     gs.vertIds.b.resize( width * height );
-    BitSetParallelForAll( validGridVerts, [&]( size_t p )
+    auto result = BitSetParallelForAll( validGridVerts, [&]( size_t p )
     {
         auto y = p / width;
         auto x = p - y * width;
@@ -35,7 +36,10 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
             validGridVerts.set( p );
         else
             gs.vertIds.b[p] = VertId{};
-    } );
+    }, subprogress( cb, 0.0f, 0.1f ) );
+
+    if ( !result )
+        return unexpectedOperationCanceled();
 
     VertId nextVertId{ 0 };
     for ( auto p : validGridVerts )
@@ -44,12 +48,15 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
     const auto vertSize = size_t( nextVertId );
     gs.vertIds.tsize = vertSize;
     res.points.resize( vertSize );
-    BitSetParallelFor( validGridVerts, [&]( size_t p )
+    result = BitSetParallelFor( validGridVerts, [&]( size_t p )
     {
         auto y = p / width;
         auto x = p - y * width;
         res.points[gs.vertIds.b[p]] = positioner( x, y );
-    } );
+    }, subprogress( cb, 0.1f, 0.2f ) );
+
+    if ( !result )
+        return unexpectedOperationCanceled();
 
     BitSet validLoUpTris( 2 * ( width - 1 ) * ( height - 1 ) );
     BitSet diagonalA( ( width - 1 ) * ( height - 1 ) ); // if one of triangles is valid
@@ -62,7 +69,7 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
     };
 
     gs.faceIds.b.resize( validLoUpTris.size() );
-    BitSetParallelForAll( diagonalA, [&]( size_t p )
+    result = BitSetParallelForAll( diagonalA, [&]( size_t p )
     {
         const auto y = int( p / ( width - 1 ) );
         const auto x = int( p - y * ( width - 1 ) );
@@ -134,54 +141,64 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
             gs.faceIds.b[2 * p + 1] = FaceId{};
             break;
         }
-    } );
+    }, subprogress( cb, 0.2f, 0.3f ) );
+
+    if ( !result )
+        return unexpectedOperationCanceled();
 
     FaceId nextFaceId{ 0 };
     for ( auto p : validLoUpTris )
         gs.faceIds.b[p] = nextFaceId++;
     gs.faceIds.tsize = size_t( nextFaceId );
 
+    // return true if this edge has either left or right face
     auto hasEdge = [&]( Vector2i v, GridSettings::EdgeType et )
     {
-        VertId v0;
-        if ( et != GridSettings::EdgeType::DiagonalB )
-            v0 = getVertId( v );
-        else 
-            v0 = getVertId( Vector2i{ v.x + 1, v.y } );
-        if ( !v0 )
-            return false;
-
-        VertId v1;
-        switch ( et )
-        {
-        case GridSettings::EdgeType::Horizontal:
-            v1 = getVertId( Vector2i{ v.x + 1, v.y } );
-            break;
-        case GridSettings::EdgeType::DiagonalA:
-            v1 = getVertId( Vector2i{ v.x + 1, v.y + 1 } );
-            break;
-        default:
-            v1 = getVertId( Vector2i{ v.x, v.y + 1 } );
-        }
-        if ( !v1 )
-            return false;
-
-        if ( v.y + 1 == height )
-        {
-            assert ( et == GridSettings::EdgeType::Horizontal );
-            assert ( v.x + 1 < width );
-            return true;
-        }
-        if ( v.x + 1 == width && et != GridSettings::EdgeType::DiagonalB )
-        {
-            assert ( et == GridSettings::EdgeType::Vertical );
-            return true;
-        }
+        const auto hfidx = ( width - 1 ) * v.y + v.x;
         if ( et == GridSettings::EdgeType::Horizontal )
-            return true;
+        {
+            if ( v.x + 1 >= width )
+                return false;
+            return 
+                ( v.y + 1 < height && validLoUpTris.test( 2 * hfidx ) ) ||
+                ( v.y > 0 && validLoUpTris.test( 2 * ( hfidx - width + 1 ) + 1 ) );
+        }
+
         if ( et == GridSettings::EdgeType::Vertical )
-            return true;
-        auto hfidx = ( width - 1 ) * v.y + v.x;
+        {
+            if ( v.y + 1 >= height )
+                return false;
+            if ( v.x + 1 < width )
+            {
+                if ( diagonalA.test( hfidx ) )
+                {
+                    if ( validLoUpTris.test( 2 * hfidx + 1 ) )
+                        return true;
+                }
+                else
+                {
+                    if ( validLoUpTris.test( 2 * hfidx ) )
+                        return true;
+                }
+            }
+            if ( v.x > 0 )
+            {
+                if ( diagonalA.test( hfidx - 1 ) )
+                {
+                    if ( validLoUpTris.test( 2 * hfidx - 2 ) )
+                        return true;
+                }
+                else
+                {
+                    if ( validLoUpTris.test( 2 * hfidx - 1 ) )
+                        return true;
+                }
+            }
+            return false;
+        }
+        assert( et == GridSettings::EdgeType::DiagonalA || et == GridSettings::EdgeType::DiagonalB );
+        if ( v.x + 1 >= width || v.y + 1 >= height )
+            return false;
         if ( !validLoUpTris.test( 2 * hfidx ) && !validLoUpTris.test( 2 * hfidx + 1 ) )
             return false;
         return diagonalA.test( hfidx ) == ( et == GridSettings::EdgeType::DiagonalA );
@@ -189,7 +206,7 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
 
     BitSet validGridEdges( 4 * width * height );
     gs.uedgeIds.b.resize( 4 * width * height );
-    BitSetParallelForAll( validGridEdges, [&]( size_t loc )
+    result = BitSetParallelForAll( validGridEdges, [&]( size_t loc )
     {
         auto p = loc / 4;
         auto et = GridSettings::EdgeType( loc - p * 4 );
@@ -199,19 +216,28 @@ Mesh makeRegularGridMesh( size_t width, size_t height,
             validGridEdges.set( loc );
         else
             gs.uedgeIds.b[loc] = UndirectedEdgeId{};
-    } );
+    }, subprogress( cb, 0.3f, 0.4f ) );
+
+    if ( !result )
+        return unexpectedOperationCanceled();
 
     UndirectedEdgeId nextUEdgeId{ 0 };
     for ( auto p : validGridEdges )
         gs.uedgeIds.b[p] = nextUEdgeId++;
     gs.uedgeIds.tsize = size_t( nextUEdgeId );
 
-    res.topology.buildGridMesh( gs );
-    assert( res.topology.checkValidity() );
+    result = res.topology.buildGridMesh( gs, subprogress( cb, 0.4f, 0.8f ) );
+    if ( !result )
+        return unexpectedOperationCanceled();
+
+    result = res.topology.checkValidity( subprogress( cb, 0.8f, 1.0f ) );
+    if ( !result )
+        return unexpectedOperationCanceled();
+
     return res;
 }
 
-Expected<Mesh, std::string> makeRegularGridMesh( VertCoords points, ProgressCallback cb )
+Expected<Mesh> makeRegularGridMesh( VertCoords points, ProgressCallback cb )
 {
     MR_TIMER
     tbb::parallel_sort( points.vec_.begin(), points.vec_.end(), [] ( const auto& l, const auto& r )
@@ -261,7 +287,7 @@ Expected<Mesh, std::string> makeRegularGridMesh( VertCoords points, ProgressCall
         [&] ( size_t x, size_t y )->Vector3f
     {
         return points.vec_[positionOffsets[y] + x];
-    } );
+    }, {}, cb );
 
     if ( cb && !cb( 1.0f ) )
         return unexpectedOperationCanceled();
@@ -272,17 +298,17 @@ TEST(MRMesh, makeRegularGridMesh)
 {
      auto m = makeRegularGridMesh( 2, 2,
          []( size_t, size_t ) { return true; },
-         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } );
+         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } ).value();
      ASSERT_TRUE( m.topology.checkValidity() );
 
      m = makeRegularGridMesh( 2, 3,
          []( size_t, size_t ) { return true; },
-         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } );
+         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } ).value();
      ASSERT_TRUE( m.topology.checkValidity() );
 
      m = makeRegularGridMesh( 5, 3,
          []( size_t, size_t ) { return true; },
-         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } );
+         []( size_t x, size_t y ) { return Vector3f( (float)x, (float)y, 0 ); } ).value();
      ASSERT_TRUE( m.topology.checkValidity() );
 }
 

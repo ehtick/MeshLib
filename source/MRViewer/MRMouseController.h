@@ -4,6 +4,7 @@
 #include "MRMesh/MRBitSet.h"
 #include "MRMesh/MRphmap.h"
 #include "MRMouse.h"
+#include "MRAsyncTimer.h"
 #include "MRMesh/MRVector2.h"
 #include "MRMesh/MRVector3.h"
 #include <optional>
@@ -23,7 +24,7 @@ public:
     struct MouseControlKey
     {
         MouseButton btn{ MouseButton::Left };
-        int mod{ 0 }; // modifier (alt/ctrl/shift etc.)
+        int mod{ 0 }; // modifier (GLFW_MOD_{SHIFT|CONTROL|ALT})
     };
 
     // called in Viewer init, connects to Viewer mouse signals
@@ -57,7 +58,7 @@ public:
     // cast simple int key to mouse button and modifier
     MRVIEWER_API static MouseControlKey keyToMouseAndMod( int key );
 
-    // Activate / diactivate mouse scroll in scene
+    // Activate / deactivate mouse scroll in scene
     MRVIEWER_API void setMouseScroll( bool active );
 
     // set callback to modify view transform before it is applied to viewport
@@ -65,12 +66,19 @@ public:
     
     // set callback to modify new field of view before it is applied to viewport
     void setFOVModifierCb( std::function<void( float& )> cb ) { fovModifierCb_ = cb; }
+
+    // get number of potential conflicts between opened plugins and camera controls
+    // plugin is conflicting if it listens for mouseDown or dragStart events, and camera control uses LMB
+    int getMouseConflicts();
+
 private:
     bool preMouseDown_( MouseButton button, int modifier );
+    bool cornerControllerMouseDown_( MouseButton button, int modifier );
     bool mouseDown_( MouseButton button, int modifier );
     bool preMouseUp_( MouseButton button, int modifier );
     bool preMouseMove_( int x, int y );
     bool mouseScroll_( float delta );
+    void preDraw_();
 
     bool isCursorInside_{ false };
     void cursorEntrance_( bool entered );
@@ -87,6 +95,14 @@ private:
     BitSet downState_;
     MouseMode currentMode_{ MouseMode::None };
 
+    // Variables related to mouseClick signal
+    MouseButton clickButton_{ MouseButton::NoButton };  // Current candidate for mouseClick
+    int clickModifiers_{};                              // Modifiers state at the moment of button press
+    Time clickTime_{};                                  // Time point of button press
+    MouseButton clickPendingDown_{ MouseButton::NoButton }; // Button for deterred camera operation
+    MouseButton dragButton_{ MouseButton::NoButton };   // Current candidate for dragging
+    bool dragActive_{};                                 // Dragging currently active
+
     using MouseModeMap = HashMap<int, MouseMode>;
     using MouseModeBackMap = HashMap<MouseMode, int>;
 
@@ -94,6 +110,9 @@ private:
     MouseModeBackMap backMap_;
 
     bool scrollActive_{ true };
+    RegionId viewControllerHoveredRegion_;
+    bool tryHoverViewController_();
+    bool tryPressViewController_();
 
     std::function<void( AffineXf3f& )> transformModifierCb_;
     std::function<void( float& )> fovModifierCb_;

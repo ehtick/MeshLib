@@ -8,6 +8,7 @@
 #include "MRTimer.h"
 #include "MRMesh.h"
 #include "MRComputeBoundingBox.h"
+#include "MREdgePaths.h"
 #include "MRPch/MRTBB.h"
 
 namespace MR
@@ -54,6 +55,14 @@ Polyline<V>::Polyline( const Contours3f& contours )
 }
 
 template<typename V>
+Polyline<V>::Polyline( const std::vector<VertId> & comp2firstVert, Vector<V, VertId> ps )
+{
+    MR_TIMER
+    topology.buildOpenLines( comp2firstVert );
+    points = std::move( ps );
+}
+
+template<typename V>
 EdgeId Polyline<V>::addFromPoints( const V * vs, size_t num, bool closed )
 {
     if ( !vs || num < 2 )
@@ -94,10 +103,34 @@ EdgeId Polyline<V>::addFromPoints( const V * vs, size_t num )
 }
 
 template<typename V>
+void MR::Polyline<V>::addPart( const Polyline<V>& from, VertMap * outVmap, WholeEdgeMap * outEmap )
+{
+    MR_TIMER
+
+    VertMap vmap;
+    VertMap* vmapPtr = outVmap ? outVmap : &vmap;
+    topology.addPart( from.topology, vmapPtr, outEmap );
+    const VertMap& vmapRef = *vmapPtr;
+
+    VertId lastPointId = topology.lastValidVert();
+    if ( points.size() < lastPointId + 1 )
+        points.resize( lastPointId + 1 );
+
+    for ( VertId fromv{ 0 }; fromv < vmapRef.size(); ++fromv )
+    {
+        VertId v = vmapRef[fromv];
+        if ( v.valid() )
+            points[v] = from.points[fromv];
+    }
+
+    invalidateCaches();
+}
+
+template<typename V>
 void MR::Polyline<V>::addPartByMask( const Polyline<V>& from, const UndirectedEdgeBitSet& mask, 
     VertMap* outVmap /*= nullptr*/, EdgeMap* outEmap /*= nullptr */ )
 {
-    MR_TIMER;
+    MR_TIMER
 
     VertMap vmap;
     VertMap* vmapPtr = outVmap ? outVmap : &vmap;
@@ -118,6 +151,48 @@ void MR::Polyline<V>::addPartByMask( const Polyline<V>& from, const UndirectedEd
     invalidateCaches();
 }
 
+template<typename V>
+void Polyline<V>::pack( VertMap * outVmap, WholeEdgeMap * outEmap )
+{
+    MR_TIMER
+
+    Polyline<V> packed;
+    packed.points.reserve( topology.numValidVerts() );
+    packed.topology.vertReserve( topology.numValidVerts() );
+    packed.topology.edgeReserve( 2 * topology.computeNotLoneUndirectedEdges() );
+    packed.addPart( *this, outVmap, outEmap );
+    *this = std::move( packed );
+}
+
+template<typename V>
+EdgePoint Polyline<V>::toEdgePoint( EdgeId e, const V & p ) const
+{
+    const auto & po = points[ topology.org( e ) ];
+    const auto & pd = points[ topology.dest( e ) ];
+    const auto dt = dot( p - po , pd - po );
+    const auto edgeLenSq = ( pd - po ).lengthSq();
+    if ( dt <= 0 || edgeLenSq <= 0 )
+        return { e, 0 };
+    if ( dt >= edgeLenSq )
+        return { e, 1 };
+    return { e, dt / edgeLenSq };
+}
+
+template<typename V>
+Vector3f MR::Polyline<V>::loopDirArea( EdgeId e0 ) const
+{
+    Vector3f area;
+    auto e = e0;
+    for ( ;; )
+    {
+        area += cross( Vector3f( orgPnt( e ) ), Vector3f( destPnt( e ) ) );
+        e = topology.next( e.sym() );
+        if ( e == e0 )
+            return area;
+        else if ( e == e0.sym() )
+            return Vector3f( 0.0f, 0.0f, FLT_MAX );
+    }
+}
 
 template<typename V>
 float Polyline<V>::totalLength() const
@@ -164,87 +239,106 @@ Box<V> Polyline<V>::computeBoundingBox( const AffineXf<V> * toWorld ) const
 }
 
 template<typename V>
-Contours<V> Polyline<V>::contours() const
+Contours<V> Polyline<V>::contours( std::vector<std::vector<VertId>>* vertMap ) const
 {
     MR_TIMER
     return topology.convertToContours<V>( 
-        [&points = this->points]( VertId v )
+        [&points = this->points] ( VertId v )
         {
             return points[v];
-        } 
+        }, vertMap
     );
 }
 
 template<typename V>
-Contours2f Polyline<V>::contours2() const
+Contours2f Polyline<V>::contours2( std::vector<std::vector<VertId>>* vertMap ) const
 {
     MR_TIMER
     return topology.convertToContours<Vector2f>( 
-        [&points = this->points]( VertId v )
+        [&points = this->points] ( VertId v )
         {
             return Vector2f{ points[v] };
-        } 
+        }, vertMap
     );
 }
 
 template<typename V>
 EdgeId Polyline<V>::addFromEdgePath( const Mesh& mesh, const EdgePath& path )
 {
+    assert( isEdgePath( mesh.topology, path ) );
     if ( path.empty() )
+    {
+        assert( false );
         return {};
-    bool closed = mesh.topology.org( path.front() ) == mesh.topology.dest( path.back() );
-    auto shift = points.size();
-    points.resize( shift + path.size() + ( closed ? 0 : 1 ) );
-    std::vector<VertId> newVerts( path.size() + 1 );
-    for ( int i = 0; i < path.size(); ++i )
-    {
-        VertId newV = VertId( shift + i );
-        newVerts[i] = newV;
-        points[newV] = V{ mesh.orgPnt( path[i] ) };
     }
-    if ( !closed )
+
+    auto v0 = topology.addVertId();
+    points.autoResizeSet( v0, V{ mesh.orgPnt( path.front() ) } );
+    assert( points.size() == topology.vertSize() );
+
+    PolylineMaker maker( topology );
+    const auto e0 = maker.start( v0 );
+    for ( int i = 1; i < path.size(); ++i )
     {
-        newVerts.back() = VertId( shift + path.size() );
-        points.back() = V{ mesh.destPnt( path.back() ) };
+        auto v = topology.addVertId();
+        points.push_back( V{ mesh.orgPnt( path[i] ) } );
+        maker.proceed( v );
+    }
+
+    bool closed = mesh.topology.org( path.front() ) == mesh.topology.dest( path.back() );
+    if ( closed )
+    {
+        maker.close();
     }
     else
     {
-        newVerts.back() = newVerts.front();
+        auto v = topology.addVertId();
+        points.push_back( V{ mesh.destPnt( path.back() ) } );
+        maker.finishOpen( v );
     }
 
-    auto e = topology.makePolyline( newVerts.data(), newVerts.size() );
     invalidateCaches();
-    return e;
+    return e0;
 }
 
 template<typename V>
-EdgeId Polyline<V>::addFromSurfacePath( const Mesh& mesh, const SurfacePath& path )
+EdgeId Polyline<V>::addFromGeneralSurfacePath( const Mesh& mesh, const MeshTriPoint & start, const SurfacePath& path, const MeshTriPoint & end )
 {
-    if ( path.empty() )
+    if ( ( !start && path.empty() ) || ( !end && path.empty() ) )
+    {
+        assert( !start && !end );
         return {};
-    bool closed = path.front() == path.back();
-    auto shift = points.size();
-    points.resize( shift + path.size() + ( closed ? -1 : 0 ) );
-    std::vector<VertId> newVerts( path.size() );
-    for ( int i = 0; i + 1 < path.size(); ++i )
-    {
-        VertId newV = VertId( shift + i );
-        newVerts[i] = newV;
-        points[newV] = V{ mesh.edgePoint( path[i] ) };
     }
-    if ( !closed )
+
+    auto v0 = topology.addVertId();
+    points.autoResizeSet( v0, V{ start ? mesh.triPoint( start ) : mesh.edgePoint( path.front() ) } );
+    assert( points.size() == topology.vertSize() );
+
+    PolylineMaker maker( topology );
+    const auto e0 = maker.start( v0 );
+
+    const bool closed = ( start && start == end ) || ( !start && path.size() > 1 && path.front() == path.back() );
+    const int inc = end || closed ? 0 : 1;
+    for ( int i = start ? 0 : 1; i + inc < path.size(); ++i )
     {
-        newVerts.back() = VertId( shift + path.size() - 1 );
-        points.back() = V{ mesh.edgePoint( path.back() ) };
+        auto v = topology.addVertId();
+        points.push_back( V{ mesh.edgePoint( path[i] ) } );
+        maker.proceed( v );
+    }
+
+    if ( closed )
+    {
+        maker.close();
     }
     else
     {
-        newVerts.back() = newVerts.front();
+        auto v = topology.addVertId();
+        points.push_back( V{ end ? mesh.triPoint( end ) : mesh.edgePoint( path.back() ) } );
+        maker.finishOpen( v );
     }
 
-    auto e = topology.makePolyline( newVerts.data(), newVerts.size() );
     invalidateCaches();
-    return e;
+    return e0;
 }
 
 template<typename V>
@@ -320,6 +414,24 @@ TEST( MRMesh, Polyline2 )
             EXPECT_NEAR( v1[1], v2[1], 1e-8 );
         }
     }
+}
+
+TEST( MRMesh, Polyline2LoopDir )
+{
+    Contour2f cont;
+    cont.push_back( Vector2f( 0.f, 0.f ) );
+    cont.push_back( Vector2f( 1.f, 0.f ) );
+    cont.push_back( Vector2f( 1.f, 1.f ) );
+    cont.push_back( Vector2f( 0.f, 1.f ) );
+
+    Polyline2 plNotClosed( { cont } );
+    EXPECT_TRUE( plNotClosed.loopDirArea( 0_e ).z == FLT_MAX );
+
+    cont.push_back( Vector2f( 0.f, 0.f ) );
+
+    Polyline2 plClosed( { cont } );
+    EXPECT_TRUE( plClosed.loopDirArea( 0_e ).z > 0.0f );
+    EXPECT_TRUE( plClosed.loopDirArea( 1_e ).z < 0.0f );
 }
 
 TEST( MRMesh, Polyline3 )

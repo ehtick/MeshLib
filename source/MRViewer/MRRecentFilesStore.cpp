@@ -1,6 +1,6 @@
 #include "MRRecentFilesStore.h"
 #include "MRMesh/MRConfig.h"
-#include "MRMeshViewer.h"
+#include "MRViewer.h"
 #include "MRPch/MRSpdlog.h"
 
 namespace
@@ -11,6 +11,10 @@ const std::string cRecentFilesStorageKey = "recentFileNames";
 namespace MR
 {
 
+#ifdef __EMSCRIPTEN__
+void RecentFilesStore::storeFile( const std::filesystem::path& ) const
+{}
+#else
 void RecentFilesStore::storeFile( const std::filesystem::path& file ) const
 {
     if ( appName_.empty() )
@@ -27,8 +31,9 @@ void RecentFilesStore::storeFile( const std::filesystem::path& file ) const
     if ( storedFiles.size() > capacity_ )
         storedFiles.resize( capacity_ );
     cfg.setFileStack( cRecentFilesStorageKey, storedFiles );
-    storageUpdateSignal( storedFiles );
+    updateSignal_( storedFiles );
 }
+#endif
 
 std::vector<std::filesystem::path> RecentFilesStore::getStoredFiles() const
 {
@@ -41,4 +46,9 @@ std::vector<std::filesystem::path> RecentFilesStore::getStoredFiles() const
     return cfg.getFileStack( cRecentFilesStorageKey );
 }
 
+boost::signals2::connection RecentFilesStore::onUpdate( const boost::function<void( const FileNamesStack& files )> & slot, boost::signals2::connect_position position )
+{
+    return updateSignal_.connect( slot, position );
 }
+
+} //namespace MR

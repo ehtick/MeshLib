@@ -6,16 +6,17 @@
 #include "MRVector4.h"
 #include "MRSymMatrix2.h"
 #include "MRSymMatrix3.h"
+#include "MRSymMatrix4.h"
 #include "MRMatrix2.h"
 #include "MRMatrix3.h"
+#include "MRMatrix4.h"
 #include <MRPch/MREigenCore.h>
 
 namespace MR
 {
 
-/// \defgroup ToFromEigen
 /// \ingroup MathGroup
-/// {
+/// \{
 
 template <typename T>
 [[nodiscard]] inline Vector2<T> fromEigen( const Eigen::Matrix<T, 2, 1> & ev )
@@ -95,6 +96,39 @@ template <typename T>
         { m( 0, 0 ), m( 0, 1 ), m( 0, 2 ) },
         { m( 1, 0 ), m( 1, 1 ), m( 1, 2 ) },
         { m( 2, 0 ), m( 2, 1 ), m( 2, 2 ) }
+    };
+}
+
+template <typename T>
+[[nodiscard]] inline Eigen::Matrix<T, 4, 4> toEigen( const SymMatrix4<T> & m )
+{
+    Eigen::Matrix<T, 4, 4> res;
+    res << m.xx, m.xy, m.xz, m.xw,
+           m.xy, m.yy, m.yz, m.yw,
+           m.xz, m.yz, m.zz, m.zw,
+           m.xw, m.yw, m.zw, m.ww;
+    return res;
+}
+
+template <typename T>
+[[nodiscard]] inline Eigen::Matrix<T, 4, 4> toEigen( const Matrix4<T> & m )
+{
+    Eigen::Matrix<T, 4, 4> res;
+    res << m.x.x, m.x.y, m.x.z, m.x.w,
+           m.y.x, m.y.y, m.y.z, m.y.w,
+           m.z.x, m.z.y, m.z.z, m.x.w,
+           m.w.x, m.w.y, m.w.z, m.w.w;
+    return res;
+}
+
+template <typename T>
+[[nodiscard]] inline Matrix4<T> fromEigen( const Eigen::Matrix<T, 4, 4> & m )
+{
+    return Matrix4<T> {
+        { m( 0, 0 ), m( 0, 1 ), m( 0, 2 ), m( 0, 3 ) },
+        { m( 1, 0 ), m( 1, 1 ), m( 1, 2 ), m( 1, 3 ) },
+        { m( 2, 0 ), m( 2, 1 ), m( 2, 2 ), m( 2, 3 ) },
+        { m( 3, 0 ), m( 3, 1 ), m( 3, 2 ), m( 3, 3 ) }
     };
 }
 

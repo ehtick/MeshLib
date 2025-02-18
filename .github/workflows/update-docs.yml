@@ -1,39 +1,50 @@
 name: Update MeshLib Documentation site
 
 on:
-  release:
-    types: [ published ]
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      output_folder:
+        required: false
+        type: string
+        default: "MeshLib"
 
 jobs:
   update-documentation:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
+      - name: Install Doxygen
+        uses: ssciwr/doxygen-install@v1
+        with:
+          version: "1.11.0"
+
       - name: Checkout MeshLib
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           path: 'MeshLib/'
 
-      - name: Checkout doxygen data
-        uses: actions/checkout@v3
+      - name: Checkout Doxygen Data
+        uses: actions/checkout@v4
         with:
           repository: 'MeshInspector/MeshInspector.github.io'
           path: 'MeshInspector.github.io/'
           token: ${{ secrets.MESHINSPECTOR_BOT_TOKEN }}
+          submodules: recursive
 
-      - name: Install Doxygen
-        run: choco install doxygen.install
+      - name: Download Python Stubs
+        uses: actions/download-artifact@v4
+        with:
+          name: PythonStubs
+          path: MeshLib/scripts/wheel/meshlib/meshlib
 
-      - name: Add doxygen to path
-        run: echo "C:\Program Files\doxygen\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # this job can be started even if generation stubs was failed
+      # in this case skipping this job
+      - name: End job if download stubs was failed
+        if: failure()
+        run: exit 0
 
-      - name: Check doxygen version
-        run: doxygen -v
-
-      - name: Run doxygen
+      - name: Build All Documentation
         working-directory: MeshInspector.github.io
-        run: doxygen DoxyfileML.in
+        run: scripts/update_doc.sh ${{ inputs.output_folder }}
 
       - name: Commit and push changes
         working-directory: MeshInspector.github.io
@@ -43,3 +54,4 @@ jobs:
           git add -A
           git commit --allow-empty -m "Auto update docs" -a
           git push
+

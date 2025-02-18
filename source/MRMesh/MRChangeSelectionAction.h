@@ -25,6 +25,17 @@ public:
         selection_ = objMesh_->getSelectedFaces();
     }
 
+    /// use this constructor to remember object's face selection and immediate set new value
+    ChangeMeshFaceSelectionAction( const std::string& name, const std::shared_ptr<ObjectMesh>& objMesh, FaceBitSet&& newSelection ):
+        name_{name},
+        objMesh_{objMesh}
+    {
+        if ( !objMesh_ )
+            return; 
+        selection_ = objMesh_->getSelectedFaces();
+        objMesh_->selectFaces( std::move( newSelection ) );
+    }
+
     virtual std::string name() const override { return name_; }
 
     virtual void action( Type ) override
@@ -32,7 +43,7 @@ public:
         if ( !objMesh_ )
             return;
         auto tmp = objMesh_->getSelectedFaces();
-        objMesh_->selectFaces( selection_ );
+        objMesh_->selectFaces( std::move( selection_ ) );
         selection_ = std::move( tmp );
     }
 
@@ -66,6 +77,17 @@ public:
         if( !objMesh_ )
             return;
         selection_ = objMesh_->getSelectedEdges();
+    }
+
+    /// use this constructor to remember object's edge selection and immediate set new selection
+    ChangeMeshEdgeSelectionAction( const std::string& name, const std::shared_ptr<ObjectMesh>& objMesh, UndirectedEdgeBitSet&& newSelection ) :
+        name_{ name },
+        objMesh_{ objMesh }
+    {
+        if( !objMesh_ )
+            return;
+        selection_ = objMesh_->getSelectedEdges();
+        objMesh_->selectEdges( std::move( newSelection ) );
     }
 
     virtual std::string name() const override { return name_; }
@@ -109,6 +131,17 @@ public:
         if( !objMesh_ )
             return;
         creases_ = objMesh_->creases();
+    }
+
+    /// use this constructor to remember object's current creases and immediate set new creases
+    ChangeMeshCreasesAction( const std::string& name, const std::shared_ptr<ObjectMesh>& objMesh, UndirectedEdgeBitSet&& newCreases ) :
+        name_{ name },
+        objMesh_{ objMesh }
+    {
+        if( !objMesh_ )
+            return;
+        creases_ = objMesh_->creases();
+        objMesh_->setCreases( std::move( newCreases ) );
     }
 
     virtual std::string name() const override { return name_; }
@@ -161,7 +194,7 @@ public:
         if ( !objPoints_ )
             return;
         auto tmp = objPoints_->getSelectedPoints();
-        objPoints_->selectPoints( selection_ );
+        objPoints_->selectPoints( std::move( selection_ ) );
         selection_ = std::move( tmp );
     }
 

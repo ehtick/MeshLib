@@ -1,49 +1,77 @@
 #pragma once
-// This file is part of libigl, a simple c++ geometry processing library.
-//
-// Copyright (C) 2014 Daniele Panozzo <daniele.panozzo@gmail.com>
-//
-// This Source Code Form is subject to the terms of the Mozilla Public License
-// v. 2.0. If a copy of the MPL was not distributed with this file, You can
-// obtain one at http://mozilla.org/MPL/2.0/.
 
-
-#include "MRViewport.h"
 #include "MRViewerInstance.h"
-#include "MRRecentFilesStore.h"
 #include "MRMouse.h"
-#include <MRMesh/MRObject.h>
-#include <MRMesh/MRSceneRoot.h>
-#include "MRMesh/MRImage.h"
-#include "MRMouseController.h"
-#include "MRTouchesController.h"
-#include "MRSpaceMouseController.h"
-#include <boost/signals2/signal.hpp>
-#include <chrono>
+#include "MRSignalCombiners.h"
+#include "MRMakeSlot.h"
+#include <MRMesh/MRVector2.h>
+#include <MRMesh/MRViewportId.h>
+#include "MRMesh/MRSignal.h"
+#include "MRMesh/MRRenderModelParameters.h"
 #include <cstdint>
-#include <mutex>
-#include <queue>
+#include <filesystem>
 
 struct GLFWwindow;
 
-template<typename MemberFuncPtr, typename BaseClass>
-auto bindSlotCallback( BaseClass* base, MemberFuncPtr func )
-{
-    static_assert( !( std::is_move_assignable_v<BaseClass> || std::is_move_constructible_v<BaseClass> ), 
-                   "MAKE_SLOT requires a non-movable type" );
-    return[base, func] ( auto&&... args )
-    {
-        return ( base->*func )( std::forward<decltype( args )>( args )... );
-    };
-}
-
-// you will not be able to move your struct after using this macro
-#define MAKE_SLOT(func) bindSlotCallback(this,func)
+/// helper macros to add an `MR::Viewer` method call to the event queue
+#define ENQUEUE_VIEWER_METHOD( NAME, METHOD ) MR::getViewerInstance().emplaceEvent( NAME, [] { \
+    MR::getViewerInstance() . METHOD (); \
+} )
+#define ENQUEUE_VIEWER_METHOD_ARGS( NAME, METHOD, ... ) MR::getViewerInstance().emplaceEvent( NAME, [__VA_ARGS__] { \
+    MR::getViewerInstance() . METHOD ( __VA_ARGS__ ); \
+} )
+#define ENQUEUE_VIEWER_METHOD_ARGS_SKIPABLE( NAME, METHOD, ... ) MR::getViewerInstance().emplaceEvent( NAME, [__VA_ARGS__] { \
+    MR::getViewerInstance() . METHOD ( __VA_ARGS__ ); \
+}, true )
 
 namespace MR
 {
 
+class ViewerTitle;
+
 class SpaceMouseHandler;
+
+// This struct contains rules for viewer launch
+struct LaunchParams
+{
+    bool fullscreen{ false }; // if true starts fullscreen
+    int width{ 0 };
+    int height{ 0 };
+    enum WindowMode
+    {
+        Show, // Show window immediately
+        HideInit, // Show window after init
+        Hide, // Don't show window
+        TryHidden, // Launches in "Hide" mode if OpenGL is present and "NoWindow" if it is not
+        NoWindow // Don't initialize GL window (don't call GL functions)(force `isAnimating`)
+    } windowMode{ HideInit };
+    bool enableTransparentBackground{ false };
+    bool preferOpenGL3{ false };
+    bool render3dSceneInTexture{ true }; // If not set renders scene each frame
+    bool developerFeatures{ false }; // If set shows some developer features useful for debugging
+    std::string name{ "MRViewer" }; // Window name
+    bool startEventLoop{ true }; // If false - does not start event loop
+    bool close{ true }; // If !startEventLoop close immediately after start, otherwise close on window close, make sure you call `launchShut` manually if this flag is false
+    bool console{ false }; // If true - shows developers console
+    int argc{ 0 }; // Pass argc
+    char** argv{ nullptr }; // Pass argv
+
+    bool showMRVersionInTitle{ false }; // if true - print version info in window title
+    bool isAnimating{ false }; // if true - calls render without system events
+    int animationMaxFps{ 30 }; // max fps if animating
+    bool unloadPluginsAtEnd{ false }; // unload all extended libraries right before program exit
+
+    std::shared_ptr<SplashWindow> splashWindow; // if present will show this window while initializing plugins (after menu initialization)
+};
+
+struct FileLoadOptions
+{
+    /// first part of undo name
+    const char * undoPrefix = "Open ";
+
+    // true here will replace existing scene even if more than one file is open
+    bool forceReplaceScene = false;
+};
 
 // GLFW-based mesh viewer
 class MRVIEWER_CLASS Viewer
@@ -52,36 +80,7 @@ public:
     using MouseButton = MR::MouseButton;
     using MouseMode = MR::MouseMode;
 
-    // This struct contains rules for viewer launch
-    struct LaunchParams
-    {
-        bool fullscreen{ false }; // if true starts fullscreen
-        int width{ 0 }; 
-        int height{ 0 };
-        enum WindowMode
-        {
-            Show, // Show window immediately
-            HideInit, // Show window after init
-            Hide, // Don't show window
-            TryHidden, // Launches in "Hide" mode if OpenGL is present and "NoWindow" if it is not
-            NoWindow // Don't initialize GL window (don't call GL functions)(force `isAnimating`)
-        } windowMode{ HideInit };
-        bool enableTransparentBackground{ false };
-        bool preferOpenGL3{ false };
-        bool developerFeatures{ false }; // If set shows some developer features useful for debugging
-        std::string name{"MRViewer"}; // Window name
-        bool startEventLoop{ true }; // If false - does not start event loop
-        bool close{ true }; // If !startEventLoop close immediately after start, otherwise close on window close, make sure you call `launchShut` manually if this flag is false
-        bool console{ false }; // If true - shows developers console
-        int argc{ 0 }; // Pass argc
-        char** argv{ nullptr }; // Pass argv
-
-        bool showMRVersionInTitle{ false }; // if true - print version info in window title
-        bool isAnimating{ false }; // if true - calls render without system events
-        int animationMaxFps{ 30 }; // max fps if animating
-
-        std::shared_ptr<SplashWindow> splashWindow; // if present will show this window while initializing plugins (after menu initialization)
-    };
+    using LaunchParams = MR::LaunchParams;
 
     // Accumulate launch params from cmd args
     MRVIEWER_API static void parseLaunchParams( LaunchParams& params );
@@ -92,8 +91,11 @@ public:
     MRVIEWER_API void launchEventLoop();
     // Terminate window
     MRVIEWER_API void launchShut();
-    
+
     bool isLaunched() const { return isLaunched_; }
+
+    // get full parameters with witch viewer was launched
+    const LaunchParams& getLaunchParams() const { return launchParams_; }
 
     // provides non const access to viewer
     static Viewer* instance() { return &getViewerInstance(); }
@@ -119,9 +121,11 @@ public:
     // Mesh IO
     // Check the supported file format
     MRVIEWER_API bool isSupportedFormat( const std::filesystem::path& file_name );
+
     // Load objects / scenes from files
     // Note! load files with progress bar in next frame if it possible, otherwise load directly inside this function
-    MRVIEWER_API bool loadFiles( const std::vector< std::filesystem::path>& filesList );
+    MRVIEWER_API bool loadFiles( const std::vector< std::filesystem::path>& filesList, const FileLoadOptions & options = {} );
+
     // Save first selected objects to file
     MRVIEWER_API bool saveToFile( const std::filesystem::path & mesh_file_name );
 
@@ -134,6 +138,10 @@ public:
     MRVIEWER_API bool mouseUp( MouseButton button, int modifier );
     MRVIEWER_API bool mouseMove( int mouse_x, int mouse_y );
     MRVIEWER_API bool mouseScroll( float delta_y );
+    MRVIEWER_API bool mouseClick( MouseButton button, int modifier );
+    MRVIEWER_API bool dragStart( MouseButton button, int modifier );
+    MRVIEWER_API bool dragEnd( MouseButton button, int modifier );
+    MRVIEWER_API bool drag( int mouse_x, int mouse_y );
     MRVIEWER_API bool spaceMouseMove( const Vector3f& translate, const Vector3f& rotate );
     MRVIEWER_API bool spaceMouseDown( int key );
     MRVIEWER_API bool spaceMouseUp( int key );
@@ -143,6 +151,16 @@ public:
     MRVIEWER_API bool touchStart( int id, int x, int y );
     MRVIEWER_API bool touchMove( int id, int x, int y );
     MRVIEWER_API bool touchEnd( int id, int x, int y );
+    // Touchpad gesture callbacks
+    MRVIEWER_API bool touchpadRotateGestureBegin();
+    MRVIEWER_API bool touchpadRotateGestureUpdate( float angle );
+    MRVIEWER_API bool touchpadRotateGestureEnd();
+    MRVIEWER_API bool touchpadSwipeGestureBegin();
+    MRVIEWER_API bool touchpadSwipeGestureUpdate( float dx, float dy, bool kinetic );
+    MRVIEWER_API bool touchpadSwipeGestureEnd();
+    MRVIEWER_API bool touchpadZoomGestureBegin();
+    MRVIEWER_API bool touchpadZoomGestureUpdate( float scale, bool kinetic );
+    MRVIEWER_API bool touchpadZoomGestureEnd();
     // This function is called when window should close, if return value is true, window will stay open
     MRVIEWER_API bool interruptWindowClose();
     // callback to update connected / disconnected joystick
@@ -150,10 +168,16 @@ public:
 
     // Draw everything
     MRVIEWER_API void draw( bool force = false );
+    // Draw 3d scene with UI
+    MRVIEWER_API void drawFull( bool dirtyScene );
     // Draw 3d scene without UI
     MRVIEWER_API void drawScene();
+    // Call this function to force redraw scene into scene texture
+    void setSceneDirty() { dirtyScene_ = true; }
     // Setup viewports views
     MRVIEWER_API void setupScene();
+    // Cleans framebuffers for all viewports (sets its background)
+    MRVIEWER_API void clearFramebuffers();
     // OpenGL context resize
     MRVIEWER_API void resize( int w, int h ); // explicitly set framebuffer size
     MRVIEWER_API void postResize( int w, int h ); // external resize due to user interaction
@@ -162,13 +186,14 @@ public:
     MRVIEWER_API void postSetIconified( bool iconified ); // external set iconified due to user interaction
     MRVIEWER_API void postFocus( bool focused ); // external focus handler due to user interaction
     MRVIEWER_API void postRescale( float x, float y ); // external rescale due to user interaction
+    MRVIEWER_API void postClose(); // called when close signal received
 
     ////////////////////////
     // Multi-mesh methods //
     ////////////////////////
 
     // reset objectRoot with newRoot, append all RenderObjects and basis objects
-    MRVIEWER_API void set_root( Object& newRoot );
+    MRVIEWER_API void set_root( SceneRootObject& newRoot );
 
     // removes all objects from scene
     MRVIEWER_API void clearScene();
@@ -194,7 +219,7 @@ public:
     // Returns the unique id of the newly inserted viewport. There can be a maximum of 31
     //   viewports created in the same viewport. Erasing a viewport does not change the id of
     //   other existing viewports
-    MRVIEWER_API ViewportId append_viewport( Viewport::ViewportRectangle viewportRect, bool append_empty = false );
+    MRVIEWER_API ViewportId append_viewport( const ViewportRectangle & viewportRect, bool append_empty = false );
 
     // Calculates and returns viewports bounds in gl space:
     // (0,0) - lower left angle
@@ -232,13 +257,13 @@ public:
 
     // Calls fitData and change FOV to match the screen size then
     // params - params fit data
-    MRVIEWER_API void preciseFitDataViewport( MR::ViewportMask vpList = MR::ViewportMask::all(),
-                                              const Viewport::FitDataParams& params = Viewport::FitDataParams() );
+    MRVIEWER_API void preciseFitDataViewport( MR::ViewportMask vpList = MR::ViewportMask::all() );
+    MRVIEWER_API void preciseFitDataViewport( MR::ViewportMask vpList, const FitDataParams& param );
 
-    size_t getTotalFrames() const { return frameCounter_.totalFrameCounter; }
-    size_t getSwappedFrames() const { return frameCounter_.swappedFrameCounter; }
-    size_t getFPS() const { return frameCounter_.fps; }
-    double getPrevFrameDrawTimeMillisec() const { return frameCounter_.drawTimeMilliSec.count(); }
+    MRVIEWER_API size_t getTotalFrames() const;
+    MRVIEWER_API size_t getSwappedFrames() const;
+    MRVIEWER_API size_t getFPS() const;
+    MRVIEWER_API double getPrevFrameDrawTimeMillisec() const;
 
     // Returns memory amount used by shared GL memory buffer
     MRVIEWER_API size_t getStaticGLBufferSize() const;
@@ -296,11 +321,10 @@ public:
     MRVIEWER_API void resetAllCounters();
 
     /**
-     * Captures part of window (redraw 3d scene over UI (without redrawing UI))
-     * @param pos left-bottom corner of capturing area relative of left-down corner of window. default = size(0, 0)
-     * @param size size of capturing area. default = size(0, 0) - auto size to right-top corner of window.
+     * Captures 3d scene
+     * @param resolution resolution of the image <= 0 means default
      */
-    MRVIEWER_API Image captureScreenShot( const Vector2i& pos = Vector2i(), const Vector2i& size = Vector2i() );
+    MRVIEWER_API Image captureSceneScreenShot( const Vector2i& resolution = Vector2i() );
 
     /**
      * Captures part of window in the beginning of next frame, capturing all that was drawn in this frame
@@ -319,37 +343,18 @@ public:
     // Returns true if alpha sort is enabled, false otherwise
     bool isAlphaSortEnabled() const { return alphaSortEnabled_; }
 
-    // Sets manager of viewer settings which loads user personal settings on beginning of app 
+    // Returns if scene texture is now bound
+    MRVIEWER_API bool isSceneTextureBound()  const;
+    // Binds or unbinds scene texture (should be called only with valid window)
+    // note that it does not clear framebuffer
+    MRVIEWER_API void bindSceneTexture( bool bind );
+
+    // Sets manager of viewer settings which loads user personal settings on beginning of app
     // and saves it in app's ending
     MRVIEWER_API void setViewportSettingsManager( std::unique_ptr<IViewerSettingsManager> mng );
-    MRVIEWER_API const std::unique_ptr<IViewerSettingsManager>& getViewportSettingsManager() const { return settingsMng_; }
+    MRVIEWER_API const std::unique_ptr<IViewerSettingsManager>& getViewerSettingsManager() const { return settingsMng_; }
 
-    struct PointInAllSpaces
-    {
-        // Screen space: window x[0, window.width] y[0, window.height]. [0,0] top-left corner of the window
-        // Z [0,1] - 0 is Dnear, 1 is Dfar
-        Vector3f screenSpace;
-
-        // Viewport space: viewport x[0, viewport.width] y[0, viewport.height]. [0,0] top-left corner of the viewport with that Id
-        // Z [0,1] - 0 is Dnear, 1 is Dfar
-        Vector3f viewportSpace;
-        ViewportId viewportId;
-
-        // Clip space: viewport xyz[-1.f, 1.f]. [0, 0, -1] middle point of the viewport on Dnear. [0, 0, 1] middle point of the viewport on Dfar.
-        // [-1, -1, -1] is lower left Dnear corner; [1, 1, 1] is upper right Dfar corner
-        Vector3f clipSpace;
-
-        // Camera space: applied view affine transform to world points xyz[-inf, inf]. [0, 0, 0] middle point of the viewport on Dnear.
-        // X axis goes on the right. Y axis goes up. Z axis goes backward.
-        Vector3f cameraSpace;
-
-        // World space: applied model transform to Mesh(Point Cloud) vertices xyz[-inf, inf].
-        Vector3f worldSpace;
-
-        // Model space: coordinates as they stored in the model of VisualObject
-        std::shared_ptr<VisualObject> obj;
-        PointOnFace pof;
-    };
+    using PointInAllSpaces = MR::PointInAllSpaces;
     // Finds point in all spaces from screen space pixel point
     MRVIEWER_API PointInAllSpaces getPixelPointInfo( const Vector3f& screenPoint ) const;
     // Finds point under mouse in all spaces and under mouse viewport id
@@ -386,7 +391,7 @@ public:
     MRVIEWER_API bool globalHistoryRedo();
     // Returns global history store
     const std::shared_ptr<HistoryStore>& getGlobalHistoryStore() const { return globalHistoryStore_; }
-    // Return spacemouse handler 
+    // Return spacemouse handler
     const std::shared_ptr<SpaceMouseHandler>& getSpaceMouseHandler() const { return spaceMouseHandler_; }
 
     // This method is called after successful scene saving to update scene root, window title and undo
@@ -396,12 +401,15 @@ public:
     MRVIEWER_API const std::shared_ptr<ImGuiMenu>& getMenuPlugin() const;
     MRVIEWER_API void setMenuPlugin( std::shared_ptr<ImGuiMenu> menu );
 
+    // get menu plugin casted in RibbonMenu
+    MRVIEWER_API std::shared_ptr<RibbonMenu> getRibbonMenu() const;
+
     // Get the menu plugin casted in given type
     template <typename T>
     std::shared_ptr<T> getMenuPluginAs() const { return std::dynamic_pointer_cast<T>( getMenuPlugin() ); }
 
     // sets stop event loop flag (this flag is glfwShouldWindowClose equivalent)
-    void stopEventLoop() { stopEventLoop_ = true; }
+    MRVIEWER_API void stopEventLoop();
     // get stop event loop flag (this flag is glfwShouldWindowClose equivalent)
     bool getStopEventLoopFlag() const { return stopEventLoop_; }
 
@@ -414,17 +422,21 @@ public:
     // glInitialized_ can be already reset and it requires `loadGL()` check too
     bool isGLInitialized() const { return glInitialized_; }
 
-    // returns true if developer features are enabled, false otherwise
-    bool isDeveloperFeaturesEnabled() const { return enableDeveloperFeatures_; }
-
     // update the title of the main window and, if any scene was opened, show its filename
     MRVIEWER_API void makeTitleFromSceneRootPath();
+
+    // returns true if the system framebuffer is scaled (valid for macOS and Wayland)
+    bool hasScaledFramebuffer() const { return hasScaledFramebuffer_; }
 
 public:
     //////////////////////
     // Member variables //
     //////////////////////
     GLFWwindow* window;
+
+    // A function to reset setting to initial state
+    // Overrides should call previous function
+    std::function<void( Viewer* viewer )> resetSettingsFunction;
 
     // Stores all the viewing options
     std::vector<Viewport> viewport_list;
@@ -433,13 +445,6 @@ public:
     // List of registered plugins
     std::vector<ViewerPlugin*> plugins;
 
-    // Store of recently opened files
-    RecentFilesStore recentFilesStore;
-
-    MouseController mouseController;
-    TouchesController touchesController;
-    SpaceMouseController spaceMouseController;
-
     float pixelRatio{ 1.0f };
     Vector2i framebufferSize;
     Vector2i windowSavePos; // pos to save
@@ -447,45 +452,34 @@ public:
     Vector2i windowOldPos;
     bool windowMaximized{ false };
 
-    // Stores basis axes meshes
-    bool defaultLabelsBasisAxes{ false };
-    bool defaultLabelsGlobalBasisAxes{ false };
     // if true - calls render without system events
     bool isAnimating{ false };
     // max fps if animating
     int animationMaxFps{ 30 };
     // this parameter can force up/down mouse scroll
     // useful for WebAssembler version because it has too powerful scroll
-    float scrollForce{ 1.0f };
+    float scrollForce{ }; // init in resetSettingsFunction()
+    // opengl-based pick window radius in pixels
+    uint16_t glPickRadius{ }; // init in resetSettingsFunction()
+    // Experimental/developer features enabled
+    bool experimentalFeatures{ };
+    // command arguments, each parsed arg should be erased from here not to affect other parsers
+    std::vector<std::string> commandArgs;
 
-    std::unique_ptr<ObjectMesh> basisAxes;
-    std::unique_ptr<ObjectMesh> globalBasisAxes;
-    std::unique_ptr<ObjectMesh> rotationSphere;
+    std::shared_ptr<ObjectMesh> basisAxes;
+    std::shared_ptr<ObjectMesh> basisViewController;
+    std::shared_ptr<ObjectMesh> globalBasisAxes;
+    std::shared_ptr<ObjectMesh> rotationSphere;
     // Stores clipping plane mesh
-    std::unique_ptr<ObjectMesh> clippingPlaneObject;
+    std::shared_ptr<ObjectMesh> clippingPlaneObject;
 
-    // the window title that should be always displayed
-    std::string defaultWindowTitle;
+    // class that updates viewer title
+    std::shared_ptr<ViewerTitle> windowTitle;
 
     //*********
     // SIGNALS
     //*********
-    struct SignalStopHandler
-    {
-        using result_type = bool;
-
-        template<typename Iter>
-        bool operator()( Iter first, Iter last ) const
-        {
-            while ( first != last )
-            {
-                if ( *first )
-                    return true; // slots execution stops if one returns true
-                ++first;
-            }
-            return false;
-        }
-    };
+    using SignalStopHandler = StopOnTrueCombiner;
     // Mouse events
     using MouseUpDownSignal = boost::signals2::signal<bool( MouseButton btn, int modifier ), SignalStopHandler>;
     using MouseMoveSignal = boost::signals2::signal<bool( int x, int y ), SignalStopHandler>;
@@ -494,6 +488,15 @@ public:
     MouseUpDownSignal mouseUpSignal; // signal is called on mouse up
     MouseMoveSignal mouseMoveSignal; // signal is called on mouse move, note that input x and y are in screen space
     MouseScrollSignal mouseScrollSignal; // signal is called on mouse is scrolled
+    // High-level mouse events for clicks and dragging, emitted by MouseController
+    // When mouseClickSignal has connections, a small delay for click detection is introduced into camera operations and dragging
+    // Dragging starts if dragStartSignal is handled (returns true), and ends on button release
+    // When dragging is active, dragSignal and dragEndSignal are emitted instead of mouseMove and mouseUp
+    // mouseDown handler have priority over dragStart
+    MouseUpDownSignal mouseClickSignal; // signal is called when mouse button is pressed and immediately released
+    MouseUpDownSignal dragStartSignal; // signal is called when mouse button is pressed (deterred if click behavior is on)
+    MouseUpDownSignal dragEndSignal; // signal is called when mouse button used to start drag is released
+    MouseMoveSignal dragSignal; // signal is called when mouse is being dragged with button down
     // Cursor enters/leaves
     using CursorEntranceSignal = boost::signals2::signal<void(bool)>;
     CursorEntranceSignal cursorEntranceSignal;
@@ -532,35 +535,46 @@ public:
     TouchSignal touchStartSignal; // signal is called when any touch starts
     TouchSignal touchMoveSignal; // signal is called when touch moves
     TouchSignal touchEndSignal; // signal is called when touch stops
+    // Touchpad gesture events
+    using TouchpadGestureBeginSignal = boost::signals2::signal<bool(), SignalStopHandler>;
+    using TouchpadGestureEndSignal = boost::signals2::signal<bool(), SignalStopHandler>;
+    using TouchpadRotateGestureUpdateSignal = boost::signals2::signal<bool( float angle ), SignalStopHandler>;
+    using TouchpadSwipeGestureUpdateSignal = boost::signals2::signal<bool( float deltaX, float deltaY, bool kinetic ), SignalStopHandler>;
+    using TouchpadZoomGestureUpdateSignal = boost::signals2::signal<bool( float scale, bool kinetic ), SignalStopHandler>;
+    TouchpadGestureBeginSignal touchpadRotateGestureBeginSignal; // signal is called on touchpad rotate gesture beginning
+    TouchpadRotateGestureUpdateSignal touchpadRotateGestureUpdateSignal; // signal is called on touchpad rotate gesture update
+    TouchpadGestureEndSignal touchpadRotateGestureEndSignal; // signal is called on touchpad rotate gesture end
+    TouchpadGestureBeginSignal touchpadSwipeGestureBeginSignal; // signal is called on touchpad swipe gesture beginning
+    TouchpadSwipeGestureUpdateSignal touchpadSwipeGestureUpdateSignal; // signal is called on touchpad swipe gesture update
+    TouchpadGestureEndSignal touchpadSwipeGestureEndSignal; // signal is called on touchpad swipe gesture end
+    TouchpadGestureBeginSignal touchpadZoomGestureBeginSignal; // signal is called on touchpad zoom gesture beginning
+    TouchpadZoomGestureUpdateSignal touchpadZoomGestureUpdateSignal; // signal is called on touchpad zoom gesture update
+    TouchpadGestureEndSignal touchpadZoomGestureEndSignal; // signal is called on touchpad zoom gesture end
     // Window focus signal
     using PostFocusSignal = boost::signals2::signal<void( bool )>;
     PostFocusSignal postFocusSignal;
 
-    // queue to ignore multiple mouse moves in one frame
-    class MRVIEWER_CLASS EventQueue
-    {
-    public:
-        using EventCallback = std::function<void()>;
-        struct NamedEvent
-        {
-            std::string name;
-            EventCallback cb;
-        };
-        // emplace event at the end of the queue
-        // replace last skipable with new skipable
-        MRVIEWER_API void emplace( NamedEvent event, bool skipable = false );
-        // execute all events in queue
-        MRVIEWER_API void execute();
-        // pop all events while they have this name
-        MRVIEWER_API void popByName( const std::string& name );
-        MRVIEWER_API bool empty() const;
-    private:
-        // important for wasm to be recursive
-        mutable std::recursive_mutex mutex_;
-        std::queue<NamedEvent> queue_;
-        bool lastSkipable_{false};
-    } eventQueue;
+    /// emplace event at the end of the queue
+    /// replace last skipable with new skipable
+    MRVIEWER_API void emplaceEvent( std::string name, ViewerEventCallback cb, bool skipable = false );
+    // pop all events from the queue while they have this name
+    MRVIEWER_API void popEventByName( const std::string& name );
+
     MRVIEWER_API void postEmptyEvent();
+
+    [[nodiscard]] MRVIEWER_API const TouchpadParameters & getTouchpadParameters() const;
+    MRVIEWER_API void setTouchpadParameters( const TouchpadParameters & );
+
+    [[nodiscard]] MRVIEWER_API SpaceMouseParameters getSpaceMouseParameters() const;
+    MRVIEWER_API void setSpaceMouseParameters( const SpaceMouseParameters & );
+
+    [[nodiscard]] const MouseController &mouseController() const { return *mouseController_; }
+    [[nodiscard]] MouseController &mouseController() { return *mouseController_; }
+
+    // Store of recently opened files
+    [[nodiscard]] const RecentFilesStore &recentFilesStore() const { return *recentFilesStore_; }
+    [[nodiscard]] RecentFilesStore &recentFilesStore() { return *recentFilesStore_; }
+
 private:
     Viewer();
     ~Viewer();
@@ -575,16 +589,14 @@ private:
     void initPlugins_();
     // Shut all plugins at the end
     void shutdownPlugins_();
-    // Search for python script to run or file to open on init
-    void parseCommandLine_( int argc, char** argv );
 #ifdef __EMSCRIPTEN__
     void mainLoopFunc_();
-#ifndef MR_EMSCRIPTEN_ASYNCIFY
     static void emsMainInfiniteLoop();
-#endif
 #endif
     // returns true if was swapped
     bool draw_( bool force );
+
+    void drawUiRenderObjects_();
 
     // the minimum number of frames to be rendered even if the scene is unchanged
     int forceRedrawFrames_{ 0 };
@@ -594,23 +606,18 @@ private:
     // if this flag is set shows some developer features useful for debugging
     bool enableDeveloperFeatures_{ false };
 
+    std::unique_ptr<ViewerEventQueue> eventQueue_;
+
     // special plugin for menu (initialized before splash window starts)
     std::shared_ptr<ImGuiMenu> menuPlugin_;
 
-    mutable struct FrameCounter
-    {
-        size_t totalFrameCounter{ 0 };
-        size_t swappedFrameCounter{ 0 };
-        size_t startFrameNum{ 0 };
-        size_t fps{ 0 };
-        std::chrono::duration<double> drawTimeMilliSec{ 0 };
-        void startDraw();
-        void endDraw( bool swapped );
-        void reset();
-    private:
-        long long startFPSTime_{ 0 };
-        std::chrono::time_point<std::chrono::high_resolution_clock> startDrawTime_;
-    } frameCounter_;
+    std::unique_ptr<TouchpadController> touchpadController_;
+    std::unique_ptr<SpaceMouseController> spaceMouseController_;
+    std::unique_ptr<TouchesController> touchesController_;
+    std::unique_ptr<MouseController> mouseController_;
+
+    std::unique_ptr<RecentFilesStore> recentFilesStore_;
+    std::unique_ptr<FrameCounter> frameCounter_;
 
     mutable struct EventsCounter
     {
@@ -631,25 +638,17 @@ private:
     bool needRedraw_() const;
     void resetRedraw_();
 
-    enum class VisualObjectRenderType
-    {
-        Opaque,
-        Transparent,
-#ifndef __EMSCRIPTEN__
-        VolumeRendering,
-#endif
-        NoDepthTest
-    };
-
-    VisualObjectRenderType getObjRenderType_( const VisualObject* obj, ViewportId viewportId ) const;
-
-    void recursiveDraw_( const Viewport& vp, const Object& obj, const AffineXf3f& parentXf, VisualObjectRenderType renderType, int* numDraws = nullptr ) const;
+    void recursiveDraw_( const Viewport& vp, const Object& obj, const AffineXf3f& parentXf, RenderModelPassMask renderType, int* numDraws = nullptr ) const;
 
     void initGlobalBasisAxesObject_();
     void initBasisAxesObject_();
+    void initBasisViewControllerObject_();
     void initClippingPlaneObject_();
     void initRotationCenterObject_();
     void initSpaceMouseHandler_();
+
+    // recalculate pixel ratio
+    void updatePixelRatio_();
 
     bool stopEventLoop_{ false };
 
@@ -657,6 +656,7 @@ private:
     // this flag is needed to know if all viewer setup was already done, and we can call draw
     bool focusRedrawReady_{ false };
 
+    std::unique_ptr<SceneTextureGL> sceneTexture_;
     std::unique_ptr<AlphaSortGL> alphaSorter_;
 
     bool alphaSortEnabled_{false};
@@ -664,6 +664,11 @@ private:
     bool glInitialized_{ false };
 
     bool isInDraw_{ false };
+    bool dirtyScene_{ false };
+
+    bool hasScaledFramebuffer_{ false };
+
+    LaunchParams launchParams_;
 
     ViewportId getFirstAvailableViewportId_() const;
     ViewportMask presentViewportsMask_;
@@ -673,6 +678,8 @@ private:
     std::shared_ptr<HistoryStore> globalHistoryStore_;
 
     std::shared_ptr<SpaceMouseHandler> spaceMouseHandler_;
+
+    std::vector<boost::signals2::scoped_connection> colorUpdateConnections_;
 
     friend MRVIEWER_API Viewer& getViewerInstance();
 };

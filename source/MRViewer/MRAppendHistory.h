@@ -1,6 +1,6 @@
 #pragma once
 
-#include "MRViewer.h"
+#include "MRHistoryStore.h"
 #include <MRMesh/MRHistoryAction.h>
 #include <string>
 #include <memory>
@@ -8,20 +8,20 @@
 namespace MR
 {
 
-// This function appends history action to viewers global history store
+/// This function constructs history action and appends it to viewer's global history store
 template<class HistoryActionType, typename... Args>
 void AppendHistory( Args&&... args )
 {
     static_assert( std::is_base_of_v<HistoryAction, HistoryActionType> );
-    if ( getViewerInstance().isGlobalHistoryEnabled() )
-        getViewerInstance().appendHistoryAction( std::make_shared<HistoryActionType>( std::forward<Args>( args )... ) );
+    if ( const auto & s = HistoryStore::getViewerInstance() )
+        s->appendAction( std::make_shared<HistoryActionType>( std::forward<Args>( args )... ) );
 }
 
-template<class HistoryActionType>
-void AppendHistory( std::shared_ptr<HistoryActionType> action )
+/// This function appends given history action to viewer's global history store
+inline void AppendHistory( std::shared_ptr<HistoryAction> action )
 {
-    static_assert( std::is_base_of_v<HistoryAction, HistoryActionType> );
-    getViewerInstance().appendHistoryAction( action );
+    if ( const auto & s = HistoryStore::getViewerInstance() )
+        s->appendAction( std::move( action ) );
 }
 
 // if undo history is enabled, creates given action in the constructor;
@@ -36,7 +36,7 @@ public:
     template<typename... Args>
     Historian( std::string name, std::shared_ptr<Obj> obj, Args&&... args ) : obj_( std::move( obj ) )
     {
-        if ( getViewerInstance().isGlobalHistoryEnabled() )
+        if ( HistoryStore::getViewerInstance() )
             action_ = std::make_shared<HistoryActionType>( std::move( name ), obj_, std::forward<Args>( args )... );
     }
 
@@ -53,7 +53,7 @@ public:
     ~Historian()
     {
         if ( action_ )
-            getViewerInstance().appendHistoryAction( action_ );
+            AppendHistory( std::move( action_ ) );
         if ( !canceled_ )
             HistoryActionType::setObjectDirty( obj_ );
     }
@@ -77,7 +77,8 @@ public:
 private:
     std::string name_;
     std::shared_ptr<HistoryStore> store_;
-    bool thisScopeStartedScopedMode_ = false;
+    HistoryActionsVector scope_;
+    HistoryActionsVector* parentScopePtr_{ nullptr };
 };
 
 #define SCOPED_HISTORY(name) MR::ScopeHistory __startScopedHistoryMode(name)

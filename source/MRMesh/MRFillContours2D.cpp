@@ -5,13 +5,16 @@
 #include "MRRingIterator.h"
 #include "MREdgePaths.h"
 #include "MRAffineXf3.h"
-#include "MRPch/MRSpdlog.h"
 #include "MRTimer.h"
 #include "MRRegionBoundary.h"
-#include "MRUVSphere.h"
+#include "MRMakeSphereMesh.h"
 #include "MRMeshTrimWithPlane.h"
 #include "MRPlane3.h"
 #include "MRGTest.h"
+#include "MRMeshSave.h"
+#include "MRFillContour.h"
+#include "MRObjectMesh.h"
+#include "MRMeshFillHole.h"
 #include <limits>
 
 namespace MR
@@ -68,7 +71,7 @@ AffineXf3f getXfFromOxyPlane( const Contours3f& contours )
     return AffineXf3f( c.getXf() );
 }
 
-VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresentativeEdges )
+Expected<void> fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresentativeEdges )
 {
     MR_TIMER
     // check input
@@ -118,8 +121,10 @@ VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresen
 
     auto holeVertIds = std::make_unique<PlanarTriangulation::HolesVertIds>(
         PlanarTriangulation::findHoleVertIdsByHoleEdges( mesh.topology, paths ) );
+
+    std::vector<EdgePath> newPaths;
     // make patch surface
-    auto fillResult = PlanarTriangulation::triangulateDisjointContours( contours2f, holeVertIds.get() );
+    auto fillResult = PlanarTriangulation::triangulateDisjointContours( contours2f, holeVertIds.get(), &newPaths );
     holeVertIds.reset();
     if ( !fillResult )
         return unexpected( "Cannot triangulate contours with self-intersections" );
@@ -130,22 +135,32 @@ VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresen
     for ( auto& point : patchMeshPoints )
         point = planeXf( point );
 
-    // make 
-    auto newPaths = findLeftBoundary( patchMesh.topology );
-
-    // check that patch surface borders size equal original mesh borders size
     if ( paths.size() != newPaths.size() )
         return unexpected( "Patch surface borders size different from original mesh borders size" );
 
-    // need to rotate to min edge to be consistent with original paths (for addPartByMask)
-    for ( auto& newPath : newPaths )
-        std::rotate( newPath.begin(), std::min_element( newPath.begin(), newPath.end() ), newPath.end() );
-    std::sort( newPaths.begin(), newPaths.end(), [] ( const EdgeLoop& l, const EdgeLoop& r ) { return l[0] < r[0]; } );
-
+    std::vector<EdgePath> invertedHoles;
+    invertedHoles.reserve( newPaths.size() );
     for ( int i = 0; i < paths.size(); ++i )
     {
         if ( paths[i].size() != newPaths[i].size() )
             return unexpected( "Patch surface borders size different from original mesh borders size" );
+
+        // degenerate holes might invert sometimes (it is expected as far as planar triangulation does not now about input topology)
+        if ( newPaths[i].empty() || patchMesh.topology.right( newPaths[i].front() ) )
+            if ( !newPaths[i].empty() )
+                MR::reverse( invertedHoles.emplace_back( newPaths[i] ) );
+    }
+    if ( !invertedHoles.empty() )
+    {
+        auto invertedParts = fillContourLeft( patchMesh.topology, invertedHoles );
+        auto invertedEdges = getIncidentEdges( patchMesh.topology, invertedParts );
+        patchMesh.topology.flipOrientation( &invertedEdges );
+
+        // validate one more time
+        for ( int i = 0; i < paths.size(); ++i )
+            if ( newPaths[i].empty() || patchMesh.topology.right( newPaths[i].front() ) )
+                if ( !newPaths[i].empty() )
+                    return unexpected( "Patch surface borders are incompatible with mesh borders" );
     }
 
     // move patch surface border points to original position (according original mesh)
@@ -160,7 +175,124 @@ VoidOrErrStr fillContours2D( Mesh& mesh, const std::vector<EdgeId>& holeRepresen
     }
     
     // add patch surface to original mesh
-    mesh.addPartByMask( patchMesh, patchMesh.topology.getValidFaces(), false, paths, newPaths );
+    mesh.addMeshPart( patchMesh, false, paths, newPaths );
+    return {};
+}
+
+Expected<void> fillPlanarHole( ObjectMesh& obj, std::vector<EdgeLoop>& holeContours )
+{
+    MR_TIMER
+
+    if ( !obj.varMesh() )
+        return unexpected( "No mesh in object: " + obj.name() );
+
+    auto& mesh = *obj.varMesh();
+    auto& tp = mesh.topology;
+
+    // take first edge from each contour and check that it is a hole boundary
+    EdgePath holesEdges;
+    for ( const auto& path : holeContours )
+    {
+        if ( path.empty() )
+            continue;
+        for ( auto e : path )
+            if ( tp.right( e ).valid() )
+                return unexpected( "Not hole contour given to fillPlanarHole: " + obj.name() );
+        holesEdges.push_back( path.front().sym() );
+    }
+
+    for ( auto& loop : holeContours )
+    {
+        // if not closed, add edge to enclose
+        if ( loop.empty() )
+            continue;
+        if ( tp.org( loop.front() ) == tp.dest( loop.back() ) )
+            continue;
+        auto newEdge = makeBridgeEdge( tp, loop.back().sym(), tp.prev( loop.front() ) );
+        if ( !newEdge )
+            continue;
+        loop.emplace_back( newEdge );
+    }
+
+    const auto fsz0 = tp.faceSize();
+    if ( !holesEdges.empty() )
+    {
+        auto fillSuccess = fillContours2D( mesh, holesEdges );
+        if ( !fillSuccess.has_value() )
+        {
+            return unexpected( "Cannot fill object: " + obj.name() + ". Error: " + fillSuccess.error() );
+        }
+    }
+
+    const auto fsz = tp.faceSize();
+    {
+        auto selFaces = obj.getSelectedFaces();
+        selFaces.resize( fsz );
+        selFaces.set( FaceId{ fsz0 }, fsz - fsz0, true );
+        obj.selectFaces( tp.getValidFaces() & selFaces );
+    }
+
+    {
+        auto selEdges = obj.getSelectedEdges();
+        tp.excludeLoneEdges( selEdges );
+        obj.selectEdges( std::move( selEdges ) );
+    }
+
+    {
+        auto creases = obj.creases();
+        tp.excludeLoneEdges( creases );
+        obj.setCreases( std::move( creases ) );
+    }
+
+    auto fcm = obj.getFacesColorMap();
+    auto tpf = obj.getTexturePerFace();
+    if ( fcm.empty() && tpf.empty() )
+        return {};
+    if ( !fcm.empty() )
+        fcm.resize( fsz );
+    if ( !tpf.empty() )
+        tpf.resize( fsz );
+    for ( FaceId f = FaceId{ fsz0 }; f < fsz; ++f )
+    {
+        VertId v[3];
+        tp.getTriVerts( f, v );
+        float sumNeighColorWeight = 0;
+        Vector4f sum;
+        FaceId maxAreaF;
+        float maxArea = 0.0f;
+        for ( size_t i = 0; i < 3; ++i )
+        {
+            for ( auto e : orgRing( tp, v[i] ) )
+            {
+                const auto tmpFace = tp.left( e );
+                if ( tmpFace >= fsz0 )
+                    continue;
+
+                const float area = mesh.area( tmpFace );
+                if ( !tpf.empty() )
+                {
+                    if ( area > maxArea )
+                    {
+                        maxArea = area;
+                        maxAreaF = tmpFace;
+                    }
+                }
+                if ( !fcm.empty() )
+                {
+                    const auto& color = fcm[tmpFace];
+                    sum += Vector4f( color ) * area;
+                    sumNeighColorWeight += area;
+                }
+            }
+        }
+        if ( !fcm.empty() )
+            fcm[f] = Color( sum / float( sumNeighColorWeight ) );
+        if ( !tpf.empty() )
+            tpf[f] = tpf[maxAreaF];
+    }
+
+    obj.setFacesColorMap( std::move( fcm ) );
+    obj.setTexturePerFace( std::move( tpf ) );
     return {};
 }
 
@@ -170,9 +302,9 @@ TEST( MRMesh, fillContours2D )
     Mesh sphereSmall = makeUVSphere( 0.7f, 16, 16 );
 
     sphereSmall.topology.flipOrientation();
-    sphereBig.addPart( std::move( sphereSmall ) );
+    sphereBig.addMesh( sphereSmall );
 
-    trimWithPlane( sphereBig, Plane3f::fromDirAndPt( Vector3f::plusZ(), Vector3f() ) );
+    trimWithPlane( sphereBig, TrimWithPlaneParams{ .plane = Plane3f::fromDirAndPt( Vector3f::plusZ(), Vector3f() ) } );
     sphereBig.pack();
 
     auto firstNewFace = sphereBig.topology.lastValidFace() + 1;

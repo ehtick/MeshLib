@@ -3,65 +3,102 @@
 #include "MRPolyline.h"
 #include "MRObjectFactory.h"
 #include "MRPch/MRJson.h"
-#include <Eigen/Dense>
 #include "MRConstants.h"
 #include "MRBestFit.h"
 
-namespace
-{
-constexpr int cDetailLevel = 128;
-}
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable:5054)  //operator '&': deprecated between enumerations of different types
+#pragma warning(disable:4127)  //C4127. "Consider using 'if constexpr' statement instead"
+#elif defined(__clang__)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
+#include <Eigen/Dense>
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#elif defined(__clang__)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 
 namespace MR
 {
 
 MR_ADD_CLASS_FACTORY( CircleObject )
 
-float CircleObject::getRadius() const
+float CircleObject::getRadius( ViewportId id /*= {}*/ ) const
 {
-    return xf().A.toScale().x;
+    return s_.get( id ).x.x;
 }
 
-Vector3f CircleObject::getCenter() const
+Vector3f CircleObject::getCenter( ViewportId id /*= {}*/ ) const
 {
-    return xf().b;
+    return xf( id ).b;
 }
 
-Vector3f CircleObject::getNormal() const
+Vector3f CircleObject::getNormal( ViewportId id /*= {}*/ ) const
 {
-    return ( xf().A * Vector3f::plusZ() ).normalized();
+    return ( xf( id ).A * Vector3f::plusZ() ).normalized();
 }
 
-void CircleObject::setRadius( float radius )
+void CircleObject::setRadius( float radius, ViewportId id /*= {}*/ )
 {
-    auto currentXf = xf();
+    auto currentXf = xf( id );
     currentXf.A = Matrix3f::rotationFromEuler( currentXf.A.toEulerAngles() ) * Matrix3f::scale( radius );
-    setXf( currentXf );
+    setXf( currentXf, id );
 }
 
-void CircleObject::setCenter( const Vector3f& center )
+void CircleObject::setCenter( const Vector3f& center, ViewportId id /*= {}*/ )
 {
-    auto currentXf = xf();
+    auto currentXf = xf( id );
     currentXf.b = center;
-    setXf( currentXf );
+    setXf( currentXf, id );
 }
 
-void CircleObject::setNormal( const Vector3f& normal )
+void CircleObject::setNormal( const Vector3f& normal, ViewportId id /*= {}*/ )
 {
-    auto currentXf = xf();
-    currentXf.A = Matrix3f::rotation( Vector3f::plusZ(), normal ) * Matrix3f::scale( currentXf.A.toScale() );
-    setXf( currentXf );
+    auto currentXf = xf( id );
+
+    currentXf.A = Matrix3f::rotation( Vector3f::plusZ(), normal ) * s_.get( id );
+    setXf( currentXf, id );
+}
+
+FeatureObjectProjectPointResult CircleObject::projectPoint( const Vector3f& point, ViewportId id /*= {}*/ ) const
+{
+    const Vector3f& center = getCenter( id );
+    const float radius = getRadius( id );
+    const auto& normal = getNormal( id );
+
+    Plane3f plane( normal, dot( normal, center ) );
+    auto K = plane.project( point );
+    auto n = ( K - center ).normalized();
+    auto projection = center + n * radius;
+
+    return { projection, std::nullopt };
+}
+
+const std::vector<FeatureObjectSharedProperty>& CircleObject::getAllSharedProperties() const
+{
+    static std::vector<FeatureObjectSharedProperty> ret = {
+      {"Radius", FeaturePropertyKind::linearDimension, &CircleObject::getRadius, &CircleObject::setRadius},
+      {"Center", FeaturePropertyKind::position,        &CircleObject::getCenter, &CircleObject::setCenter},
+      {"Normal", FeaturePropertyKind::direction,       &CircleObject::getNormal, &CircleObject::setNormal}
+    };
+    return ret;
 }
 
 CircleObject::CircleObject()
-{
-    constructPolyline_();
-}
+    : AddVisualProperties( 1 )
+{}
 
 CircleObject::CircleObject( const std::vector<Vector3f>& pointsToApprox )
+    : CircleObject()
 {
-    constructPolyline_();
-
     PointAccumulator pa;
     for ( const auto& p : pointsToApprox )
         pa.addPoint( p );
@@ -107,18 +144,12 @@ CircleObject::CircleObject( const std::vector<Vector3f>& pointsToApprox )
 
 std::shared_ptr<Object> CircleObject::shallowClone() const
 {
-    auto res = std::make_shared<CircleObject>( ProtectedStruct{}, *this );
-    if ( polyline_ )
-        res->polyline_ = polyline_;
-    return res;
+    return std::make_shared<CircleObject>( ProtectedStruct{}, *this );
 }
 
 std::shared_ptr<Object> CircleObject::clone() const
 {
-    auto res = std::make_shared<CircleObject>( ProtectedStruct{}, *this );
-    if ( polyline_ )
-        res->polyline_ = std::make_shared<Polyline3>( *polyline_ );
-    return res;
+    return std::make_shared<CircleObject>( ProtectedStruct{}, *this );
 }
 
 void CircleObject::swapBase_( Object& other )
@@ -129,25 +160,16 @@ void CircleObject::swapBase_( Object& other )
         assert( false );
 }
 
-void CircleObject::serializeFields_( Json::Value& root ) const
+void CircleObject::setupRenderObject_() const
 {
-    ObjectLinesHolder::serializeFields_( root );
-    root["Type"].append( CircleObject::TypeName() );
+    if ( !renderObj_ )
+        renderObj_ = createRenderObject<decltype( *this )>( *this );
 }
 
-void CircleObject::constructPolyline_()
+void CircleObject::serializeFields_( Json::Value& root ) const
 {
-    polyline_ = std::make_shared<Polyline3>();
-
-    std::vector<Vector3f> points( cDetailLevel );
-    for ( int i = 0; i < cDetailLevel; ++i )
-    {
-        points[i].x = cosf( i / 32.f * PI_F );
-        points[i].y = sinf( i / 32.f * PI_F );
-    }
-    polyline_->addFromPoints( points.data(), cDetailLevel, true );
-
-    setDirtyFlags( DIRTY_ALL );
+    FeatureObject::serializeFields_( root );
+    root["Type"].append( CircleObject::TypeName() );
 }
 
 }

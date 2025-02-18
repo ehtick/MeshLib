@@ -17,7 +17,7 @@ const IOFilters Filters =
     {"MRDistanceMap (.mrdistancemap)","*.mrdistancemap"}
 };
 
-VoidOrErrStr toRAW( const std::filesystem::path& path, const DistanceMap& dmap )
+Expected<void> toRAW( const std::filesystem::path& path, const DistanceMap& dmap )
 {
     if ( path.empty() )
         return unexpected( "Path is empty" );
@@ -57,7 +57,7 @@ VoidOrErrStr toRAW( const std::filesystem::path& path, const DistanceMap& dmap )
     return {};
 }
 
-VoidOrErrStr toMrDistanceMap( const std::filesystem::path& path, const DistanceMap& dmap, const DistanceMapToWorld& params )
+Expected<void> toMrDistanceMap( const std::filesystem::path& path, const DistanceMap& dmap, const DistanceMapToWorld& params )
 {
     if ( path.empty() )
         return unexpected( "Path is empty" );
@@ -100,7 +100,7 @@ VoidOrErrStr toMrDistanceMap( const std::filesystem::path& path, const DistanceM
     return {};
 }
 
-VoidOrErrStr toAnySupportedFormat( const std::filesystem::path& path, const DistanceMap& dmap, const DistanceMapToWorld* params)
+Expected<void> toAnySupportedFormat( const std::filesystem::path& path, const DistanceMap& dmap, const AffineXf3f * xf )
 {
     auto ext = utf8string( path.extension() );
     for ( auto& c : ext )
@@ -109,15 +109,15 @@ VoidOrErrStr toAnySupportedFormat( const std::filesystem::path& path, const Dist
     ext.insert( std::begin( ext ), '*' );
     auto itF = std::find_if( Filters.begin(), Filters.end(), [ext] ( const IOFilter& filter )
     {
-        return filter.extension == ext;
+        return filter.extensions.find( ext ) != std::string::npos;
     } );
     if ( itF == Filters.end() )
-        return unexpected( std::string( "unsupported file extension" ) );
+        return unexpectedUnsupportedFileExtension();
 
-    if ( itF->extension == "*.raw" )
+    if ( ext == "*.raw" )
         return toRAW( path, dmap );
 
-    return toMrDistanceMap( path, dmap, params ? *params : DistanceMapToWorld {} );
+    return toMrDistanceMap( path, dmap, xf ? *xf : AffineXf3f{} );
 }
 
 } // namespace DistanceMapSave

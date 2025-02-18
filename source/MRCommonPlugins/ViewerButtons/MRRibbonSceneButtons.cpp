@@ -1,82 +1,19 @@
 #include "MRRibbonSceneButtons.h"
 #include "MRMesh/MRObjectsAccess.h"
 #include "MRMesh/MRSceneRoot.h"
+#include "MRViewer/MRRibbonSchema.h"
 #include "MRViewer/MRRibbonMenu.h"
+#include "MRViewer/MRSceneObjectsListDrawer.h"
+#include "MRViewer/ImGuiMenu.h"
+#include "MRViewer/MRSceneCache.h"
 #include "MRViewer/MRAppendHistory.h"
 #include "MRMesh/MRChangeSceneObjectsOrder.h"
+#include "MRMesh/MRVisualObject.h"
 #include "MRMesh/MRChangeSceneAction.h"
+#include "MRViewer/MRSceneObjectsListDrawer.h"
 
 namespace MR
 {
-
-namespace
-{
-
-// select and show only neighborhood. If `selectNext` true - select next, otherwise select prev
-void selectAndShowOnlyNeighborhood( bool selectNext = true )
-{
-    const auto selected = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selected );
-    auto currentObjs = getTopmostVisibleObjects( &SceneRoot::get(), ObjectSelectivityType::Selectable );
-    currentObjs.insert( currentObjs.begin(), selected.begin(), selected.end() );
-    std::shared_ptr<Object> first = !currentObjs.empty() ? currentObjs.front() : std::shared_ptr<Object>{};
-    if ( !first )
-    {
-        // nothing is selected or visible, just select and show the first object
-        first = getDepthFirstObject( &SceneRoot::get(), ObjectSelectivityType::Selectable );
-    }
-    if ( !first )
-        return;
-    Object* newSelection = first.get();
-    // chose a sibling object of first
-    if ( const auto firstParent = first->parent() )
-    {
-        const auto& firstParentChildren = firstParent->children();
-        if ( firstParentChildren.size() > 1 )
-        {
-            // include all siblings in currentObjs to hide and de-select them
-            currentObjs.insert( currentObjs.end(), firstParentChildren.begin(), firstParentChildren.end() );
-            bool found = false;
-            if ( !selectNext )
-            {
-                for ( const auto& child : firstParentChildren )
-                {
-                    if ( found && child == first )
-                        break;
-                    if ( !child || child->isAncillary() )
-                        continue;
-                    newSelection = child.get();
-                    found = true;
-                }
-            }
-            else
-            {
-                // select previous
-                for ( auto it = firstParentChildren.rbegin(); it != firstParentChildren.rend(); ++it )
-                {
-                    if ( found && *it == first )
-                        break;
-                    auto * child = it->get();
-                    if ( !child || child->isAncillary() )
-                        continue;
-                    newSelection = child;
-                    found = true;
-                }
-            }
-        }
-    }
-    if ( newSelection )
-    {
-        for ( const auto& obj : currentObjs )
-        {
-            obj->setVisible( false );
-            obj->select( false );
-        }
-        newSelection->select( true );
-        newSelection->setGlobalVisibilty( true );
-    }
-}
-
-} // anonymous namespace
 
 RibbonSceneSortByName::RibbonSceneSortByName() :
     RibbonMenuItem( "Ribbon Scene Sort by name" )
@@ -121,11 +58,10 @@ std::string RibbonSceneSelectAll::isAvailable( const std::vector<std::shared_ptr
 
 bool RibbonSceneSelectAll::action()
 {
-    const auto selectable = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selectable );
-    for ( auto obj : selectable )
+    if ( auto menu = ImGuiMenu::instance() )
     {
-        obj->select( true );
-        obj->setVisible( true );
+        if ( auto sceneList = menu->getSceneObjectsList() )
+            sceneList->selectAllObjects();
     }
     return false;
 }
@@ -143,6 +79,48 @@ bool RibbonSceneUnselectAll::action()
     return false;
 }
 
+RibbonSceneShowAll::RibbonSceneShowAll() :
+    RibbonMenuItem( "Ribbon Scene Show all" )
+{}
+
+std::string RibbonSceneShowAll::isAvailable( const std::vector<std::shared_ptr<const Object>>& ) const
+{
+    if ( SceneCache::getAllObjects<VisualObject, ObjectSelectivityType::Selectable>().empty() )
+        return "At least one objects should be in scene";
+    return "";
+}
+
+bool RibbonSceneShowAll::action()
+{
+    if ( auto menu = ImGuiMenu::instance() )
+    {
+        if ( auto sceneList = menu->getSceneObjectsList() )
+            sceneList->setLeavesVisibility( true );
+    }
+    return false;
+}
+
+RibbonSceneHideAll::RibbonSceneHideAll() :
+    RibbonMenuItem( "Ribbon Scene Hide all" )
+{}
+
+std::string RibbonSceneHideAll::isAvailable( const std::vector<std::shared_ptr<const Object>>& ) const
+{
+    if ( SceneCache::getAllObjects<VisualObject, ObjectSelectivityType::Selectable>().empty() )
+        return "At least one objects should be in scene";
+    return "";
+}
+
+bool RibbonSceneHideAll::action()
+{
+    if ( auto menu = ImGuiMenu::instance() )
+    {
+        if ( auto sceneList = menu->getSceneObjectsList() )
+            sceneList->setLeavesVisibility( false );
+    }
+    return false;
+}
+
 RibbonSceneShowOnlyPrev::RibbonSceneShowOnlyPrev() :
     RibbonMenuItem( "Ribbon Scene Show only previous" )
 {
@@ -157,7 +135,12 @@ std::string RibbonSceneShowOnlyPrev::isAvailable( const std::vector<std::shared_
 
 bool RibbonSceneShowOnlyPrev::action()
 {
-    selectAndShowOnlyNeighborhood( false );
+    auto menu = ImGuiMenu::instance();
+    if ( menu )
+    {
+        if ( auto sceneList = menu->getSceneObjectsList() )
+            sceneList->changeVisible( false );
+    }
     return false;
 }
 
@@ -175,7 +158,12 @@ std::string RibbonSceneShowOnlyNext::isAvailable( const std::vector<std::shared_
 
 bool RibbonSceneShowOnlyNext::action()
 {
-    selectAndShowOnlyNeighborhood();
+    auto menu = ImGuiMenu::instance();
+    if ( menu )
+    {
+        if ( auto sceneList = menu->getSceneObjectsList() )
+            sceneList->changeVisible( true );
+    }
     return false;
 }
 
@@ -186,7 +174,7 @@ RibbonSceneRename::RibbonSceneRename() :
 
 bool RibbonSceneRename::action()
 {
-    getViewerInstance().getMenuPluginAs<RibbonMenu>()->tryRenameSelectedObject();
+    ImGuiMenu::instance()->tryRenameSelectedObject();
     return false;
 }
 
@@ -197,8 +185,8 @@ RibbonSceneRemoveSelected::RibbonSceneRemoveSelected() :
 
 std::string RibbonSceneRemoveSelected::isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const
 {
-    auto res = SceneStateAtLeastCheck<1, Object>::isAvailable( objs );
-    auto allowRemoval = getViewerInstance().getMenuPluginAs<RibbonMenu>()->checkPossibilityObjectRemoval();
+    auto res = SceneStateAtLeastCheck<1, Object, NoModelCheck>::isAvailable( objs );
+    auto allowRemoval = ImGuiMenu::instance()->checkPossibilityObjectRemoval();
     if ( !allowRemoval )
     {
         if ( !res.empty() )
@@ -210,12 +198,12 @@ std::string RibbonSceneRemoveSelected::isAvailable( const std::vector<std::share
 
 bool RibbonSceneRemoveSelected::action()
 {
-    if ( auto menu = getViewerInstance().getMenuPlugin() )
+    if ( auto menu = ImGuiMenu::instance() )
         if ( !menu->checkPossibilityObjectRemoval() )
             return false;
 
     const auto selected = getAllObjectsInTree( &SceneRoot::get(), ObjectSelectivityType::Selected );
-    SCOPED_HISTORY( "Remove objects" );
+    SCOPED_HISTORY( "Remove Objects" );
     for ( int i = (int) selected.size() - 1; i >= 0; --i )
         if ( selected[i] )
         {
@@ -229,6 +217,8 @@ bool RibbonSceneRemoveSelected::action()
 MR_REGISTER_RIBBON_ITEM( RibbonSceneSortByName )
 MR_REGISTER_RIBBON_ITEM( RibbonSceneSelectAll )
 MR_REGISTER_RIBBON_ITEM( RibbonSceneUnselectAll )
+MR_REGISTER_RIBBON_ITEM( RibbonSceneShowAll )
+MR_REGISTER_RIBBON_ITEM( RibbonSceneHideAll )
 MR_REGISTER_RIBBON_ITEM( RibbonSceneShowOnlyPrev )
 MR_REGISTER_RIBBON_ITEM( RibbonSceneShowOnlyNext )
 MR_REGISTER_RIBBON_ITEM( RibbonSceneRename )

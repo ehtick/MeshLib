@@ -20,9 +20,13 @@ public:
     template<typename T, typename F1, typename F2>
     void buildFromContours( const std::vector<std::vector<T>> & contours, F1 && reservePoints, F2 && addPoint );
 
+    /// build topology of comp2firstVert.size()-1 not-closed polylines
+    /// each pair (a,b) of indices in \param comp2firstVert defines vertex range of a polyline [a,b)
+    MRMESH_API void buildOpenLines( const std::vector<VertId> & comp2firstVert );
+
     /// converts this topology into contours of given type using the functor returning point by its Id
     template<typename T, typename F>
-    [[nodiscard]] std::vector<std::vector<T>> convertToContours( F && getPoint ) const;
+    [[nodiscard]] std::vector<std::vector<T>> convertToContours( F&& getPoint, std::vector<std::vector<VertId>>* vertMap = nullptr ) const;
 
     /// creates an edge not associated with any vertex
     [[nodiscard]] MRMESH_API EdgeId makeEdge();
@@ -81,9 +85,11 @@ public:
     [[nodiscard]] MRMESH_API VertId lastValidVert() const;
     /// creates new vert-id not associated with any edge yet
     [[nodiscard]] VertId addVertId() { edgePerVertex_.push_back( {} ); validVerts_.push_back( false ); return VertId( (int)edgePerVertex_.size() - 1 ); }
-    /// explicitly increases the size of verts vector
-    void vertResize( size_t newSize ) { if ( edgePerVertex_.size() < newSize ) { edgePerVertex_.resize( newSize ); validVerts_.resize( newSize ); } }
-    /// sets the capacity of verts vector
+    /// explicitly increases the size of vertices vector
+    MRMESH_API void vertResize( size_t newSize );
+    /// explicitly increases the size of vertices vector, doubling the current capacity if it was not enough
+    MRMESH_API void vertResizeWithReserve( size_t newSize );
+    /// sets the capacity of vertices vector
     void vertReserve( size_t newCapacity ) { edgePerVertex_.reserve( newCapacity ); validVerts_.reserve( newCapacity ); }
     /// returns the number of vertex records including invalid ones
     [[nodiscard]] size_t vertSize() const { return edgePerVertex_.size(); }
@@ -112,8 +118,16 @@ public:
     MRMESH_API EdgeId makePolyline( const VertId * vs, size_t num );
 
     /// appends polyline topology (from) in addition to the current topology: creates new edges, verts;
+    /// \param outVmap,outEmap (optionally) returns mappings: from.id -> this.id
+    MRMESH_API void addPart( const PolylineTopology & from,
+        VertMap * outVmap = nullptr, WholeEdgeMap * outEmap = nullptr );
+    /// appends polyline topology (from) in addition to the current topology: creates new edges, verts;
     MRMESH_API void addPartByMask( const PolylineTopology& from, const UndirectedEdgeBitSet& mask,
         VertMap* outVmap = nullptr, EdgeMap* outEmap = nullptr );
+
+    /// tightly packs all arrays eliminating lone edges and invalid vertices
+    /// \param outVmap,outEmap if given returns mappings: old.id -> new.id;
+    MRMESH_API void pack( VertMap * outVmap = nullptr, WholeEdgeMap * outEmap = nullptr );
 
     /// saves and loads in binary stream
     MRMESH_API void write( std::ostream & s ) const;
@@ -148,7 +162,8 @@ private:
         {
             return next == b.next && org == b.org;
         }
-
+        HalfEdgeRecord() noexcept = default;
+        explicit HalfEdgeRecord( NoInit ) noexcept : next( noInit ), org( noInit ) {}
     };
 
     /// edges_: EdgeId -> edge data
@@ -158,10 +173,6 @@ private:
     Vector<EdgeId, VertId> edgePerVertex_;
     VertBitSet validVerts_; ///< each true bit here corresponds to valid element in edgePerVertex_
     int numValidVerts_ = 0; ///< the number of valid elements in edgePerVertex_ or set bits in validVerts_
-
-public:
-    /// allows to copy EdgeId -> edge data when necessary
-    const auto& edges() const { return edges_; }
 };
 
 template<typename T, typename F1, typename F2>
@@ -174,7 +185,8 @@ void PolylineTopology::buildFromContours( const std::vector<std::vector<T>> & co
     int numClosed = 0;
     for ( const auto& c : contours )
     {
-        if ( c.size() > 2 )
+        const auto csize = c.size();
+        if ( csize > 2 )
         {
             closed.push_back( c.front() == c.back() );
         }
@@ -182,6 +194,8 @@ void PolylineTopology::buildFromContours( const std::vector<std::vector<T>> & co
         {
             closed.push_back( false );
         }
+        if ( csize < 2 )
+            continue; // ignore contours with 0 or 1 points because of no edges in them
         size += c.size();
         if ( closed.back() )
             ++numClosed;
@@ -193,8 +207,8 @@ void PolylineTopology::buildFromContours( const std::vector<std::vector<T>> & co
     for ( int i = 0; i < contours.size(); ++i )
     {
         const auto& c = contours[i];
-        if ( c.empty() )
-            continue;
+        if ( c.size() < 2 )
+            continue; // ignore contours with 0 or 1 points because of no edges in them
         const auto e0 = makeEdge();
         const auto v0 = addPoint( c[0] );
         setOrg( e0, v0 );
@@ -218,10 +232,11 @@ void PolylineTopology::buildFromContours( const std::vector<std::vector<T>> & co
         }
     }
     assert( isConsistentlyOriented() );
+    assert( edgePerVertex_.size() ==  size - numClosed );
 }
 
 template<typename T, typename F>
-std::vector<std::vector<T>> PolylineTopology::convertToContours( F && getPoint ) const
+std::vector<std::vector<T>> PolylineTopology::convertToContours( F&& getPoint, std::vector<std::vector<VertId>>* vertMap ) const
 {
     std::vector<std::vector<T>> res;
 
@@ -245,7 +260,11 @@ std::vector<std::vector<T>> PolylineTopology::convertToContours( F && getPoint )
 
         EdgeId e = curLine;
         std::vector<T> cont;
-        cont.push_back( getPoint( org( e ) ) );
+        std::vector<VertId> map;
+        auto orgV = org( e );
+        cont.push_back( getPoint( orgV ) );
+        if ( vertMap )
+            map.push_back( orgV );
         for ( ;; )
         {
             e = e.sym();
@@ -255,9 +274,55 @@ std::vector<std::vector<T>> PolylineTopology::convertToContours( F && getPoint )
                 break;
         }
         res.push_back( std::move( cont ) );
+        if ( vertMap )
+            vertMap->push_back( std::move( map ) );
     }
 
     return res;
 }
+
+/// simplifies construction of connected polyline in the topology
+struct PolylineMaker
+{
+    PolylineTopology & topology;
+    PolylineMaker( PolylineTopology & t ) : topology( t ) {}
+
+    /// creates first edge of polyline
+    /// \param v first vertex of the polyline
+    EdgeId start( VertId v )
+    {
+        assert( !e0_ && !eLast_ );
+        e0_ = eLast_ = topology.makeEdge();
+        topology.setOrg( e0_, v );
+        return e0_;
+    }
+    /// makes next edge of polyline
+    /// \param v next vertex of the polyline
+    EdgeId proceed( VertId v )
+    {
+        assert( eLast_ );
+        const auto ej = topology.makeEdge();
+        topology.splice( ej, eLast_.sym() );
+        topology.setOrg( ej, v );
+        return eLast_ = ej;
+    }
+    /// closes the polyline
+    void close()
+    {
+        assert( e0_ && eLast_ );
+        topology.splice( e0_, eLast_.sym() );
+        e0_ = eLast_ = {};
+    }
+    /// finishes the polyline adding final vertex in it
+    void finishOpen( VertId v )
+    {
+        assert( eLast_ );
+        topology.setOrg( eLast_.sym(), v );
+        e0_ = eLast_ = {};
+    }
+
+private:
+    EdgeId e0_, eLast_;
+};
 
 } // namespace MR

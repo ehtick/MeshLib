@@ -1,31 +1,28 @@
 #include <MRMesh/MRLog.h>
 #include <MRMesh/MRStringConvert.h>
 #include <MRMesh/MRSystem.h>
+#include <MRMesh/MRStacktrace.h>
 #include <MRViewer/MRViewer.h>
 #include <MRViewer/MRSetupViewer.h>
 #include <MRViewer/MRSplashWindow.h>
 
 #ifdef _WIN32
+#include "MRViewer/MRConsoleWindows.h"
+
 extern "C" __declspec( dllexport ) DWORD NvOptimusEnablement = 0x00000001;
 extern "C" __declspec( dllexport ) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001;
 
 extern "C" int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, char* /*lpCmdLine*/, int /*nCmdShow*/)
 {
-    int argc = 0;
-    std::vector<std::string> arguments;
-    std::vector<char*> argv;
+    // Initialize getting stacktraces before loading DLLs
+    // https://stackoverflow.com/q/78468776/7325599
+    (void)MR::getCurrentStacktraceInline();
 
-    LPWSTR* argvW = CommandLineToArgvW( GetCommandLineW(), &argc );
-    if ( argvW )
-    {
-        arguments.reserve( argc );
-        argv.reserve( argc );
-        for ( int i = 0; i < argc; ++i )
-        {
-            arguments.push_back( MR::Utf16ToUtf8( argvW[i] ) );
-            argv.push_back( arguments.back().data() );
-        }
-    }
+    auto args = MR::ConvertArgv();
+    std::vector<char*> argv;
+    argv.reserve( args.size() );
+    for ( auto& arg : args )
+        argv.push_back( arg.data() );
 
     // Init the viewer
     MR::Viewer::LaunchParams launchParams;
@@ -38,6 +35,9 @@ extern "C" int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance
 
     MR::Viewer::parseLaunchParams( launchParams );
 
+    // Starts console if needed, free it on destructor
+    MR::ConsoleRunner console( launchParams.console );
+
     return MR::launchDefaultViewer( launchParams, MR::ViewerSetup() );
 }
 
@@ -45,6 +45,8 @@ extern "C" int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance
 
 int main( int argc, char** argv )
 {
+    MR::setNewHandlerIfNeeded();
+
     // Init the viewer
     MR::Viewer::LaunchParams launchParams;
     launchParams.enableTransparentBackground = true;// default false, set true for MR and MRE

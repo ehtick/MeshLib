@@ -1,6 +1,5 @@
 #pragma once
 
-#include "MRVector4.h"
 #include "MRAffineXf3.h"
 #include "MRBox.h"
 #include "MRBitSet.h"
@@ -42,9 +41,13 @@ public:
     MRMESH_API ObjectChildrenHolder & operator = ( ObjectChildrenHolder && ) noexcept;
     MRMESH_API ~ObjectChildrenHolder();
 
+    // returns this Object as shared_ptr
+    // finds it among its parent's recognized children
+    [[nodiscard]] MRMESH_API std::shared_ptr<Object> getSharedPtr() const;
+
     /// returns the amount of memory this object occupies on heap,
     /// including the memory of all recognized children
-    [[nodiscard]] size_t heapBytes() const;
+    [[nodiscard]] MRMESH_API size_t heapBytes() const;
 
 protected:
     ObjectChildrenHolder * parent_ = nullptr;
@@ -77,6 +80,12 @@ public:
     MRMESH_API std::shared_ptr<const Object> find( const std::string_view & name ) const;
     std::shared_ptr<Object> find( const std::string_view & name ) { return std::const_pointer_cast<Object>( const_cast<const Object*>( this )->find( name ) ); }
 
+    /// finds a direct child by type
+    template <typename T>
+    std::shared_ptr<const T> find() const;
+    template <typename T>
+    std::shared_ptr<T> find() { return std::const_pointer_cast<T>( const_cast<const Object*>( this )->find<T>() ); }
+
     /// finds a direct child by name and type
     template <typename T>
     std::shared_ptr<const T> find( const std::string_view & name ) const;
@@ -106,13 +115,18 @@ public:
     /// returns all viewports where this object is visible together with all its parents
     MRMESH_API ViewportMask globalVisibilityMask() const;
     /// returns true if this object is visible together with all its parents in any of given viewports
-    bool globalVisibilty( ViewportMask viewportMask = ViewportMask::any() ) const { return !( globalVisibilityMask() & viewportMask ).empty(); }
+    bool globalVisibility( ViewportMask viewportMask = ViewportMask::any() ) const { return !( globalVisibilityMask() & viewportMask ).empty(); }
     /// if true sets all predecessors visible, otherwise sets this object invisible
-    MRMESH_API void setGlobalVisibilty( bool on, ViewportMask viewportMask = ViewportMask::any() );
+    MRMESH_API void setGlobalVisibility( bool on, ViewportMask viewportMask = ViewportMask::any() );
 
     /// object properties lock for UI
     bool isLocked() const { return locked_; }
     virtual void setLocked( bool on ) { locked_ = on; }
+
+    /// If true, the scene tree GUI doesn't allow you to drag'n'drop this object into a different parent.
+    /// Defaults to false.
+    [[nodiscard]] bool isParentLocked() const { return parentLocked_; }
+    virtual void setParentLocked( bool lock ) { parentLocked_ = lock; }
 
     /// returns parent object in the tree
     const Object * parent() const { return static_cast<const Object *>( parent_ ); }
@@ -120,6 +134,15 @@ public:
 
     /// return true if given object is ancestor of this one, false otherwise
     MRMESH_API bool isAncestor( const Object* ancestor ) const;
+
+    /// Find a common ancestor between this object and the other one.
+    /// Returns null on failure (which is impossible if both are children of the scene root).
+    /// Will return `this` if `other` matches `this`.
+    [[nodiscard]] MRMESH_API Object* findCommonAncestor( Object& other );
+    [[nodiscard]] const Object* findCommonAncestor( const Object& other ) const
+    {
+        return const_cast<Object &>( *this ).findCommonAncestor( const_cast<Object &>( other ) );
+    }
 
     /// removes this from its parent children list
     /// returns false if it was already orphan
@@ -146,7 +169,7 @@ public:
 
     /// selects the object, returns true if value changed, otherwise returns false
     MRMESH_API virtual bool select( bool on );
-    bool isSelected() const { return selected_; }
+    virtual bool isSelected() const { return selected_; }
 
     /// ancillary object is an object hidden (in scene menu) from a regular user
     /// such objects cannot be selected, and if it has been selected, it is unselected when turn ancillary
@@ -156,11 +179,11 @@ public:
     /// sets the object visible in the viewports specified by the mask (by default in all viewports)
     MRMESH_API void setVisible( bool on, ViewportMask viewportMask = ViewportMask::all() );
     /// checks whether the object is visible in any of the viewports specified by the mask (by default in any viewport)
-    bool isVisible( ViewportMask viewportMask = ViewportMask::any() ) const { return !( visibilityMask_ & viewportMask ).empty(); }
+    bool isVisible( ViewportMask viewportMask = ViewportMask::any() ) const { return !( visibilityMask() & viewportMask ).empty(); }
     /// specifies object visibility as bitmask of viewports
-    virtual void setVisibilityMask( ViewportMask viewportMask ) { visibilityMask_ = viewportMask; }
+    MRMESH_API virtual void setVisibilityMask( ViewportMask viewportMask );
     /// gets object visibility as bitmask of viewports
-    ViewportMask visibilityMask() const { return visibilityMask_; }
+    virtual ViewportMask visibilityMask() const { return visibilityMask_; }
 
     /// this method virtual because others data model types could have dirty flags or something
     virtual bool getRedrawFlag( ViewportMask ) const { return needRedraw_; }
@@ -179,20 +202,26 @@ public:
 
     /// return several info lines that can better describe object in the UI
     MRMESH_API virtual std::vector<std::string> getInfoLines() const;
+
     /// return human readable name of subclass
     virtual std::string getClassName() const { return "Object"; }
+
+    /// return human readable name of subclass in plural form
+    virtual std::string getClassNameInPlural() const { return "Objects"; }
 
     /// creates futures that save this object subtree:
     ///   models in the folder by given path and
     ///   fields in given JSON
     /// \param childId is its ordinal number within the parent
-    Expected<std::vector<std::future<void>>, std::string> serializeRecursive( const std::filesystem::path& path,
-        Json::Value& root, int childId ) const;
+    // This would be automatically skipped in the bindings anyway because of the `Json::Value` parameter.
+    // But skipping it here prevents the vector-of-futures type from being registered, which is helpful.
+    // TODO: figure out how to automate this (add a flag to the parser to outright reject functions based on their parameter and return types).
+    MRMESH_API MR_BIND_IGNORE Expected<std::vector<std::future<Expected<void>>>> serializeRecursive( const std::filesystem::path& path, Json::Value& root, int childId ) const;
 
     /// loads subtree into this Object
     ///   models from the folder by given path and
     ///   fields from given JSON
-    VoidOrErrStr deserializeRecursive( const std::filesystem::path& path, const Json::Value& root,
+    MRMESH_API Expected<void> deserializeRecursive( const std::filesystem::path& path, const Json::Value& root,
         ProgressCallback progressCb = {}, int* objCounter = nullptr );
 
     /// swaps this object with other
@@ -205,11 +234,20 @@ public:
     /// returns bounding box of this object and all children visible in given (or default) viewport in world coordinates
     MRMESH_API Box3f getWorldTreeBox( ViewportId = {} ) const;
 
+    /// does the object have any visual representation (visible points, triangles, edges, etc.), no considering child objects
+    [[nodiscard]] virtual bool hasVisualRepresentation() const { return false; }
+
+    /// does the object have any model available (but possibly empty),
+    /// e.g. ObjectMesh has valid mesh() or ObjectPoints has valid pointCloud()
+    [[nodiscard]] virtual bool hasModel() const { return false; }
+
     /// returns the amount of memory this object occupies on heap
     [[nodiscard]] MRMESH_API virtual size_t heapBytes() const;
 
-    /// signal about xf changing, triggered in setXf and setWorldXf,  it is called for children too
-    using XfChangedSignal = Signal<void() >;
+    /// signal about xf changing
+    /// triggered in setXf and setWorldXf, it is called for children too
+    /// triggered in addChild and addChildBefore, it is called only for children object
+    using XfChangedSignal = Signal<void()>;
     XfChangedSignal worldXfChangedSignal;
 protected:
     struct ProtectedStruct{ explicit ProtectedStruct() = default; };
@@ -229,14 +267,14 @@ protected:
 
     /// Creates future to save object model (e.g. mesh) in given file
     /// path is full filename without extension
-    MRMESH_API virtual Expected<std::future<void>, std::string> serializeModel_( const std::filesystem::path& path ) const;
+    MRMESH_API virtual Expected<std::future<Expected<void>>> serializeModel_( const std::filesystem::path& path ) const;
 
     /// Write parameters to given Json::Value,
     /// \note if you override this method, please call Base::serializeFields_(root) in the beginning
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const;
 
     /// Reads model from file
-    MRMESH_API virtual VoidOrErrStr deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} );
+    MRMESH_API virtual Expected<void> deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} );
 
     /// Reads parameters from json value
     /// \note if you override this method, please call Base::deserializeFields_(root) in the beginning
@@ -244,14 +282,29 @@ protected:
 
     std::string name_;
     ViewportProperty<AffineXf3f> xf_;
-    ViewportMask visibilityMask_ = ViewportMask::all();
+    ViewportMask visibilityMask_ = ViewportMask::all(); // Prefer to not read directly. Use the getter, as it can be overridden.
     bool locked_ = false;
+    bool parentLocked_ = false;
     bool selected_{ false };
     bool ancillary_{ false };
     mutable bool needRedraw_{false};
 
-    void propagateWorldXfChangedSignal_();
+    // This calls `onWorldXfChanged_()` for all children recursively, which in turn emits `worldXfChangedSignal`.
+    // This isn't virtual because it wouldn't be very useful, because it doesn't call itself on the children
+    //   (it doesn't use a true recursion, instead imitiating one, presumably to save stack space, though this is unlikely to be an issue).
+    MRMESH_API void sendWorldXfChangedSignal_();
+    // Emits `worldXfChangedSignal`, but derived classes can add additional behavior to it.
+    MRMESH_API virtual void onWorldXfChanged_();
 };
+
+template <typename T>
+std::shared_ptr<const T> Object::find() const
+{
+    for ( const auto & child : children_ )
+        if ( auto res = std::dynamic_pointer_cast<T>( child ) )
+            return res;
+    return {}; // not found
+}
 
 template <typename T>
 std::shared_ptr<const T> Object::find( const std::string_view & name ) const

@@ -19,3 +19,15 @@ var is_mac = function () {
         return false;
     return navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 }
+
+var is_safari = function(){
+    return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+}
+
+var is_android = function () {
+    return /Android/i.test(navigator.userAgent);
+}
+
+var is_mobile = function () {
+    return is_android() || is_ios();
+}

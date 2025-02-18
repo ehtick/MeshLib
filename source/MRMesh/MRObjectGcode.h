@@ -33,13 +33,15 @@ public:
     // get mapping of tool path polyline segment id to source line number of g-code source
     virtual const std::vector<int>& segmentToSourceLineMap() const { return segmentToSourceLineMap_; }
 
-    MRMESH_API virtual void setDirtyFlags( uint32_t mask ) override;
+    MRMESH_API virtual void setDirtyFlags( uint32_t mask, bool invalidateCaches = true ) override;
 
     /// \note this ctor is public only for std::make_shared used inside clone()
     ObjectGcode( ProtectedStruct, const ObjectGcode& obj ) : ObjectGcode( obj ) {}
 
     MRMESH_API virtual std::vector<std::string> getInfoLines() const override;
-    virtual std::string getClassName() const override { return "G-code"; }
+
+    std::string getClassName() const override { return "G-code"; }
+    std::string getClassNameInPlural() const override { return "G-codes"; }
 
     // set drawing feedrate as gradient of brightness
     MRMESH_API void switchFeedrateGradient( bool isFeedrateGradientEnabled );

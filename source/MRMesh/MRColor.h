@@ -7,9 +7,10 @@ namespace MR
 {
 struct Color
 {
-    uint8_t r{0}, g{0}, b{0}, a{255};
+    uint8_t r, g, b, a;
 
-    constexpr Color() noexcept = default;
+    constexpr Color() noexcept : r{ 0 }, g{ 0 }, b{ 0 }, a{ 255 } {}
+    explicit Color( NoInit ) noexcept {}
     constexpr Color( int r, int g, int b, int a = 255 ) noexcept :
         r{uint8_t(r)}, 
         g{uint8_t(g)}, 
@@ -31,18 +32,23 @@ struct Color
     static constexpr Color blue() noexcept { return Color( 0, 0, 255, 255 ); }
     static constexpr Color yellow() noexcept { return Color( 255, 255, 0, 255 ); }
     static constexpr Color brown() noexcept { return Color( 135, 74, 43, 255 ); }
+    static constexpr Color purple() noexcept { return Color( 128, 0, 128, 255 ); }
     static constexpr Color transparent() noexcept { return Color( 0, 0, 0, 0 ); }
 
     template<typename T>
     static constexpr uint8_t valToUint8( T val ) noexcept
     {
-        if constexpr ( std::is_same_v<T, int> )
+        if constexpr ( std::is_same_v<T, uint8_t> )
         {
-            return val > 255 ? uint8_t( 255 ) : ( val < 0 ? uint8_t( 0 ) : uint8_t( val ) );
+            return val;
+        }
+        else if constexpr ( std::is_integral_v<T> )
+        {
+            return val >= 255 ? uint8_t( 255 ) : ( val <= 0 ? uint8_t( 0 ) : uint8_t( val ) );
         }
         else
         {
-            return val > T( 1 ) ? uint8_t( 255 ) : ( val < T( 0 ) ? uint8_t( 0 ) : uint8_t( val * 255 ) );
+            return val >= T( 1 ) ? uint8_t( 255 ) : ( val <= T( 0 ) ? uint8_t( 0 ) : uint8_t( val * 255 ) );
         }
     }
 
@@ -63,14 +69,15 @@ struct Color
     {}
 
     template<typename T>
-    explicit operator Vector4<T>() const noexcept { 
-        if constexpr ( std::is_same_v<T, int> )
+    explicit constexpr operator Vector4<T>() const noexcept
+    {
+        if constexpr ( std::is_integral_v<T> )
         {
-            return Vector4i( r, g, b, a );
+            return Vector4<T>( T( r ), T( g ), T( b ), T( a ) );
         }
         else
         {
-            return Vector4<T>( T( r ) / T( 255 ), T( g ) / T( 255 ), T( b ) / T( 255 ), T( a ) / T( 255 ) );
+            return Vector4<T>( T( r ), T( g ), T( b ), T( a ) ) / T( 255 );
         }
     }
 
@@ -122,5 +129,9 @@ inline Color operator /( const Color& b, float a )
 {
     return b * ( 1 / a );
 }
+
+/// Blend two colors together
+/// \note This operation is not commutative
+MRMESH_API Color blend( const Color& front, const Color& back );
 
 }

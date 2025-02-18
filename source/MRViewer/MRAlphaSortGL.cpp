@@ -1,13 +1,16 @@
 #include "MRAlphaSortGL.h"
 #include "MRGLMacro.h"
 #include "MRGLStaticHolder.h"
-#include "MRMeshViewer.h"
+#include "MRViewer.h"
 #include "MRGladGlfw.h"
 
+
+#ifndef __EMSCRIPTEN__
 namespace
 {
 constexpr unsigned cAlphaSortStoragePixelCapacity = 12;
 }
+#endif
 
 namespace MR
 {
@@ -55,11 +58,12 @@ void AlphaSortGL::clearTransparencyTextures() const
 {
     if ( !inited_ )
         return;
+#ifndef __EMSCRIPTEN__
     GL_EXEC( glBindBuffer( GL_SHADER_STORAGE_BUFFER, transparency_shared_shader_data_vbo ) );
     GL_EXEC( glBindBufferBase( GL_SHADER_STORAGE_BUFFER, 0, transparency_shared_shader_data_vbo ) );
     GL_EXEC( glBindBuffer( GL_SHADER_STORAGE_BUFFER, 0 ) ); // unbind
 
-    constexpr GLuint zero = 0;
+    const GLuint zero = 0;
     GL_EXEC( glBindBuffer( GL_ATOMIC_COUNTER_BUFFER, transparency_atomic_counter_vbo ) );
     GL_EXEC( glBufferData( GL_ATOMIC_COUNTER_BUFFER, sizeof( GLuint ), &zero, GL_DYNAMIC_DRAW ) );
     GL_EXEC( glBindBufferBase( GL_ATOMIC_COUNTER_BUFFER, 0, transparency_atomic_counter_vbo ) );
@@ -71,6 +75,7 @@ void AlphaSortGL::clearTransparencyTextures() const
                               GLuint( width_ ), GLuint( height_ ),
                               GL_RED_INTEGER, GL_UNSIGNED_INT, NULL ) );
     GL_EXEC( glBindBuffer( GL_PIXEL_UNPACK_BUFFER, 0 ) ); // unbind
+#endif
 }
 
 void AlphaSortGL::drawTransparencyTextureToScreen() const
@@ -93,7 +98,7 @@ void AlphaSortGL::drawTransparencyTextureToScreen() const
 
     GL_EXEC( glViewport( (GLsizei) 0, (GLsizei) 0, (GLsizei) width_, (GLsizei) height_ ) );
 
-    // Send lines data to GL, install lines properties 
+    // Send lines data to GL, install lines properties
     GL_EXEC( glBindVertexArray( transparency_quad_vao ) );
 
     auto shader = GLStaticHolder::getShaderId( GLStaticHolder::TransparencyOverlayQuad );
@@ -127,15 +132,13 @@ void AlphaSortGL::updateTransparencyTexturesSize( int width, int height )
     GL_EXEC( glTexStorage2D( GL_TEXTURE_2D, 1, GL_R32UI, GLuint( width ), GLuint( height ) ) );
 #ifndef __EMSCRIPTEN__
     GL_EXEC( glBindImageTexture( 0, transparency_heads_texture_vbo, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI ) );
-#endif
 
     GLuint maxNodes = cAlphaSortStoragePixelCapacity * GLuint( width ) * GLuint( height );
     GLint  nodeSize = 5 * sizeof( GLfloat ) + sizeof( GLuint );
-
     GL_EXEC( glBindBuffer( GL_SHADER_STORAGE_BUFFER, transparency_shared_shader_data_vbo ) );
     GL_EXEC( glBufferData( GL_SHADER_STORAGE_BUFFER, maxNodes * nodeSize, NULL, GL_DYNAMIC_DRAW ) );
     GL_EXEC( glBindBuffer( GL_SHADER_STORAGE_BUFFER, 0 ) ); // unbind
-
+#endif
     std::vector<GLuint> ones( GLuint( width ) * GLuint( height ), 0xFFFFFFFF );
     GL_EXEC( glBindBuffer( GL_PIXEL_UNPACK_BUFFER, transparency_static_clean_vbo ) );
     GL_EXEC( glBufferData( GL_PIXEL_UNPACK_BUFFER, ones.size() * sizeof( GLuint ), ones.data(), GL_STATIC_COPY ) );

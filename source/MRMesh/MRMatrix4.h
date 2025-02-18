@@ -34,7 +34,9 @@ struct Matrix4
         w = Vector4<T>( 0, 0, 0, 1 );
     }
 
-    constexpr Matrix4( const AffineXf3<T>& xf ) : Matrix4( xf.A, xf.b ) {}
+    // Currently `AffineXf3<long long>` doesn't seem to compile, so we disable this constructor for `Matrix4<long long>`, because otherwise
+    // mrbind instantiates the entire `AffineXf3<long long>` and chokes on it.
+    constexpr Matrix4( const AffineXf3<T>& xf ) MR_REQUIRES_IF_SUPPORTED( std::floating_point<T> ) : Matrix4( xf.A, xf.b ) {}
 
     template <typename U>
     constexpr explicit Matrix4( const Matrix4<U> & m ) : x( m.x ), y( m.y ), z( m.z ), w( m.w ) { }
@@ -58,7 +60,13 @@ struct Matrix4
     constexpr T trace() const noexcept { return x.x + y.y + z.z + w.w; }
     /// compute sum of squared matrix elements
     constexpr T normSq() const noexcept { return x.lengthSq() + y.lengthSq() + z.lengthSq() + w.lengthSq(); }
-    constexpr T norm() const noexcept { return std::sqrt( normSq() ); }
+    constexpr auto norm() const noexcept
+    {
+        // Calling `sqrt` this way to hopefully support boost.multiprecision numbers.
+        // Returning `auto` to not break on integral types.
+        using std::sqrt;
+        return sqrt( normSq() );
+    }
     /// computes submatrix of the matrix with excluded i-th row and j-th column
     Matrix3<T> submatrix3( int i, int j ) const noexcept;
     /// computes determinant of the matrix
@@ -86,12 +94,12 @@ struct Matrix4
             return *this *= ( 1 / b );
     }
 
-    operator AffineXf3<T>() const
+    operator AffineXf3<T>() const MR_REQUIRES_IF_SUPPORTED( std::floating_point<T> )
     {
-        assert( std::fabs( w.x )     < std::numeric_limits<T>::epsilon() * 1000 );
-        assert( std::fabs( w.y )     < std::numeric_limits<T>::epsilon() * 1000 );
-        assert( std::fabs( w.z )     < std::numeric_limits<T>::epsilon() * 1000 );
-        assert( std::fabs( 1 - w.w ) < std::numeric_limits<T>::epsilon() * 1000 );
+        assert( std::abs( w.x )     < std::numeric_limits<T>::epsilon() * 1000 );
+        assert( std::abs( w.y )     < std::numeric_limits<T>::epsilon() * 1000 );
+        assert( std::abs( w.z )     < std::numeric_limits<T>::epsilon() * 1000 );
+        assert( std::abs( 1 - w.w ) < std::numeric_limits<T>::epsilon() * 1000 );
         AffineXf3<T> res;
         res.A.x.x = x.x; res.A.x.y = x.y; res.A.x.z = x.z; res.b.x = x.w;
         res.A.y.x = y.x; res.A.y.y = y.y; res.A.y.z = y.z; res.b.y = y.w;
@@ -99,9 +107,9 @@ struct Matrix4
         return res;
     }
 
-    /// converts 3d-vector b in 4d-vector (b,1), multiplies matrix on it, 
+    /// converts 3d-vector b in 4d-vector (b,1), multiplies matrix on it,
     /// and assuming the result is in homogeneous coordinates returns it as 3d-vector
-    Vector3<T> operator ()( const Vector3<T> & b ) const;
+    Vector3<T> operator ()( const Vector3<T> & b ) const MR_REQUIRES_IF_SUPPORTED( !std::is_integral_v<T> );
 };
 
 /// \related Matrix4
@@ -114,8 +122,15 @@ inline Vector4<T> operator *( const Matrix4<T> & a, const Vector4<T> & b )
     return { dot( a.x, b ), dot( a.y, b ), dot( a.z, b ), dot( a.w, b ) };
 }
 
+/// double-dot product: x = a : b
 template <typename T>
-inline Vector3<T> Matrix4<T>::operator ()( const Vector3<T> & b ) const
+inline T dot( const Matrix4<T> & a, const Matrix4<T> & b )
+{
+    return dot( a.x, b.x ) + dot( a.y, b.y ) + dot( a.z, b.z ) + dot( a.w, b.w );
+}
+
+template <typename T>
+inline Vector3<T> Matrix4<T>::operator ()( const Vector3<T> & b ) const MR_REQUIRES_IF_SUPPORTED( !std::is_integral_v<T> )
 {
     return ( *this * Vector4<T>{ b.x, b.y, b.z, T(1) } ).proj3d();
 }

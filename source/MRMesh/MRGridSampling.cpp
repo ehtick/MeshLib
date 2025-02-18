@@ -6,14 +6,16 @@
 #include "MRRegionBoundary.h"
 #include "MRVolumeIndexer.h"
 #include "MRTimer.h"
-#include "MRUVSphere.h"
+#include "MRMakeSphereMesh.h"
 #include "MRGTest.h"
+#include "MRComputeBoundingBox.h"
 
 namespace MR
 {
 
 struct GridElement
 {
+    ObjId oid;
     VertId vid;
     float centerDistSq = FLT_MAX;
 };
@@ -27,9 +29,11 @@ public:
     // finds center of given voxel
     Vector3f voxelCenter( const Vector3i & pos ) const;
     // if given point is closer to the center of its voxel, then it is remembered
-    void addVertex( const Vector3f & p, VertId vid );
+    void addVertex( const Vector3f& p, VertId vid, ObjId oid = {} );
     // returns all sampled points after addition
     VertBitSet getSamples() const;
+    // returns all sampled points after addition
+    std::vector<ObjVertId> setSamplesPerModel() const;
 
 private:
     Box3f box_; 
@@ -72,7 +76,7 @@ inline Vector3f Grid::voxelCenter( const Vector3i & pos ) const
     };
 }
 
-void Grid::addVertex( const Vector3f & p, VertId vid )
+void Grid::addVertex( const Vector3f& p, VertId vid, ObjId oid )
 {
     const auto pos = pointPos( p );
     auto & ge = voxels_[ toVoxelId( pos ) ];
@@ -81,6 +85,7 @@ void Grid::addVertex( const Vector3f & p, VertId vid )
     {
         ge.centerDistSq = distSq;
         ge.vid = vid;
+        ge.oid = oid;
     }
 }
 
@@ -98,9 +103,28 @@ VertBitSet Grid::getSamples() const
     return res;
 }
 
-VertBitSet verticesGridSampling( const MeshPart & mp, float voxelSize, ProgressCallback cb )
+std::vector<MR::ObjVertId> Grid::setSamplesPerModel() const
 {
-    MR_TIMER;
+    size_t counter = 0;
+    for ( const auto& ge : voxels_ )
+        if ( ge.vid )
+            ++counter;
+
+    std::vector<MR::ObjVertId> res( counter );
+    counter = 0;
+    for ( const auto& ge : voxels_ )
+    {
+        if ( !ge.vid )
+            continue;
+        res[counter] = { ge.oid,ge.vid };
+        ++counter;
+    }
+    return res;
+}
+
+std::optional<VertBitSet> verticesGridSampling( const MeshPart & mp, float voxelSize, const ProgressCallback & cb )
+{
+    MR_TIMER
     if (voxelSize <= 0.f)
     {
         if ( mp.region )
@@ -130,7 +154,7 @@ VertBitSet verticesGridSampling( const MeshPart & mp, float voxelSize, ProgressC
     for ( auto v : regionVerts )
     {
         grid.addVertex( mp.mesh.points[v], v );
-        if ( !reportProgress( cb, [&]{ return 0.1f + 0.8f * float( counter ) / float( size ); }, counter++, 128 ) )
+        if ( !reportProgress( cb, [&]{ return 0.1f + 0.8f * float( counter ) / float( size ); }, counter++, 1024 ) )
             return {};
     }
 
@@ -141,20 +165,20 @@ VertBitSet verticesGridSampling( const MeshPart & mp, float voxelSize, ProgressC
     return res;
 }
 
-VertBitSet pointGridSampling( const PointCloud & cloud, float voxelSize, ProgressCallback cb )
+std::optional<VertBitSet> pointGridSampling( const PointCloud & cloud, float voxelSize, const ProgressCallback & cb )
 {
     if (voxelSize <= 0.f)
         return cloud.validPoints;
-    MR_TIMER;
+    MR_TIMER
 
     const auto bbox = cloud.getBoundingBox();
     const auto bboxSz = bbox.max - bbox.min;
     constexpr float maxVoxelsInOneDim = 1 << 10;
     const Vector3i dims
     {
-        (int) std::min( std::ceil( bboxSz.x / voxelSize ), maxVoxelsInOneDim ),
-        (int) std::min( std::ceil( bboxSz.y / voxelSize ), maxVoxelsInOneDim ),
-        (int) std::min( std::ceil( bboxSz.z / voxelSize ), maxVoxelsInOneDim )
+        ( int )std::clamp( std::ceil( bboxSz.x / voxelSize ),1.0f, maxVoxelsInOneDim ),
+        ( int )std::clamp( std::ceil( bboxSz.y / voxelSize ),1.0f, maxVoxelsInOneDim ),
+        ( int )std::clamp( std::ceil( bboxSz.z / voxelSize ),1.0f, maxVoxelsInOneDim )
     };
 
     Grid grid( bbox, dims );
@@ -166,7 +190,7 @@ VertBitSet pointGridSampling( const PointCloud & cloud, float voxelSize, Progres
     for ( auto v : cloud.validPoints )
     {
         grid.addVertex( cloud.points[v], v );
-        if ( !reportProgress( cb, [&]{ return 0.1f + 0.8f * float( counter ) / float( size ); }, counter++, 128 ) )
+        if ( !reportProgress( cb, [&]{ return 0.1f + 0.8f * float( counter ) / float( size ); }, counter++, 1024 ) )
             return {};
     }
 
@@ -177,12 +201,67 @@ VertBitSet pointGridSampling( const PointCloud & cloud, float voxelSize, Progres
     return res;
 }
 
+std::optional<std::vector<ObjVertId>> multiModelGridSampling( const Vector<ModelPointsData, ObjId>& models, float voxelSize, const ProgressCallback& cb )
+{
+    if ( voxelSize <= 0.f )
+        return {};
+    MR_TIMER;
+
+    Box3f bbox;
+    for ( const auto& model : models )
+    {
+        if ( !model.points || !model.validPoints )
+            continue;
+        bbox.include( computeBoundingBox( *model.points, *model.validPoints, model.xf ) );
+    }
+    const auto bboxSz = bbox.max - bbox.min;
+    constexpr float maxVoxelsInOneDim = 1 << 10;
+    const Vector3i dims
+    {
+        ( int )std::clamp( std::ceil( bboxSz.x / voxelSize ),1.0f, maxVoxelsInOneDim ),
+        ( int )std::clamp( std::ceil( bboxSz.y / voxelSize ),1.0f, maxVoxelsInOneDim ),
+        ( int )std::clamp( std::ceil( bboxSz.z / voxelSize ),1.0f, maxVoxelsInOneDim )
+    };
+
+    Grid grid( bbox, dims );
+    if ( cb && !cb( 0.1f ) )
+        return {};
+
+    ObjId oId;
+    auto sb = subprogress( cb, 0.1f, 0.8f );
+    for ( const auto& model : models )
+    {
+        ++oId;
+        if ( !model.points || !model.validPoints )
+            continue;
+        for ( auto v : *model.validPoints )
+        {
+            auto useOId = model.fakeObjId ? model.fakeObjId : oId;
+            if ( model.xf )
+                grid.addVertex( ( *model.xf )( ( *model.points )[v] ), v, useOId );
+            else
+                grid.addVertex( ( *model.points )[v], v, useOId );
+        }
+       
+
+        if ( !reportProgress( sb, float( oId + 1 ) / models.size() ) )
+            return {};
+    }
+
+    std::vector<ObjVertId> res = grid.setSamplesPerModel();
+
+    if ( cb && !cb( 1.0f ) )
+        return {};
+
+    return res;
+}
+
 TEST( MRMesh, GridSampling )
 {
     auto sphereMesh = makeUVSphere();
     auto numVerts = sphereMesh.topology.numValidVerts();
     auto samples = verticesGridSampling( sphereMesh, 0.5f );
-    auto sampleCount = samples.count();
+    auto sampleCount = samples->count();
     EXPECT_LE( sampleCount, numVerts );
 }
 

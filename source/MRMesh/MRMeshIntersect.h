@@ -17,25 +17,59 @@ struct MeshIntersectionResult
 {
     /// stores intersected face and global coordinates
     PointOnFace proj;
+
     /// stores barycentric coordinates
     MeshTriPoint mtp;
+
     /// stores the distance from ray origin to the intersection point in direction units
     float distanceAlongLine = 0;
+
+    /// check for validity
+    explicit operator bool() const { return proj.face.valid(); }
 };
 
 /// Finds ray and mesh intersection in float-precision.
 /// \p rayStart and \p rayEnd define the interval on the ray to detect an intersection.
 /// \p prec can be specified to reuse some precomputations (e.g. for checking many parallel rays).
+/// \p vadidFaces if given then all faces for which false is returned will be skipped
 /// Finds the closest to ray origin intersection (or any intersection for better performance if \p !closestIntersect).
-MRMESH_API std::optional<MeshIntersectionResult> rayMeshIntersect( const MeshPart& meshPart, const Line3f& line,
-    float rayStart = 0.0f, float rayEnd = FLT_MAX, const IntersectionPrecomputes<float>* prec = nullptr, bool closestIntersect = true );
+[[nodiscard]] MRMESH_API MeshIntersectionResult rayMeshIntersect( const MeshPart& meshPart, const Line3f& line,
+    float rayStart = 0.0f, float rayEnd = FLT_MAX, const IntersectionPrecomputes<float>* prec = nullptr, bool closestIntersect = true,
+    const FacePredicate & validFaces = {} );
 
 /// Finds ray and mesh intersection in double-precision.
 /// \p rayStart and \p rayEnd define the interval on the ray to detect an intersection.
 /// \p prec can be specified to reuse some precomputations (e.g. for checking many parallel rays).
+/// \p vadidFaces if given then all faces for which false is returned will be skipped
 /// Finds the closest to ray origin intersection (or any intersection for better performance if \p !closestIntersect).
-MRMESH_API std::optional<MeshIntersectionResult> rayMeshIntersect( const MeshPart& meshPart, const Line3d& line,
-    double rayStart = 0.0, double rayEnd = DBL_MAX, const IntersectionPrecomputes<double>* prec = nullptr, bool closestIntersect = true );
+[[nodiscard]] MRMESH_API MeshIntersectionResult rayMeshIntersect( const MeshPart& meshPart, const Line3d& line,
+    double rayStart = 0.0, double rayEnd = DBL_MAX, const IntersectionPrecomputes<double>* prec = nullptr, bool closestIntersect = true,
+    const FacePredicate & validFaces = {} );
+
+struct MultiRayMeshIntersectResult
+{
+    // outputs (each one if optional) for every ray:
+    BitSet * intersectingRays = nullptr;         ///< true if the ray has intersection with mesh part, false otherwise
+    std::vector<float> * rayParams = nullptr;    ///< distance along each ray till the intersection point or NaN if no intersection
+    std::vector<FaceId> * isectFaces = nullptr;  ///< intersected triangles from mesh
+    std::vector<TriPointf> * isectBary = nullptr;///< barycentric coordinates of the intersection point within intersected triangle or NaNs if no intersection
+    std::vector<Vector3f> * isectPts = nullptr;  ///< intersection points or NaNs if no intersection
+};
+
+/// Finds intersections between a mesh and multiple rays in parallel (in float-precision).
+/// \p rayStart and \p rayEnd define the interval on all rays to detect an intersection.
+/// \p vadidFaces if given then all faces for which false is returned will be skipped
+MRMESH_API void multiRayMeshIntersect(
+    // input:
+    const MeshPart& meshPart, ///< mesh (or its part) to find intersections with
+    const std::vector<Vector3f>& origins, ///< origin point of every ray
+    const std::vector<Vector3f>& dirs,    ///< direction of every ray
+    const MultiRayMeshIntersectResult& result, ///< output data for every ray
+    // advanced options:
+    float rayStart = 0.0f, float rayEnd = FLT_MAX,
+    bool closestIntersect = true, ///< finds the closest to ray origin intersection (or any intersection for better performance if \p !closestIntersect)
+    const FacePredicate & validFaces = {} ///< if given then all faces for which false is returned will be skipped
+);
 
 struct MultiMeshIntersectionResult : MeshIntersectionResult
 {
@@ -57,10 +91,10 @@ using Line3dMesh = Line3Mesh<double>;
 
 /// Intersects ray with many meshes. Finds any intersection (not the closest)
 /// \anchor rayMultiMeshAnyIntersectF
-MRMESH_API std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect( const std::vector<Line3fMesh> & lineMeshes,
+[[nodiscard]] MRMESH_API MultiMeshIntersectionResult rayMultiMeshAnyIntersect( const std::vector<Line3fMesh> & lineMeshes,
     float rayStart = 0.0f, float rayEnd = FLT_MAX );
 /// Same as \ref rayMultiMeshAnyIntersectF, but use double precision
-MRMESH_API std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect( const std::vector<Line3dMesh> & lineMeshes,
+[[nodiscard]] MRMESH_API MultiMeshIntersectionResult rayMultiMeshAnyIntersect( const std::vector<Line3dMesh> & lineMeshes,
     double rayStart = 0.0, double rayEnd = DBL_MAX );
 
 /// this callback is envoked for each encountered ray-mesh intersection;

@@ -16,14 +16,14 @@ ilmbase-devel
 jsoncpp-devel
 libharu-devel
 libtiff-devel
-tinyxml2-devel
 libzip-devel
 libzstd-devel
-openvdb-devel
+opencascade-devel
 openssl-devel
 pkg-config
 python3
 spdlog-devel
 tbb-devel
 time
+tinyxml2-devel
 turbojpeg-devel

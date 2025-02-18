@@ -1,28 +1,28 @@
 #pragma once
 
 #include "MRViewportGL.h"
+#include "MRFitData.h"
 #include "MRMesh/MRIRenderObject.h"
 #include <MRMesh/MRVector3.h>
 #include <MRMesh/MRPlane3.h>
-#include <MRMesh/MRPointOnFace.h>
+#include <MRMesh/MRPointOnObject.h>
 #include <MRMesh/MRViewportId.h>
 #include <MRMesh/MRQuaternion.h>
 #include <MRMesh/MRMatrix4.h>
 #include <MRMesh/MRColor.h>
 #include <MRMesh/MRBox.h>
-#include "imgui.h"
+#include "MRImGui.h"
 #include <memory>
 #include <functional>
 #include <unordered_map>
+#include <optional>
+#include <span>
 
-using ObjAndPick = std::pair<std::shared_ptr<MR::VisualObject>, MR::PointOnFace>;
-using ConstObjAndPick = std::pair<std::shared_ptr<const MR::VisualObject>, MR::PointOnFace>;
+using ObjAndPick = std::pair<std::shared_ptr<MR::VisualObject>, MR::PointOnObject>;
+using ConstObjAndPick = std::pair<std::shared_ptr<const MR::VisualObject>, MR::PointOnObject>;
 
 namespace MR
 {
-
-// Viewport size
-using ViewportRectangle = Box2f;
 
 inline ImVec2 position( const ViewportRectangle& rect )
 {
@@ -50,6 +50,10 @@ class Viewport
 public:
     using ViewportRectangle = MR::ViewportRectangle;
 
+    /// Return the current viewport, or the viewport corresponding to a given unique identifier from ViewerInstance()
+    /// \param viewportId unique identifier corresponding to the desired viewport (current viewport if 0)
+    MRVIEWER_API static Viewport& get( ViewportId viewportId = {} );
+
     MRVIEWER_API Viewport();
     MRVIEWER_API ~Viewport();
 
@@ -70,8 +74,15 @@ public:
     // negative pixelYoffset -> offset from the bottom border
     // axisPixSize -> length of each axes arrows in pixels
     // For example: default values -> right bottom corner with 100 offsets for the base point and 80 pixels each axis length
-    MRVIEWER_API void set_axes_pose(const int pixelXoffset = -100, const int pixelYoffset = -100);
-    MRVIEWER_API void set_axes_size(const int axisPixSize = 80);
+    MRVIEWER_API void setAxesPos( const int pixelXoffset = -100, const int pixelYoffset = -100 );
+    MRVIEWER_API void setAxesSize( const int axisPixSize = 80 );
+
+    /// returns position of basis axes in viewport space
+    MRVIEWER_API const Vector2f& getAxesPosition() const;
+    MRVIEWER_API float getAxesSize() const;
+
+    /// returns projection matrix that is used for basis axes and view controller rendering
+    const Matrix4f& getAxesProjectionMatrix() const { return axesProjMat_; }
 
     // Shutdown
     MRVIEWER_API void shut();
@@ -79,108 +90,162 @@ public:
     // ------------------- Drawing functions
 
     // Clear the frame buffers
-    MRVIEWER_API void clear_framebuffers() const;
+    MRVIEWER_API void clearFramebuffers();
 
-    /// Draw given object
-    MRVIEWER_API void draw( const VisualObject& obj, const AffineXf3f& xf, 
-        DepthFuncion depthFunc = DepthFuncion::Default, bool alphaSort = false ) const;
+    /// Immediate draw of given object with transformation to world taken from object's scene
+    /// Returns true if something was drawn.
+    MRVIEWER_API bool draw( const VisualObject& obj,
+        DepthFunction depthFunc = DepthFunction::Default, RenderModelPassMask pass = RenderModelPassMask::All, bool allowAlphaSort = false ) const;
 
-    /// Draw given object with given projection matrix
-    MRVIEWER_API void draw( const VisualObject& obj, const AffineXf3f& xf, const Matrix4f & projM, 
-         DepthFuncion depthFunc = DepthFuncion::Default, bool alphaSort = false ) const;
+    /// Immediate draw of given object with given transformation to world
+    /// Returns true if something was drawn.
+    MRVIEWER_API bool draw( const VisualObject& obj, const AffineXf3f& xf,
+        DepthFunction depthFunc = DepthFunction::Default, RenderModelPassMask pass = RenderModelPassMask::All, bool allowAlphaSort = false ) const;
 
-    // Returns visual points with corresponding colors (pair<vector<Vector3f>,vector<Vector4f>>)
-    MRVIEWER_API const ViewportPointsWithColors& getPointsWithColors() const;
-    // Returns visual lines segments with corresponding colors (pair<vector<LineSegm3f>,vector<SegmEndColors>>)
-    [[deprecated]]
-    MRVIEWER_API const ViewportLinesWithColors& getLinesWithColors() const;
+    /// Immediate draw of given object with given transformation to world and given projection matrix
+    /// Returns true if something was drawn.
+    MRVIEWER_API bool draw( const VisualObject& obj, const AffineXf3f& xf, const Matrix4f & projM,
+        DepthFunction depthFunc = DepthFunction::Default, RenderModelPassMask pass = RenderModelPassMask::All, bool allowAlphaSort = false ) const;
 
-    // Sets visual points with corresponding colors (pair<vector<Vector3f>,vector<Vector4f>>)
-    // calls 'beforeSetPointsWithColors' lambda if it is present
-    [[deprecated]]
-    MRVIEWER_API void setPointsWithColors( const ViewportPointsWithColors& pointsWithColors );
+    /// Rendering parameters for immediate drawing of lines and points
+    struct LinePointImmediateRenderParams : BaseRenderParams
+    {
+        float width{1.0f};
+        bool depthTest{ true };
+    };
 
-    // Sets visual lines segments with corresponding colors (pair<vector<LineSegm3f>,vector<SegmEndColors>>)
-    // calls 'beforeSetLinesWithColors' lambda if it is present
-    [[deprecated]]
-    MRVIEWER_API void setLinesWithColors( const ViewportLinesWithColors& linesWithColors );
+    /// Draw lines immediately
+    MRVIEWER_API void drawLines( const std::vector<LineSegm3f>& lines, const std::vector<SegmEndColors>& colors, const LinePointImmediateRenderParams & params );
+    void drawLines( const std::vector<LineSegm3f>& lines, const std::vector<SegmEndColors>& colors, float width = 1, bool depthTest = true )
+        { drawLines( lines, colors, { getBaseRenderParams(), width, depthTest } ); }
 
-    // Add line to draw from start_point position to fin_point position.
-    [[deprecated]]
-    MRVIEWER_API void  add_line( const Vector3f& start_pos, const Vector3f& fin_pos,
-                                 const Color& color_start = Color::black(), const Color& color_fin = Color::black() );
-    // Add lines from points. 
-    [[deprecated]]
-    MRVIEWER_API void  add_lines( const std::vector<Vector3f>& points, const Color& color = Color::black() );
-    [[deprecated]]
-    MRVIEWER_API void  add_lines( const std::vector<Vector3f>& points, const std::vector<Color>& colors );
-    // Remove all lines selected for draw
-    [[deprecated]]
-    MRVIEWER_API void  remove_lines();
-    // Add point to draw-list  as a  "pos" position. 
-    [[deprecated]]
-    MRVIEWER_API void  add_point( const Vector3f& pos, const Color& color = Color::black() );
-    // Remove all lines selected for draw
-    [[deprecated]]
-    MRVIEWER_API void  remove_points();
-    // Is there a need to use depth_test for preview lines. (default: false)
-    [[deprecated]]
-    MRVIEWER_API void setPreviewLinesDepthTest( bool on );
-    // Is there a need to use depth_test for preview points. (default: false)
-    [[deprecated]]
-    MRVIEWER_API void setPreviewPointsDepthTest( bool on );
+    /// Draw points immediately
+    MRVIEWER_API void drawPoints( const std::vector<Vector3f>& points, const std::vector<Vector4f>& colors, const LinePointImmediateRenderParams & params );
+    void drawPoints( const std::vector<Vector3f>& points, const std::vector<Vector4f>& colors, float width = 1, bool depthTest = true )
+        { drawPoints( points, colors, { getBaseRenderParams(), width, depthTest } ); }
 
-    [[deprecated]]
-    bool getPreviewLinesDepthTest() const { return previewLinesDepthTest_; }
-    [[deprecated]]
-    bool getPreviewPointsDepthTest() const { return previewPointsDepthTest_; }
+    struct TriCornerColors
+    {
+        Vector4f a, b, c;
+    };
 
-    // Point size in pixels
-    float point_size{4.0f};
-    // Line width in pixels
-    float line_width{1.0f};
-    // Line and points z buffer offset
-    // negative offset make it closer to camera
-    // note that z buffer is not linear and common values are in range [0..1]
-    float linesZoffset{0.0f};
-    float pointsZoffset{0.0f};
+    /// Draw triangles immediately (flat shaded)
+    MRVIEWER_API void drawTris( const std::vector<Triangle3f>& tris, const std::vector<TriCornerColors>& colors, const ModelRenderParams& params, bool depthTest = true );
+    MRVIEWER_API void drawTris( const std::vector<Triangle3f>& tris, const std::vector<TriCornerColors>& colors, const Matrix4f& modelM = {}, bool depthTest = true );
 
-    // This lambda is called before each change of visual points
-    std::function<void( const ViewportLinesWithColors& curr, const ViewportLinesWithColors& next )> beforeSetLinesWithColors{};
-    // This lambda is called before each change of visual lines
-    std::function<void( const ViewportPointsWithColors& curr, const ViewportPointsWithColors& next )> beforeSetPointsWithColors{};
+    /// Prepares base rendering parameters for this viewport
+    [[nodiscard]] BaseRenderParams getBaseRenderParams() const { return getBaseRenderParams( projM_ ); }
+
+    /// Prepares base rendering parameters for this viewport with custom projection matrix
+    [[nodiscard]] BaseRenderParams getBaseRenderParams( const Matrix4f & projM ) const
+        { return { viewM_, projM, id, toVec4<int>( viewportRect_ ) }; }
+
+    /// Prepares rendering parameters to draw a model with given transformation in this viewport
+    [[nodiscard]] ModelRenderParams getModelRenderParams(
+         const Matrix4f & modelM, ///< model to world transformation, this matrix will be referenced in the result
+         Matrix4f * normM, ///< if not null, this matrix of normals transformation will be computed and referenced in the result
+         DepthFunction depthFunc = DepthFunction::Default,
+         RenderModelPassMask pass = RenderModelPassMask::All,
+         bool allowAlphaSort = false ///< If not null and the object is semitransparent, enable alpha-sorting.
+    ) const
+    { return getModelRenderParams( modelM, projM_, normM, depthFunc, pass, allowAlphaSort ); }
+
+    /// Prepares rendering parameters to draw a model with given transformation in this viewport with custom projection matrix
+    [[nodiscard]] MRVIEWER_API ModelRenderParams getModelRenderParams( const Matrix4f & modelM, const Matrix4f & projM,
+         Matrix4f * normM, ///< if not null, this matrix of normals transformation will be computed and referenced in the result
+         DepthFunction depthFunc = DepthFunction::Default,
+         RenderModelPassMask pass = RenderModelPassMask::All,
+         bool allowAlphaSort = false ///< If not null and the object is semitransparent, enable alpha-sorting.
+    ) const;
+
+    // Predicate to additionally filter objects that should be treated as pickable.
+    using PickRenderObjectPredicate = std::function<bool ( const VisualObject*, ViewportMask )>;
+    // Point picking parameters.
+    struct PickRenderObjectParams
+    {
+        // If specified, this is the target screen point. Otherwise use the mouse pos in viewport coordinates.
+        std::optional<Vector2f> point;
+
+        // Predicate to additionally filter objects that should be treated as pickable.
+        PickRenderObjectPredicate predicate;
+
+        // Radius (in pixels) of a picking area.
+        // <0 defaults to `getViewerInstance().glPickRadius`.
+        int pickRadius = -1;
+        // Usually, from several objects that fall into the peak, the closest one along the ray is selected. However,
+        // if exactPickFirst = true, then the object in which the pick exactly fell (for example, a point in point cloud)
+        // will be returned as the result, even if there are others within the radius, including closer objects.
+        bool exactPickFirst = true;
+
+        // if not nullptr it can override render params for picker
+        const BaseRenderParams* baseRenderParams{ nullptr };
+
+        // This will always return `{}`. We need the functions because `= {}`
+        //   can't be used directly inside default arguments in the same class.
+        // You don't have to use this function.
+        static PickRenderObjectParams defaults()
+        {
+            return {};
+        }
+    };
+    // This function allows to pick point in scene by GL with given parameters.
+    // This overload uses all objects in the scene (possibly filtered by a predicate).
+    MRVIEWER_API ObjAndPick pickRenderObject( const PickRenderObjectParams& params = PickRenderObjectParams::defaults() ) const;
+    // This overload uses objects from the list (possibly filtered by a predicate).
+    MRVIEWER_API ObjAndPick pickRenderObject( std::span<VisualObject* const> objects, const PickRenderObjectParams& params = PickRenderObjectParams::defaults() ) const;
+    // This overload uses const objects from the list (possibly filtered by a predicate). Sadly need a different name to avoid over resolution issues.
+    MRVIEWER_API ConstObjAndPick pickRenderObjectConst( std::span<const VisualObject* const> objects, const PickRenderObjectParams& params = PickRenderObjectParams::defaults() ) const;
 
     // This function allows to pick point in scene by GL
+    // use default pick radius
     // comfortable usage:
     //     auto [obj,pick] = pick_render_object();
     // pick all visible and pickable objects
     // picks objects from current mouse pose by default
+    // [[deprecated("Use `pickRenderObject()`")]] // Should eventually deprecate this?
     MRVIEWER_API ObjAndPick pick_render_object() const;
+    [[deprecated("Use `pickRenderObject()`")]]
+    MRVIEWER_API ObjAndPick pick_render_object( uint16_t pickRadius ) const;
     // This function allows to pick point in scene by GL
+    // use default pick radius
     // comfortable usage:
     //     auto [obj,pick] = pick_render_object( objects );
     // pick objects from input
+    [[deprecated("Use `pickRenderObject( objects } )`")]] // NOTE! If your list is hardcoded, use `.objects = std::array{ a, b, c }`.
     MRVIEWER_API ObjAndPick pick_render_object( const std::vector<VisualObject*>& objects ) const;
+    // This function allows to pick point in scene by GL with a given peak radius.
+    // usually, from several objects that fall into the peak, the closest one along the ray is selected.However
+    // if exactPickFirst = true, then the object in which the pick exactly fell( for example, a point in point cloud )
+    // will be returned as the result, even if there are others within the radius, including closer objects.
+    [[deprecated("Use `pickRenderObject( ... )`")]]
+    MRVIEWER_API ObjAndPick pick_render_object( const std::vector<VisualObject*>& objects, uint16_t pickRadius, bool exactPickFirst = true ) const;
+    // This function allows to pick point in scene by GL with default pick radius, but with specified exactPickFirst parameter (see description upper).
+    [[deprecated("Use `pickRenderObject( { .exactPickFirst = ... } )`")]]
+    MRVIEWER_API ObjAndPick pick_render_object( bool exactPickFirst ) const;
     // This function allows to pick point in scene by GL
     // comfortable usage:
     //     auto [obj,pick] = pick_render_object( objects );
     // pick all visible and pickable objects
     // picks objects from custom viewport point
+    [[deprecated("Use `pickRenderObject( { .point = ... } )`")]]
     MRVIEWER_API ObjAndPick pick_render_object( const Vector2f& viewportPoint ) const;
     // This function allows to pick point in scene by GL
     // comfortable usage:
     //     auto [obj,pick] = pick_render_object( objects );
     // picks objects from custom viewport point
+    [[deprecated("Use `multiPickObjects( objects, { .point = ... } )`")]]
     MRVIEWER_API ObjAndPick pick_render_object( const std::vector<VisualObject*>& objects, const Vector2f& viewportPoint ) const;
+
     // This function allows to pick several custom viewport space points by GL
     // returns vector of pairs [obj,pick]
-    MRVIEWER_API std::vector<ObjAndPick> multiPickObjects( const std::vector<VisualObject*>& objects, const std::vector<Vector2f>& viewportPoints ) const;
+    // To hardcode the list of `objects`, use `{{ a, b, c }}`.
+    MRVIEWER_API std::vector<ObjAndPick> multiPickObjects( std::span<VisualObject* const> objects, const std::vector<Vector2f>& viewportPoints, const BaseRenderParams* overrideRenderParams = nullptr ) const;
 
     // This function finds all visible objects in given rect (max excluded) in viewport space,
     // maxRenderResolutionSide - this parameter limits render resolution to improve performance
     //                           if it is too small, little objects can be lost
     // viewport space: X [0,viewport_width], Y [0,viewport_height] - (0,0) is upper left of viewport
-    MRVIEWER_API std::vector<std::shared_ptr<VisualObject>> findObjectsInRect( const Box2i& rect, 
+    MRVIEWER_API std::vector<std::shared_ptr<VisualObject>> findObjectsInRect( const Box2i& rect,
                                                                                int maxRenderResolutionSide = 512 ) const;
 
     // This functions finds all visible faces in given includePixBs in viewport space,
@@ -195,11 +260,13 @@ public:
     //     const auto [obj,pick] = pick_render_object();
     // pick all visible and pickable objects
     // picks objects from current mouse pose by default
+    [[deprecated("Use `pickRenderObject()`.")]]
     MRVIEWER_API ConstObjAndPick const_pick_render_object() const;
     // This function allows to pick point in scene by GL
     // comfortable usage:
     //      const auto [obj,pick] = pick_render_object( objects );
     // pick objects from input
+    [[deprecated("Use `pickRenderObject( objects )`.")]]
     MRVIEWER_API ConstObjAndPick const_pick_render_object( const std::vector<const VisualObject*>& objects ) const;
     // This function allows to pick several custom viewport space points by GL
     // returns vector of pairs [obj,pick]
@@ -210,12 +277,8 @@ public:
     // and call transformView( xf ), then the user will see exactly the same picture
     MRVIEWER_API void transformView( const AffineXf3f & xf );
 
-    // returns base render params for immediate draw and for internal lines and points draw
-    ViewportGL::BaseRenderParams getBaseRenderParams() const { return { viewM_, projM_, toVec4<int>( viewportRect_ ) }; }
-
     bool getRedrawFlag() const { return needRedraw_; }
     void resetRedrawFlag() { needRedraw_ = false; }
-    // ------------------- Properties
 
     // Unique identifier
     ViewportId id{ 1};
@@ -235,18 +298,20 @@ public:
         bool depthTest{true};
         bool orthographic{true};
 
+        enum class GlobalBasisScaleMode
+        {
+            Auto, // uses current scene size
+            Fixed // uses global basis object internal size (one can change it with globalBasisAxes->setXf( AffineXf3f::linear( Matrix3f::scale( size ) ) ) )
+        } globalBasisScaleMode{ GlobalBasisScaleMode::Auto };
+
         // Caches the two-norm between the min/max point of the bounding box
         float objectScale{1.0f};
 
         Color borderColor;
 
-        Plane3f clippingPlane{Vector3f::plusX(), 0.0f};
+        std::string label;
 
-         // xf representing scale of global basis in this viewport
-        AffineXf3f globalBasisAxesXf() const
-        {
-            return AffineXf3f::linear( Matrix3f::scale( objectScale * 0.5f ) );
-        }
+        Plane3f clippingPlane{Vector3f::plusX(), 0.0f};
 
         enum class RotationCenterMode
         {
@@ -255,20 +320,28 @@ public:
             Dynamic // scene is rotated around picked point on object, or around last rotation pivot, if miss pick
         } rotationMode{ RotationCenterMode::Dynamic };
 
+        // if it is true, while rotation is enabled camera can be moved along forward axis
+        // in order to keep constant distance to scene center
+        bool compensateRotation{ true };
+
         // this flag allows viewport to be selected by user
         bool selectable{true};
 
-        bool operator==( const Viewport::Parameters& other ) const;
+        bool operator==( const Viewport::Parameters& other ) const = default;
     };
-        
+
     // Starts or stop rotation
     MRVIEWER_API void setRotation( bool state );
 
-    
+    // Note, Y is up for this box.
     MRVIEWER_API const ViewportRectangle& getViewportRect() const;
 
-    // finds length between near pixels on zNear plane
+    // Finds length between near pixels on zNear plane. Only good in the orthographic projection.
     MRVIEWER_API float getPixelSize() const;
+
+    // Finds the pixel scale at a specific world point. This works in both perspective and orthographic projection.
+    // The UI scale is NOT baked into this. You have to multiply by the scale manually if you need that.
+    MRVIEWER_API float getPixelSizeAtPoint( const Vector3f& worldPoint ) const;
 
     // Sets position and size of viewport:
     // rect is given as OpenGL coordinates: (0,0) is lower left corner
@@ -280,17 +353,20 @@ private:
     Matrix4f projM_;
 
 public:
-    // returns orthonormal matrix with translation
-    MRVIEWER_API AffineXf3f getUnscaledViewXf() const;
-    // converts directly from the view matrix
-    AffineXf3f getViewXf() const { return AffineXf3f( viewM_ ); }
+    /// returns orthonormal matrix with translation
+    [[nodiscard]] MRVIEWER_API AffineXf3f getUnscaledViewXf() const;
 
-    // returns Y axis of view matrix. Shows Up direction with zoom-depended length
-    MRVIEWER_API Vector3f getUpDirection() const;
-    // returns X axis of view matrix. Shows Right direction with zoom-depended length
-    MRVIEWER_API Vector3f getRightDirection() const;
-    // returns Z axis of view matrix. Shows Backward direction with zoom-depended length
-    MRVIEWER_API Vector3f getBackwardDirection() const;
+    /// converts directly from the view matrix
+    [[nodiscard]] AffineXf3f getViewXf() const { return AffineXf3f( viewM_ ); }
+
+    /// returns unit vector in world space corresponding to up-direction in camera space
+    [[nodiscard]] Vector3f getUpDirection() const { return Vector3f( viewM_.y.x, viewM_.y.y, viewM_.y.z ).normalized(); } // assume that viewM is orthogonal and inverse=transpose
+
+    /// returns unit vector in world space corresponding to right-direction in camera space
+    [[nodiscard]] Vector3f getRightDirection() const { return Vector3f( viewM_.x.x, viewM_.x.y, viewM_.x.z ).normalized(); } // assume that viewM is orthogonal and inverse=transpose
+
+    /// returns unit vector in world space corresponding to direction toward camera in camera space
+    [[nodiscard]] Vector3f getBackwardDirection() const { return Vector3f( viewM_.z.x, viewM_.z.y, viewM_.z.z ).normalized(); } // assume that viewM is orthogonal and inverse=transpose
 
     // returns the line from Dnear to Dfar planes for the current pixel
     // viewport space: X [0,viewport_width], Y [0,viewport_height] - (0,0) is upper left of viewport
@@ -301,7 +377,7 @@ public:
     MRVIEWER_API Vector3f worldToCameraSpace( const Vector3f& p ) const;
     MRVIEWER_API std::vector<Vector3f> worldToCameraSpace( const std::vector<Vector3f>& p ) const;
 
-    // projects point(s) to clip space.
+    // projects point(s) to clip space. (rather, to normalized device coordinates, as it includes perspective division)
     // clip space: XYZ [-1.f, 1.f], X axis from left(-1.f) to right(1.f), Y axis from bottom(-1.f) to top(1.f),
     // Z axis from Dnear(-1.f) to Dfar(1.f)
     MRVIEWER_API Vector3f projectToClipSpace( const Vector3f& worldPoint ) const;
@@ -345,63 +421,20 @@ public:
     //   overlay basis
     void postDraw() const;
 
-    // fill = 0.5 parameter means that scene will 0.5 of screen
+    // fit camera to the scene box (note: scene box does not include ancillary objects)
+    // fill = 1.0 parameter means that scene will be approximately 0.5 of screen
     // snapView - to snap camera angle to closest canonical quaternion
     MRVIEWER_API void fitData( float fill = 1.0f, bool snapView = true );
 
     // set scene box by given one and fit camera to it
-    // fill = 0.5 parameter means that scene will 0.5 of screen
+    // fill = 1.0 parameter means that box diagonal will be approximately 0.5 of the viewport
     // snapView - to snap camera angle to closest canonical quaternion
     MRVIEWER_API void fitBox( const Box3f& newSceneBox, float fill = 1.0f, bool snapView = true );
 
-    // Fit mode ( types of objects for which the fit is applied )
-    enum class FitMode
-    {
-        Visible, // fit all visible objects
-        SelectedPrimitives, // fit only selected primitives
-        SelectedObjects, // fit only selected objects
-        CustomObjectsList // fit only given objects (need additional objects list)
-    };
-    struct BaseFitParams
-    {
-        float factor{ 1.f }; // part of the screen for scene location
-        // snapView - to snap camera angle to closest canonical quaternion
-        // orthographic view: camera moves a bit, fit FOV by the whole width or height
-        // perspective view: camera is static, fit FOV to closest border.
-        bool snapView{ false };
-
-        // need for fix Clang bug
-        // some as https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside
-        BaseFitParams( float factor_ = 1.f, bool snapView_ = false ) :
-            factor( factor_ ),
-            snapView( snapView_ )
-        {};
-    };
-    struct FitDataParams : BaseFitParams
-    {
-        FitMode mode{ FitMode::Visible }; // fit mode
-        std::vector<std::shared_ptr<VisualObject>> objsList; // custom objects list. used only with CustomObjectsList mode
-
-        // need for fix Clang bug
-        // some as https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside
-        FitDataParams( float factor_ = 1.f, bool snapView_ = false, FitMode mode_ = FitMode::Visible,
-            const std::vector<std::shared_ptr<VisualObject>>& objsList_ = {} ) :
-            BaseFitParams( factor_, snapView_ ),
-            mode( mode_ ),
-            objsList( objsList_ )
-        {};
-    };
-    struct FitBoxParams : BaseFitParams
-    {
-        Box3f worldBox; // box in world space to fit
-
-        // need for fix Clang bug
-        // some as https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside
-        FitBoxParams( const Box3f& worldBox_, float factor_ = 1.f, bool snapView_ = false ) :
-            BaseFitParams( factor_, snapView_ ),
-            worldBox( worldBox_ )
-        {};
-    };
+    using FitMode = MR::FitMode;
+    using BaseFitParams = MR::BaseFitParams;
+    using FitDataParams = MR::FitDataParams;
+    using FitBoxParams = MR::FitBoxParams;
 
     // fit view and proj matrices to match the screen size with given box
     MRVIEWER_API void preciseFitBoxToScreenBorder( const FitBoxParams& params );
@@ -410,7 +443,7 @@ public:
 
     // returns viewport width/height ratio
     MRVIEWER_API float getRatio() const;
-    
+
     // returns true if all models are fully projected inside the viewport rectangle
     MRVIEWER_API bool allModelsInsideViewportRectangle() const;
 
@@ -436,6 +469,8 @@ public:
     MRVIEWER_API void setBackgroundColor( const Color& color );
 
     MRVIEWER_API void setClippingPlane( const Plane3f& plane );
+
+    MRVIEWER_API void setLabel( std::string s );
 
     void setSelectable( bool on ) { params_.selectable = on; }
 
@@ -468,7 +503,7 @@ private:
     // initializes proj matrix based on camera angle and viewport rectangle size
     void setupProjMatrix_();
     // initializes proj matrix for static view objects (like corner axes)
-    void setupStaticProjMatrix_();
+    void setupAxesProjMatrix_();
 
     // use this matrix to convert world 3d point to clip point
     // clip space: XYZ [-1.f, 1.f], X axis from left(-1.f) to right(1.f), X axis from bottom(-1.f) to top(1.f),
@@ -483,27 +518,26 @@ private:
     bool previewLinesDepthTest_ = false;
     bool previewPointsDepthTest_ = false;
 
-    void draw_lines() const;
-    void draw_points() const;
     void draw_border() const;
     void draw_rotation_center() const;
     void draw_clipping_plane() const;
     void draw_global_basis() const;
 
     // init basis axis in the corner
-    void init_axes();
-    // Drawing basis axes in the corner
-    void draw_axes() const;
+    void initBaseAxes();
+    // Drawing basis axes and view controller cube in the corner
+    void drawAxesAndViewController() const;
+
     // This matrix should be used for a static objects
     // For example, basis axes in the corner
-    Matrix4f staticProj_;
-    Vector3f relPoseBase;
-    Vector3f relPoseSide;
+    Matrix4f axesProjMat_;
+    Vector2f basisAxesPos_;
+    float basisAxesSize_;
 
     // basis axis params
     int pixelXoffset_{ -100 };
     int pixelYoffset_{ -100 };
-    int axisPixSize_{ 80 };
+    int axisPixSize_{ 70 };
 
     // Receives point in scene coordinates, that should appear static on a screen, while rotation
     void setRotationPivot_( const Vector3f& point );
@@ -524,15 +558,18 @@ private:
     Box3f calcBox_( const std::vector<std::shared_ptr<VisualObject>>& objs, Space space, bool selectedPrimitives = false ) const;
 
     /**
-     * @brief find maximum FOV angle allows to keep box (space of box depends of viewport params) 
-     * given by getBoxFn visible inside the screen
+     * @brief find minimum FOV angle allows to keep box given by getBoxFn visible inside the screen
+     * The box is either in CameraOrthographic or CameraPerspective, depending on viewport setting
+     * If cameraShift is not null, calculate angle assuming the camera can be moved, and fills the shift value
+     * (orthogonal only; for perspective mode, must be null)
      * @returns true if all models are inside the projection volume
      */
     std::pair<float, bool> getZoomFOVtoScreen_( std::function<Box3f()> getBoxFn, Vector3f* cameraShift = nullptr ) const;
     // fit view and proj matrices to match the screen size with boxes returned by getBoxFn
     // getBoxFn( true ) - always camera space (respecting projection)
     // getBoxFn( false ) - if orthographic - camera space, otherwise - world space
-    void preciseFitToScreenBorder_( std::function<Box3f( bool zoomFOV )> getBoxFn, const BaseFitParams& params );
+    // getBoxFn/globalBasis - if true then getBoxFn should return box of global basis object (separately, not to interfere with actual scene size)
+    void preciseFitToScreenBorder_( std::function<Box3f( bool zoomFOV, bool globalBasis )> getBoxFn, const BaseFitParams& params );
 
     bool rotation_{ false };
     Vector3f rotationPivot_;
@@ -549,4 +586,3 @@ private:
 };
 
 } //namespace MR
-

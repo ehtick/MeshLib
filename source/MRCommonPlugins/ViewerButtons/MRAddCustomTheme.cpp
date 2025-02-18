@@ -1,6 +1,8 @@
 #include "MRAddCustomTheme.h"
-#include "MRViewer/MRRibbonMenu.h"
-#include "MRViewer/MRViewer.h"
+#include "MRViewer/MRRibbonSchema.h"
+#include "MRViewer/MRShowModal.h"
+#include "MRViewer/MRRibbonFontManager.h"
+#include "MRViewer/MRViewerInstance.h"
 #include "MRMesh/MRSceneColors.h"
 #include "MRViewer/ImGuiHelpers.h"
 #include "MRMesh/MRSerializer.h"
@@ -9,12 +11,20 @@
 #include "MRMesh/MRObjectMesh.h"
 #include "MRMesh/MRStringConvert.h"
 #include "MRMesh/MRDirectory.h"
+#include "MRMesh/MRObjectPoints.h"
+#include "MRMesh/MRObjectLines.h"
+#include "MRMesh/MRObjectDistanceMap.h"
 #include "MRPch/MRSpdlog.h"
 #include "MRPch/MRSuppressWarning.h"
 #include "MRViewer/MRRibbonButtonDrawer.h"
 #include "MRViewer/MRRibbonConstants.h"
-#include "MRViewerSettingsPlugin.h"
+#include "MRViewer/MRViewerSettingsPlugin.h"
 #include "MRViewer/MRUIStyle.h"
+#include <fstream>
+
+#ifndef MESHLIB_NO_VOXELS
+#include "MRVoxels/MRObjectVoxels.h"
+#endif
 
 namespace MR
 {
@@ -29,7 +39,7 @@ void AddCustomThemePlugin::drawDialog( float menuScaling, ImGuiContext* )
     auto menuWidth = 450.0f * menuScaling;
     auto menuHeight = 600.0f * menuScaling;
 
-    if ( !ImGui::BeginCustomStatePlugin( plugin_name.c_str(), &dialogIsOpen_, { .collapsed = &dialogIsCollapsed_, .width = menuWidth,.height = menuHeight, .menuScaling = menuScaling } ) )
+    if ( !ImGuiBeginWindow_( { .width = menuWidth,.height = menuHeight, .menuScaling = menuScaling, .flags = 0 } ) )
         return;
 
     int selectedUserIdxBackup = selectedUserPreset_;
@@ -52,7 +62,7 @@ void AddCustomThemePlugin::drawDialog( float menuScaling, ImGuiContext* )
     ImGui::Text( "Viewport colors:" );
     for ( int i = 0; i < viewportColors_.size(); ++i )
     {
-        std::string label = ColorTheme::getViewportColorTypeName( ColorTheme::ViewportColorsType( i ) ) + 
+        std::string label = ColorTheme::getViewportColorTypeName( ColorTheme::ViewportColorsType( i ) ) +
             std::string( "##ViewportColors" );
         ImGui::ColorEdit4( label.c_str(), &viewportColors_[i].x );
     }
@@ -67,7 +77,7 @@ void AddCustomThemePlugin::drawDialog( float menuScaling, ImGuiContext* )
     ImGui::Separator();
     UI::checkbox( "Apply to new objects only", &applyToNewObjectsOnly_ );
     ImGui::SetNextItemWidth( 150.0f * menuScaling );
-    ImGui::InputText( "Theme name", themeName_ );
+    UI::inputText( "Theme name", themeName_ );
     bool valid = !themeName_.empty() && !hasProhibitedChars( themeName_ );
     if ( UI::button( "Apply & Save", valid, Vector2f( -1, 0 ) ) )
     {
@@ -76,7 +86,7 @@ void AddCustomThemePlugin::drawDialog( float menuScaling, ImGuiContext* )
         if ( std::filesystem::is_regular_file( saveDir, ec ) )
         {
             ImGui::OpenPopup( "File already exists" );
-            getViewerInstance().incrementForceRedrawFrames();
+            incrementForceRedrawFrames();
         }
         else
         {
@@ -273,7 +283,7 @@ void AddCustomThemePlugin::update_()
     for ( int i = 0; i<int( ColorTheme::RibbonColorsType::Count ); ++i )
         ribbonColors_[i] = Vector4f( ColorTheme::getRibbonColor( ColorTheme::RibbonColorsType( i ) ) );
 
-    ColorTheme::setupFromJson( backupTheme );
+    ColorTheme::setupFromJson( backupTheme, ColorTheme::getThemeType() );
 }
 
 std::string AddCustomThemePlugin::save_()
@@ -304,10 +314,11 @@ std::string AddCustomThemePlugin::save_()
             obj->setFrontColor( SceneColors::get( SceneColors::SelectedObjectMesh ), true );
             obj->setFrontColor( SceneColors::get( SceneColors::UnselectedObjectMesh ), false );
             obj->setBackColor( SceneColors::get( SceneColors::BackFaces ) );
-MR_SUPPRESS_WARNING_PUSH( "-Wdeprecated-declarations", 4996 )
+MR_SUPPRESS_WARNING_PUSH
+MR_SUPPRESS_WARNING( "-Wdeprecated-declarations", 4996 )
             obj->setLabelsColor( SceneColors::get( SceneColors::Labels ) );
 MR_SUPPRESS_WARNING_POP
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
+#ifndef MESHLIB_NO_VOXELS
             if ( auto objVoxels = std::dynamic_pointer_cast< ObjectVoxels >( obj ) )
             {
                 objVoxels->setFrontColor( SceneColors::get( SceneColors::SelectedObjectVoxels ), true );
@@ -327,6 +338,7 @@ MR_SUPPRESS_WARNING_POP
                 meshObj->setSelectedFacesColor( SceneColors::get( SceneColors::SelectedFaces ) );
                 meshObj->setSelectedEdgesColor( SceneColors::get( SceneColors::SelectedEdges ) );
                 meshObj->setEdgesColor( SceneColors::get( SceneColors::Edges ) );
+                meshObj->setPointsColor( SceneColors::get( SceneColors::Points ) );
             }
             else if ( auto objPoints = std::dynamic_pointer_cast< ObjectPoints >( obj ) )
             {

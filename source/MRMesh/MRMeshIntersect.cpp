@@ -7,34 +7,34 @@
 #include "MRPrecisePredicates3.h"
 #include "MRVector3.h"
 #include "MRLine3.h"
-#include "MRUVSphere.h"
+#include "MRMakeSphereMesh.h"
 #include "MRGTest.h"
-#include "MRPch/MRSpdlog.h"
-#include "MRMeshLoad.h"
 #include "MRMeshBuilder.h"
-#include "MRMeshSave.h"
+#include "MRParallelFor.h"
+#include "MRBitSetParallelFor.h"
+#include "MRTimer.h"
+#include "MRPch/MRSpdlog.h"
 
 namespace MR
 {
 
 template<typename T>
-std::optional<MeshIntersectionResult> meshRayIntersect_( const MeshPart& meshPart, const Line3<T>& line,
-    T rayStart /*= 0.0f*/, T rayEnd /*= FLT_MAX */, const IntersectionPrecomputes<T>& prec, bool closestIntersect )
+MeshIntersectionResult meshRayIntersect_( const MeshPart& meshPart, const Line3<T>& line,
+    T rayStart, T rayEnd, const IntersectionPrecomputes<T>& prec, bool closestIntersect, const FacePredicate & validFaces )
 {
     const auto& m = meshPart.mesh;
     constexpr int maxTreeDepth = 32;
     const auto& tree = m.getAABBTree();
+    MeshIntersectionResult res;
     if( tree.nodes().size() == 0 )
-        return std::nullopt;
+        return res;
 
     RayOrigin<T> rayOrigin{ line.p };
     T s = rayStart, e = rayEnd;
     if( !rayBoxIntersect( Box3<T>{ tree[tree.rootNodeId()].box }, rayOrigin, s, e, prec ) )
-    {
-        return std::nullopt;
-    }
+        return res;
 
-    std::pair< AABBTree::NodeId,T> nodesStack[maxTreeDepth];
+    std::pair< NodeId,T> nodesStack[maxTreeDepth];
     int currentNode = 0;
     nodesStack[0] = { tree.rootNodeId(), rayStart };
 
@@ -55,7 +55,7 @@ std::optional<MeshIntersectionResult> meshRayIntersect_( const MeshPart& meshPar
             if( node.leaf() )
             {
                 auto face = node.leafId();
-                if( !meshPart.region || meshPart.region->test( face ) )
+                if( ( !meshPart.region || meshPart.region->test( face ) ) && ( !validFaces || validFaces( face ) ) )
                 {
                     VertId a, b, c;
                     m.topology.getTriVerts( face, a, b, c );
@@ -111,52 +111,111 @@ std::optional<MeshIntersectionResult> meshRayIntersect_( const MeshPart& meshPar
 
     if( faceId.valid() )
     {
-        MeshIntersectionResult res;
         res.proj.face = faceId;
         res.proj.point = Vector3f( line.p + rayEnd * line.d );
         res.mtp = MeshTriPoint( m.topology.edgeWithLeft( faceId ), triP );
         res.distanceAlongLine = float( rayEnd );
-        return res;
     }
-    else
-    {
-        return std::nullopt;
-    }
+    return res;
 }
 
-std::optional<MeshIntersectionResult> rayMeshIntersect( const MeshPart& meshPart, const Line3f& line,
-    float rayStart, float rayEnd, const IntersectionPrecomputes<float>* prec, bool closestIntersect )
+MeshIntersectionResult rayMeshIntersect( const MeshPart& meshPart, const Line3f& line,
+    float rayStart, float rayEnd, const IntersectionPrecomputes<float>* prec, bool closestIntersect, const FacePredicate & validFaces )
 {
     if( prec )
     {
-        return meshRayIntersect_<float>( meshPart, line, rayStart, rayEnd, *prec, closestIntersect );
+        return meshRayIntersect_<float>( meshPart, line, rayStart, rayEnd, *prec, closestIntersect, validFaces );
     }
     else
     {
         const IntersectionPrecomputes<float> precNew( line.d );
-        return meshRayIntersect_<float>( meshPart, line, rayStart, rayEnd, precNew, closestIntersect );
+        return meshRayIntersect_<float>( meshPart, line, rayStart, rayEnd, precNew, closestIntersect, validFaces );
     }
 }
 
-std::optional<MeshIntersectionResult> rayMeshIntersect( const MeshPart& meshPart, const Line3d& line,
-    double rayStart, double rayEnd, const IntersectionPrecomputes<double>* prec, bool closestIntersect )
+MeshIntersectionResult rayMeshIntersect( const MeshPart& meshPart, const Line3d& line,
+    double rayStart, double rayEnd, const IntersectionPrecomputes<double>* prec, bool closestIntersect, const FacePredicate & validFaces )
 {
     if( prec )
     {
-        return meshRayIntersect_<double>( meshPart, line, rayStart, rayEnd, *prec, closestIntersect );
+        return meshRayIntersect_<double>( meshPart, line, rayStart, rayEnd, *prec, closestIntersect, validFaces );
     }
     else
     {
         const IntersectionPrecomputes<double> precNew( line.d );
-        return meshRayIntersect_<double>( meshPart, line, rayStart, rayEnd, precNew, closestIntersect );
+        return meshRayIntersect_<double>( meshPart, line, rayStart, rayEnd, precNew, closestIntersect, validFaces );
     }
 }
 
+void multiRayMeshIntersect(
+    const MeshPart& meshPart,
+    const std::vector<Vector3f>& origins,
+    const std::vector<Vector3f>& dirs,
+    const MultiRayMeshIntersectResult& result,
+    float rayStart, float rayEnd,
+    bool closestIntersect,
+    const FacePredicate & validFaces
+)
+{
+    MR_TIMER
+
+    const auto sz = origins.size();
+    assert( dirs.size() == sz );
+    if ( result.intersectingRays )
+    {
+        result.intersectingRays->clear();
+        result.intersectingRays->resize( sz, false );
+    }
+    constexpr float cQuietNan = std::numeric_limits<float>::quiet_NaN();
+    if ( result.rayParams )
+    {
+        result.rayParams->clear();
+        result.rayParams->resize( sz, cQuietNan );
+    }
+    if ( result.isectFaces )
+    {
+        result.isectFaces->clear();
+        result.isectFaces->resize( sz );
+    }
+    if ( result.isectBary )
+    {
+        result.isectBary->clear();
+        result.isectBary->resize( sz, TriPointf( cQuietNan, cQuietNan ) );
+    }
+    if ( result.isectPts )
+    {
+        result.isectPts->clear();
+        result.isectPts->resize( sz, Vector3f( cQuietNan, cQuietNan, cQuietNan ) );
+    }
+
+    meshPart.mesh.getAABBTree(); // prepare tree before parallel region
+
+    auto processRay = [&]( size_t i )
+    {
+        auto res = rayMeshIntersect( meshPart, Line3f( origins[i], dirs[i] ), rayStart, rayEnd, nullptr, closestIntersect, validFaces );
+        if ( !res )
+            return;
+        if ( result.intersectingRays )
+            result.intersectingRays->set( i );
+        if ( result.isectFaces )
+            (*result.isectFaces)[i] = res.proj.face;
+        if ( result.isectBary )
+            (*result.isectBary)[i] = res.mtp.bary;
+        if ( result.isectPts )
+            (*result.isectPts)[i] = res.proj.point;
+    };
+
+    if ( result.intersectingRays )
+        BitSetParallelForAll( *result.intersectingRays, processRay );
+    else
+        ParallelFor( size_t( 0 ), sz, processRay );
+}
+
 template<typename T>
-std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect_( const std::vector<Line3Mesh<T>> & lineMeshes,
+MultiMeshIntersectionResult rayMultiMeshAnyIntersect_( const std::vector<Line3Mesh<T>> & lineMeshes,
     T rayStart /*= 0.0f*/, T rayEnd /*= FLT_MAX */ )
 {
-    std::optional<MultiMeshIntersectionResult> res;
+    MultiMeshIntersectionResult res;
     for ( const auto & lm : lineMeshes )
     {
         assert( lm.mesh );
@@ -167,22 +226,22 @@ std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect_( const std:
             myPrec = { lm.line.d };
             prec = &myPrec;
         }
-        if ( auto r = meshRayIntersect_( { *lm.mesh, lm.region }, lm.line, rayStart, rayEnd, *prec, false ) )
+        if ( auto r = meshRayIntersect_( { *lm.mesh, lm.region }, lm.line, rayStart, rayEnd, *prec, false, {} ) )
         {
-            res = MultiMeshIntersectionResult{ *r };
+            res = MultiMeshIntersectionResult{ r };
             break;
         }
     }
     return res;
 }
 
-std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect( const std::vector<Line3fMesh> & lineMeshes,
+MultiMeshIntersectionResult rayMultiMeshAnyIntersect( const std::vector<Line3fMesh> & lineMeshes,
     float rayStart, float rayEnd )
 {
     return rayMultiMeshAnyIntersect_( lineMeshes, rayStart, rayEnd );
 }
 
-std::optional<MultiMeshIntersectionResult> rayMultiMeshAnyIntersect( const std::vector<Line3dMesh> & lineMeshes,
+MultiMeshIntersectionResult rayMultiMeshAnyIntersect( const std::vector<Line3dMesh> & lineMeshes,
     double rayStart, double rayEnd )
 {
     return rayMultiMeshAnyIntersect_( lineMeshes, rayStart, rayEnd );
@@ -209,7 +268,7 @@ void rayMeshIntersectAll_( const MeshPart& meshPart, const Line3<T>& line, MeshI
         return;
     }
 
-    AABBTree::NodeId nodesStack[maxTreeDepth];
+    NodeId nodesStack[maxTreeDepth];
     int currentNode = 0;
     nodesStack[0] = tree.rootNodeId();
     ConvertToIntVector convToInt;
@@ -331,6 +390,7 @@ void rayMeshIntersectAll( const MeshPart& meshPart, const Line3d& line, MeshInte
 void xyPlaneMeshIntersect( const MeshPart& meshPart, float zLevel,
     FaceBitSet * fs, UndirectedEdgeBitSet * ues, VertBitSet * vs )
 {
+    MR_TIMER
     assert( fs || ues || vs );
 
     const auto& m = meshPart.mesh;
@@ -343,10 +403,10 @@ void xyPlaneMeshIntersect( const MeshPart& meshPart, float zLevel,
     assert( !ues || ues->size() >= m.topology.undirectedEdgeSize() );
     assert( !vs  || vs->size()  >= m.topology.vertSize() );
 
-    AABBTree::NodeId nodesStack[maxTreeDepth];
+    NodeId nodesStack[maxTreeDepth];
     int currentNode = -1;
 
-    auto addNode = [&]( AABBTree::NodeId nid )
+    auto addNode = [&]( NodeId nid )
     {
         const auto & box = tree[nid].box;
         if ( box.min.z <= zLevel && box.max.z >= zLevel )

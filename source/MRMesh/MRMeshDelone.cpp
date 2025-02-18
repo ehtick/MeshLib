@@ -6,13 +6,15 @@
 #include "MRTimer.h"
 #include "MRTriMath.h"
 #include "MRVector2.h"
-#include "MRPlanarPath.h"
+#include "MRGeodesicPath.h"
 #include "MRTriDist.h"
 
 namespace MR
 {
 
-bool checkDeloneQuadrangle( const Vector3f& a, const Vector3f& b, const Vector3f& c, const Vector3f& d, float maxAngleChange )
+constexpr float NoAngleChangeLimit = 2 * PI_F;
+
+bool checkDeloneQuadrangle( const Vector3d& a, const Vector3d& b, const Vector3d& c, const Vector3d& d, double maxAngleChange )
 {
     const auto dirABD = dirDblArea( a, b, d );
     const auto dirDBC = dirDblArea( d, b, c );
@@ -35,8 +37,16 @@ bool checkDeloneQuadrangle( const Vector3f& a, const Vector3f& b, const Vector3f
     auto metricBD = std::max( circumcircleDiameterSq( b, d, a ), circumcircleDiameterSq( d, b, c ) );
 
     // there should be significant difference in metrics (above floating point error) to return false
-    constexpr float eps = 1e-5f;
+    constexpr double eps = 1e-7; // when we computed in floats then even 1e-5f was too small here and did not prevent infinite loop during resolveMeshDegenerations
+    if ( !std::isfinite( metricAC ) )
+        return metricAC <= metricBD; // below line returns true if metricAC is +infinity
     return metricAC <= metricBD + eps * ( metricAC + metricBD ); // this shall work even if metricAC and metricBD are infinities, unlike ( metricAC - metricBD ), which becomes NaN
+}
+
+bool checkDeloneQuadrangle( const Vector3f& a, const Vector3f& b, const Vector3f& c, const Vector3f& d, float maxAngleChange )
+{
+    // the computation of circumcircle diameter in floats for near-degenerate triangles has too large rounding error
+    return checkDeloneQuadrangle( Vector3d( a ), Vector3d( b ), Vector3d( c ), Vector3d( d ), double( maxAngleChange ) );
 }
 
 bool checkDeloneQuadrangleInMesh( const Mesh & mesh, EdgeId edge, const DeloneSettings& settings, float * deviationSqAfterFlip )
@@ -76,26 +86,13 @@ bool checkDeloneQuadrangleInMesh( const Mesh & mesh, EdgeId edge, const DeloneSe
     auto cp = mesh.points[c];
     auto dp = mesh.points[d];
 
-    bool degenInputTris = false; // whether triangles ACD and ABC are degenerate based on their aspect ratio
-    if ( settings.criticalTriAspectRatio < FLT_MAX &&
-         ( deviationSqAfterFlip || settings.maxDeviationAfterFlip < FLT_MAX || settings.maxAngleChange < NoAngleChangeLimit ) )
-    {
-        const auto maxAspect = std::max( triangleAspectRatio( ap, cp, dp ), triangleAspectRatio( cp, ap, bp ) );
-        if ( maxAspect > settings.criticalTriAspectRatio )
-            degenInputTris = true;
-    }
-
     if ( deviationSqAfterFlip || settings.maxDeviationAfterFlip < FLT_MAX )
     {
-        float distSq = 0;
-        if ( !degenInputTris )
-        {
-            Vector3f vec, closestOnAC, closestOnBD;
-            SegPoints( vec, closestOnAC, closestOnBD,
-                ap, cp - ap,   // first diagonal segment
-                bp, dp - bp ); // second diagonal segment
-            distSq = ( closestOnAC - closestOnBD ).lengthSq();
-        }
+        Vector3f vec, closestOnAC, closestOnBD;
+        SegPoints( vec, closestOnAC, closestOnBD,
+            ap, cp - ap,   // first diagonal segment
+            bp, dp - bp ); // second diagonal segment
+        const auto distSq = ( closestOnAC - closestOnBD ).lengthSq();
         if ( deviationSqAfterFlip )
             *deviationSqAfterFlip = distSq;
         if ( distSq > sqr( settings.maxDeviationAfterFlip ) )
@@ -105,7 +102,29 @@ bool checkDeloneQuadrangleInMesh( const Mesh & mesh, EdgeId edge, const DeloneSe
     if ( !isUnfoldQuadrangleConvex( ap, bp, cp, dp ) )
         return true; // cannot flip because 2d quadrangle is concave
 
-    return checkDeloneQuadrangle( ap, bp, cp, dp, degenInputTris ? NoAngleChangeLimit : settings.maxAngleChange );
+    auto maxAngleChange = settings.maxAngleChange;
+    if ( settings.criticalTriAspectRatio < FLT_MAX && maxAngleChange < NoAngleChangeLimit )
+    {
+        const auto maxAspect = std::max( triangleAspectRatio( ap, cp, dp ), triangleAspectRatio( cp, ap, bp ) );
+        if ( maxAspect > settings.criticalTriAspectRatio )
+        {
+            // triangle ACD or ABC is degenerate based on their aspect ratio
+            maxAngleChange = NoAngleChangeLimit;
+        }
+    }
+
+    return checkDeloneQuadrangle( ap, bp, cp, dp, maxAngleChange );
+}
+
+bool bestQuadrangleDiagonal( const Vector3f& a, const Vector3f& b, const Vector3f& c, const Vector3f& d )
+{
+    bool cabcd = isUnfoldQuadrangleConvex( a, b, c, d );
+    bool cbcda = isUnfoldQuadrangleConvex( b, c, d, a );
+    if ( cabcd != cbcda )
+        return cbcda;
+    auto metricAC = std::max( circumcircleDiameterSq( a, c, d ), circumcircleDiameterSq( c, a, b ) );
+    auto metricBD = std::max( circumcircleDiameterSq( b, d, a ), circumcircleDiameterSq( d, b, c ) );
+    return metricAC <= metricBD;
 }
 
 int makeDeloneEdgeFlips( Mesh & mesh, const DeloneSettings& settings, int numIters, ProgressCallback progressCallback )
@@ -115,10 +134,8 @@ int makeDeloneEdgeFlips( Mesh & mesh, const DeloneSettings& settings, int numIte
     MR_TIMER;
     MR_WRITER( mesh );
 
-    UndirectedEdgeBitSet flipCandidates;
-    flipCandidates.resize( mesh.topology.undirectedEdgeSize() );
-    UndirectedEdgeBitSet nextFlipCandidates;
-    nextFlipCandidates.resize( mesh.topology.undirectedEdgeSize(), true );
+    UndirectedEdgeBitSet flipCandidates( mesh.topology.undirectedEdgeSize() );
+    UndirectedEdgeBitSet nextFlipCandidates( mesh.topology.undirectedEdgeSize(), true );
 
     int flipsDone = 0;
     for ( int iter = 0; iter < numIters; ++iter )

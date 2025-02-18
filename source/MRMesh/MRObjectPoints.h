@@ -33,13 +33,16 @@ public:
     ObjectPoints( ProtectedStruct, const ObjectPoints& obj ) : ObjectPoints( obj ) {}
 
     MRMESH_API virtual std::vector<std::string> getInfoLines() const override;
-    virtual std::string getClassName() const override { return "Points"; }
 
-    MRMESH_API virtual void setDirtyFlags( uint32_t mask ) override;
+    std::string getClassName() const override { return "Points"; }
+    std::string getClassNameInPlural() const override { return "Points"; }
 
-    /// signal about points changing, triggered in setDirtyFlag
-    using PointsChangedSignal = Signal<void( uint32_t mask )>;
-    PointsChangedSignal pointsChangedSignal;
+    MRMESH_API virtual void setDirtyFlags( uint32_t mask, bool invalidateCaches = true ) override;
+
+    /// signal about points or normals changing, triggered in setDirtyFlag
+    using ChangedSignal = Signal<void( uint32_t mask )>;
+    ChangedSignal pointsChangedSignal;
+    ChangedSignal normalsChangedSignal;
 
 protected:
     ObjectPoints( const ObjectPoints& other ) = default;
@@ -52,4 +55,17 @@ protected:
 
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const override;
 };
-}
+
+/// constructs new ObjectPoints containing the union of valid points from all input objects
+[[nodiscard]] MRMESH_API std::shared_ptr<ObjectPoints> merge( const std::vector<std::shared_ptr<ObjectPoints>>& objsPoints );
+
+/// constructs new ObjectPoints containing the region of data from input object
+/// does not copy selection
+[[nodiscard]] MRMESH_API std::shared_ptr<ObjectPoints> cloneRegion( const std::shared_ptr<ObjectPoints>& objPoints, const VertBitSet& region );
+
+/// constructs new ObjectPoints containing the packed version of input points,
+/// \param newValidVerts if given, then use them instead of valid points from pts
+/// \return nullptr if the operation was cancelled
+[[nodiscard]] MRMESH_API std::shared_ptr<ObjectPoints> pack( const ObjectPoints& pts, Reorder reorder, VertBitSet* newValidVerts = nullptr, const ProgressCallback & cb = {} );
+
+} //namespace MR

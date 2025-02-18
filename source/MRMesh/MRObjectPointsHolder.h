@@ -1,19 +1,16 @@
 #pragma once
 #include "MRVisualObject.h"
-#include "MRPointCloud.h"
 #include "MRXfBasedCache.h"
 
 namespace MR
 {
 
-struct PointsVisualizePropertyType : VisualizeMaskType
+enum class MRMESH_CLASS PointsVisualizePropertyType
 {
-    enum : unsigned
-    {
-        SelectedVertices = VisualizeMaskType::VisualizePropsCount,
-        PointsVisualizePropsCount
-    };
+    SelectedVertices,
+    _count [[maybe_unused]],
 };
+template <> struct IsVisualizeMaskEnum<PointsVisualizePropertyType> : std::true_type {};
 
 /// an object that stores a points
 /// \ingroup ModelHolderGroup
@@ -32,16 +29,28 @@ public:
 
     MRMESH_API virtual bool hasVisualRepresentation() const override;
 
-    const std::shared_ptr<const PointCloud>& pointCloud() const 
+    [[nodiscard]] virtual bool hasModel() const override { return bool( points_ ); }
+
+    const std::shared_ptr<const PointCloud>& pointCloud() const
     { return reinterpret_cast< const std::shared_ptr<const PointCloud>& >( points_ ); } // reinterpret_cast to avoid making a copy of shared_ptr
 
     MRMESH_API virtual std::shared_ptr<Object> clone() const override;
     MRMESH_API virtual std::shared_ptr<Object> shallowClone() const override;
 
-    MRMESH_API virtual void setDirtyFlags( uint32_t mask ) override;
-    
+    MRMESH_API virtual void setDirtyFlags( uint32_t mask, bool invalidateCaches = true ) override;
+
+    /// gets current selected points
     const VertBitSet& getSelectedPoints() const { return selectedPoints_; }
-    MRMESH_API virtual void selectPoints( VertBitSet newSelection );
+
+    /// sets current selected points
+    void selectPoints( VertBitSet newSelection ) { updateSelectedPoints( newSelection ); }
+
+    /// swaps current selected points with the argument
+    MRMESH_API virtual void updateSelectedPoints( VertBitSet& selection );
+
+    /// returns selected points if any, otherwise returns all valid points
+    MRMESH_API const VertBitSet& getSelectedPointsOrAll() const;
+
     /// returns colors of selected vertices
     const Color& getSelectedVerticesColor( ViewportId id = {} ) const
     {
@@ -53,15 +62,17 @@ public:
     MRMESH_API const ViewportProperty<Color>& getSelectedVerticesColorsForAllViewports() const;
     MRMESH_API virtual void setSelectedVerticesColorsForAllViewports( ViewportProperty<Color> val );
 
-    /// get all visualize properties masks as array
-    MRMESH_API virtual AllVisualizeProperties getAllVisualizeProperties() const override;
+    [[nodiscard]] MRMESH_API bool supportsVisualizeProperty( AnyVisualizeMaskEnum type ) const override;
+
+    /// get all visualize properties masks
+    MRMESH_API AllVisualizeProperties getAllVisualizeProperties() const override;
     /// returns mask of viewports where given property is set
-    MRMESH_API virtual const ViewportMask& getVisualizePropertyMask( unsigned type ) const override;
-    
+    MRMESH_API const ViewportMask& getVisualizePropertyMask( AnyVisualizeMaskEnum type ) const override;
+
     /// sets size of points on screen in pixels
     MRMESH_API virtual void setPointSize( float size );
     /// returns size of points on screen in pixels
-    float getPointSize() const { return pointSize_; }
+    virtual float getPointSize() const { return pointSize_; }
 
     /// \note this ctor is public only for std::make_shared used inside clone()
     ObjectPointsHolder( ProtectedStruct, const ObjectPointsHolder& obj ) : ObjectPointsHolder( obj )
@@ -77,13 +88,57 @@ public:
 
     /// returns the amount of memory this object occupies on heap
     [[nodiscard]] MRMESH_API virtual size_t heapBytes() const override;
-    
+
+    /// returns rendering discretization
+    /// display each `renderDiscretization`-th point only,
+    /// starting from 0 index, total number is \ref numRenderingValidPoints()
+    /// \detail defined by maximum rendered points number as:
+    /// \ref numValidPoints() / \ref getMaxRenderingPoints() (rounded up)
+    /// updated when setting `maxRenderingPoints` or changing the cloud (setting `DIRTY_FACE` flag)
+    int getRenderDiscretization() const { return renderDiscretization_; }
+
+    /// returns count of valid points that will be rendered
+    MRMESH_API size_t numRenderingValidPoints() const;
+
+    /// default value for maximum rendered points number
+    static constexpr int MaxRenderingPointsDefault = 1'000'000;
+    /// recommended value for maximum rendered points number to disable discretization
+    static constexpr int MaxRenderingPointsUnlimited = std::numeric_limits<int>::max();
+
+    /// returns maximal number of points that will be rendered
+    /// if actual count of valid points is greater then the points will be sampled
+    MRMESH_API int getMaxRenderingPoints() const { return maxRenderingPoints_; }
+
+    /// sets maximal number of points that will be rendered
+    /// \sa \ref getRenderDiscretization, \ref MaxRenderingPointsDefault, \ref MaxRenderingPointsUnlimited
+    MRMESH_API void setMaxRenderingPoints( int val );
+
+    /// returns overriden file extension used to serialize point cloud inside this object, nullptr means defaultSerializePointsFormat()
+    [[nodiscard]] const char * serializeFormat() const { return serializeFormat_; }
+    [[deprecated]] const char * savePointsFormat() const { return serializeFormat(); }
+
+    /// overrides file extension used to serialize point cloud inside this object: must start from '.',
+    /// nullptr means serialize in defaultSerializePointsFormat()
+    MRMESH_API void setSerializeFormat( const char * newFormat );
+    [[deprecated]] void setSavePointsFormat( const char * newFormat ) { setSerializeFormat( newFormat ); }
+
+    /// signal about points selection changing, triggered in selectPoints
+    using SelectionChangedSignal = Signal<void()>;
+    SelectionChangedSignal pointsSelectionChangedSignal;
+
+    /// signal about render discretization changing, triggered in setRenderDiscretization
+    Signal<void()> renderDiscretizationChangedSignal;
+
 protected:
     VertBitSet selectedPoints_;
     mutable std::optional<size_t> numValidPoints_;
     mutable std::optional<size_t> numSelectedPoints_;
     ViewportProperty<Color> selectedVerticesColor_;
     ViewportMask showSelectedVertices_ = ViewportMask::all();
+
+    /// swaps signals, used in `swap` function to return back signals after `swapBase_`
+    /// pls call Parent::swapSignals_ first when overriding this function
+    MRMESH_API virtual void swapSignals_( Object& other ) override;
 
     std::shared_ptr<PointCloud> points_;
     mutable ViewportProperty<XfBasedCache<Box3f>> worldBox_;
@@ -98,9 +153,9 @@ protected:
 
     MRMESH_API virtual Box3f computeBoundingBox_() const override;
 
-    MRMESH_API virtual Expected<std::future<void>, std::string> serializeModel_( const std::filesystem::path& path ) const override;
+    MRMESH_API virtual Expected<std::future<Expected<void>>> serializeModel_( const std::filesystem::path& path ) const override;
 
-    MRMESH_API virtual VoidOrErrStr deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} ) override;
+    MRMESH_API virtual Expected<void> deserializeModel_( const std::filesystem::path& path, ProgressCallback progressCb = {} ) override;
 
     MRMESH_API virtual void serializeFields_( Json::Value& root ) const override;
 
@@ -108,11 +163,35 @@ protected:
 
     MRMESH_API virtual void setupRenderObject_() const override;
 
+    /// set all visualize properties masks
+    MRMESH_API void setAllVisualizeProperties_( const AllVisualizeProperties& properties, std::size_t& pos ) override;
+
+    int maxRenderingPoints_ = MaxRenderingPointsDefault;
 
 private:
 
     /// this is private function to set default colors of this type (ObjectPointsHolder) in constructor only
     void setDefaultColors_();
+
+    /// set default scene-related properties
+    void setDefaultSceneProperties_();
+
+    // update renderDiscretization_ as numValidPoints_ / maxRenderingPoints_ (rounded up)
+    void updateRenderDiscretization_();
+
+    int renderDiscretization_ = 1; // auxiliary parameter to avoid recalculation in every frame
+
+    const char * serializeFormat_ = nullptr; // means use defaultSerializePointsFormat()
 };
 
-}
+/// returns file extension used to serialize ObjectPointsHolder by default (if not overridden in specific object),
+/// the string starts with '.'
+[[nodiscard]] MRMESH_API const std::string & defaultSerializePointsFormat();
+
+/// sets file extension used to serialize serialize ObjectPointsHolder by default (if not overridden in specific object),
+/// the string must start from '.';
+// serialization falls back to the PLY format if given format support is available
+// NOTE: CTM format support is available in the MRIOExtras library; make sure to load it if you prefer CTM
+MRMESH_API void setDefaultSerializePointsFormat( std::string newFormat );
+
+} //namespace MR

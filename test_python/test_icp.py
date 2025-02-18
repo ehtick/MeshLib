@@ -1,5 +1,5 @@
-from helper import *
 import pytest
+from helper import *
 
 
 def test_icp():
@@ -13,33 +13,32 @@ def test_icp():
     trans.y = 0.2
     trans.z = 0.105
 
-    xf = mrmesh.AffineXf3f.translation(
-        trans) * mrmesh.AffineXf3f.linear(mrmesh.Matrix3f.rotation(axis, 0.2))
+    xf = mrmesh.AffineXf3f.translation(trans) * mrmesh.AffineXf3f.linear(
+        mrmesh.Matrix3f.rotation(axis, 0.2)
+    )
 
-    icp = mrmesh.MeshICP(
-        torusMove,
-        torusRef,
-        xf,
-        mrmesh.AffineXf3f(),
-        torusMove.topology.getValidVerts())
+    icp = mrmesh.ICP(
+        torusMove, torusRef, xf, mrmesh.AffineXf3f(), torusMove.topology.getValidVerts(), torusRef.topology.getValidVerts()
+    )
     newXf = icp.calculateTransformation()
+    print(icp.getStatusInfo())
 
     diffXf = mrmesh.AffineXf3f()
     diffXf.A -= newXf.A
     diffXf.b -= newXf.b
 
-    assert (abs(diffXf.A.x.x) < 1e-6)
-    assert (abs(diffXf.A.x.y) < 1e-6)
-    assert (abs(diffXf.A.x.z) < 1e-6)
+    assert abs(diffXf.A.x.x) < 1e-6
+    assert abs(diffXf.A.x.y) < 1e-6
+    assert abs(diffXf.A.x.z) < 1e-6
 
-    assert (abs(diffXf.A.y.x) < 1e-6)
-    assert (abs(diffXf.A.y.y) < 1e-6)
-    assert (abs(diffXf.A.y.z) < 1e-6)
+    assert abs(diffXf.A.y.x) < 1e-6
+    assert abs(diffXf.A.y.y) < 1e-6
+    assert abs(diffXf.A.y.z) < 1e-6
 
-    assert (abs(diffXf.A.z.x) < 1e-6)
-    assert (abs(diffXf.A.z.y) < 1e-6)
-    assert (abs(diffXf.A.z.z) < 1e-6)
+    assert abs(diffXf.A.z.x) < 1e-6
+    assert abs(diffXf.A.z.y) < 1e-6
+    assert abs(diffXf.A.z.z) < 1e-6
 
-    assert (abs(diffXf.b.x) < 1e-6)
-    assert (abs(diffXf.b.y) < 1e-6)
-    assert (abs(diffXf.b.z) < 1e-6)
+    assert abs(diffXf.b.x) < 1e-6
+    assert abs(diffXf.b.y) < 1e-6
+    assert abs(diffXf.b.z) < 1e-6

@@ -2,25 +2,44 @@
 #ifdef __EMSCRIPTEN__
 #include "MRCommonPlugins/exports.h"
 #include "MRViewer/MRStatePlugin.h"
-#include "MRViewer/MRRibbonMenu.h"
+#include "MRViewer/MRRibbonSchema.h"
+#include "MRViewer/ImGuiMenu.h"
+#include "MRViewer/MRColorTheme.h"
+#include "MRPch/MRWasm.h"
 
 namespace MR
 {
-class MRCOMMONPLUGINS_CLASS WasmUnavailablePlugin : public StatePlugin
+
+class WasmUnavailableObjectVoxels
 {
 public:
-    WasmUnavailablePlugin( const std::string& name ) :
-        StatePlugin( name ){}
-    
-    MRCOMMONPLUGINS_API virtual void drawDialog( float menuScaling, ImGuiContext* ) override;
-private:
-    virtual bool onEnable_() override { openPopup_ = true; return true; }
-    bool openPopup_{true};
+    constexpr static const char* TypeName() noexcept { return "ObjectVoxels"; }
+};
+
+class MRCOMMONPLUGINS_CLASS WasmUnavailableItem : public RibbonMenuItem
+{
+public:
+    WasmUnavailableItem( const std::string& name ) :
+        RibbonMenuItem( name ) {}
+
+    virtual bool action() override
+    {
+        showDownloadWindow_();
+        return false;
+    }
+
+    EMSCRIPTEN_KEEPALIVE void showDownloadWindow_()
+    {
+        #pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdollar-in-identifier-extension"
+            EM_ASM( showDownloadWindow() );
+#pragma clang diagnostic pop
+    }
 };
 
 }
 
 #define MR_REGISTER_WASM_UNAVAILABLE_ITEM( pluginType, name )\
-    static MR::RibbonMenuItemAdder<MR::WasmUnavailablePlugin> ribbonMenuItemAdder##pluginType##_(name);
+    static MR::RibbonMenuItemAdder<MR::WasmUnavailableItem> ribbonMenuItemAdder##pluginType##_(name);
 
 #endif

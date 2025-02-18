@@ -2,6 +2,7 @@
 #include "exports.h"
 #include "cuda_runtime.h"
 #include "MRCudaFloat.cuh"
+#include <float.h>
 
 namespace MR
 {
@@ -26,6 +27,23 @@ struct Box3
         if ( pt.z < min.z ) min.z = pt.z;
         if ( pt.z > max.z ) max.z = pt.z;
     }
+
+    __device__ float3 operator[]( const int i ) const
+    {
+        assert( i == 0 || i == 1 );
+        return ( i == 0 ) ? min : max;
+    }
+};
+
+struct IntersectionPrecomputes
+{
+    float3 dir;
+    float3 invDir;
+    int maxDimIdxZ = 2;
+    int idxX = 0;
+    int idxY = 1;
+    int3 sign;
+    float Sx, Sy, Sz;
 };
 
 // struct simular to AABBTreeNode<FaceTreeTraits3> with minimal needed functions
@@ -41,6 +59,10 @@ struct Node3
     __device__ int leafId() const
     {
         return l;
+    }
+    __device__ int2 getLeafPointRange() const
+    { 
+        return { -(l + 1), -(r + 1) };
     }
 };
 
@@ -62,6 +84,22 @@ struct MeshTriPoint
     int unused = -1; //always -1, but necessary to have the same size as MeshTriPoint in CPU
     float a;
     float b;
+};
+
+struct MeshIntersectionResult
+{
+    PointOnFace proj;
+    MeshTriPoint tp;
+    float distanceAlongLine = -FLT_MAX;
+};
+
+struct TriIntersectResult
+{
+    // barycentric representation
+    float a;
+    float b;
+    // distance from ray origin to p in dir length units
+    float t = -FLT_MAX;
 };
 
 // GPU analog of CPU AffineXf3f
@@ -149,6 +187,193 @@ __device__ inline ClosestPointRes closestPointInTriangle( const float3& p, const
     const float v = vb * denom;
     const float w = vc * denom;
     return { { v, w }, a + ab * v + ac * w };
+}
+
+__device__ inline bool rayBoxIntersect( const Box3& box, const float3& rayOrigin, float& t0, float& t1, const IntersectionPrecomputes& prec )
+{
+    const int3& sign = prec.sign;
+
+    // compare and update x-dimension with t0-t1
+    t1 = min( ( box[sign.x].x - rayOrigin.x ) * prec.invDir.x, t1 );
+    t0 = max( ( box[1 - sign.x].x - rayOrigin.x ) * prec.invDir.x, t0 );
+
+    // compare and update y-dimension with t0-t1
+    t1 = min( ( box[sign.y].y - rayOrigin.y ) * prec.invDir.y, t1 );
+    t0 = max( ( box[1 - sign.y].y - rayOrigin.y ) * prec.invDir.y, t0 );
+
+    // compare and update z-dimension with t0-t1
+    t1 = min( ( box[sign.z].z - rayOrigin.z ) * prec.invDir.z, t1 );
+    t0 = max( ( box[1 - sign.z].z - rayOrigin.z ) * prec.invDir.z, t0 );
+    return t0 <= t1;
+}
+
+__device__ inline TriIntersectResult rayTriangleIntersect(const float* oriA, const float* oriB, const float* oriC, const IntersectionPrecomputes& prec)
+{
+    const float Sx = prec.Sx;
+    const float Sy = prec.Sy;
+    const float Sz = prec.Sz;    
+
+    const float Ax = oriA[prec.idxX] - Sx * oriA[prec.maxDimIdxZ];
+    const float Ay = oriA[prec.idxY] - Sy * oriA[prec.maxDimIdxZ];
+    const float Bx = oriB[prec.idxX] - Sx * oriB[prec.maxDimIdxZ];
+    const float By = oriB[prec.idxY] - Sy * oriB[prec.maxDimIdxZ];
+    const float Cx = oriC[prec.idxX] - Sx * oriC[prec.maxDimIdxZ];
+    const float Cy = oriC[prec.idxY] - Sy * oriC[prec.maxDimIdxZ];
+
+    // due to fused multiply-add (FMA): (A*B-A*B) can be different from zero, so we need epsilon
+    const float eps = FLT_EPSILON * max( Ax, Bx, Cx, Ay, By, Cy );
+
+    float U = Cx * By - Cy * Bx;
+    float V = Ax * Cy - Ay * Cx;
+    float W = Bx * Ay - By * Ax;
+    TriIntersectResult res;
+    if ( U < -eps || V < -eps || W < -eps )
+    {
+        if ( U > eps || V > eps || W > eps )
+        {
+            // U,V,W have clearly different signs, so the ray misses the triangle
+            return res;
+        }
+    }
+
+    float det = U + V + W;
+    if ( det == 0 )
+        return res;
+
+    const float Az = Sz * oriA[prec.maxDimIdxZ];
+    const float Bz = Sz * oriB[prec.maxDimIdxZ];
+    const float Cz = Sz * oriC[prec.maxDimIdxZ];
+    const float t = U * Az + V * Bz + W * Cz;
+    
+    res.a = V / det;
+    res.b = W / det;
+    res.t = t / det;
+    return res;
+}
+
+__device__ inline MeshIntersectionResult rayMeshIntersect( const Node3* nodes, const float3* meshPoints, const FaceToThreeVerts* faces, 
+                                                           const float3& rayOrigin, float rayStart, float rayEnd, const IntersectionPrecomputes& prec, bool closestIntersect = true )
+{
+    const Box3& box = nodes[0].box;
+    MeshIntersectionResult res;
+    res.distanceAlongLine = -FLT_MAX;
+
+    float start = rayStart;
+    float end = rayEnd;
+    if ( !rayBoxIntersect( box, rayOrigin, start, end, prec ) )
+        return res;
+
+    struct SubTask
+    {
+        int n;
+        float rayStart;
+    };
+
+    constexpr int MaxStackSize = 32; // to avoid allocations
+    SubTask subtasks[MaxStackSize];
+    int stackSize = 0;
+
+    auto addSubTask = [&] ( int n, float rayStart )
+    {
+        assert( stackSize < MaxStackSize );
+        subtasks[stackSize].n = n;
+        subtasks[stackSize].rayStart = rayStart;
+        ++stackSize;
+    };
+
+    addSubTask( 0, rayStart );
+
+    int faceId = -1;
+    float baryA = 0;
+    float baryB = 0;
+
+    while ( stackSize > 0 && ( closestIntersect || faceId < 0 ) )
+    {
+        if ( stackSize >= MaxStackSize ) // max depth exceeded
+        {
+            assert( false );
+            break;
+        }
+
+        const auto s = subtasks[--stackSize];
+
+        if ( s.rayStart < rayEnd )
+        {
+            if ( nodes[s.n].leaf() )
+            {
+                auto face = nodes[s.n].leafId();
+                const auto& vs = faces[face].verts;
+                float3 a = meshPoints[vs[0]] - rayOrigin;
+                float3 b = meshPoints[vs[1]] - rayOrigin;
+                float3 c = meshPoints[vs[2]] - rayOrigin;
+                
+                const auto tri = rayTriangleIntersect( ( float* ) (&a), ( float* ) (&b), ( float* ) (&c), prec );
+                if ( tri.t < rayEnd && tri.t > rayStart )
+                {
+                    faceId = face;
+                    baryA = tri.a;
+                    baryB = tri.b;
+                    rayEnd = tri.t;
+                }
+            }
+            else
+            {
+                float lStart = rayStart, lEnd = rayEnd;
+                float rStart = rayStart, rEnd = rayEnd;
+
+                if ( rayBoxIntersect( nodes[nodes[s.n].l].box, rayOrigin, lStart, lEnd, prec ) )
+                {
+                    if ( rayBoxIntersect( nodes[nodes[s.n].r].box, rayOrigin, rStart, rEnd, prec ) )
+                    {
+                        if ( lStart > rStart )
+                        {
+                            addSubTask( nodes[s.n].l, lStart );
+                            addSubTask( nodes[s.n].r, rStart );
+                        }
+                        else
+                        {
+                            addSubTask( nodes[s.n].r, rStart );
+                            addSubTask( nodes[s.n].l, lStart );
+                        }
+                    }
+                    else
+                    {
+                        addSubTask( nodes[s.n].l, lStart );
+                    }
+                }
+                else
+                {
+                    if ( rayBoxIntersect( nodes[nodes[s.n].r].box, rayOrigin, rStart, rEnd, prec ) )
+                    {
+                        addSubTask( nodes[s.n].r, rStart );
+                    }
+                }
+            }
+        }
+    }
+    if ( faceId < 0 )
+        return res;
+
+    res.proj.faceId = faceId;
+    res.proj.point.x = rayOrigin.x + rayEnd * prec.dir.x;
+    res.proj.point.y = rayOrigin.y + rayEnd * prec.dir.y;
+    res.proj.point.z = rayOrigin.z + rayEnd * prec.dir.z;
+
+    res.tp.a = baryA;
+    res.tp.b = baryB;
+
+    res.distanceAlongLine = rayEnd;
+    return res;
+}
+
+__device__ inline bool testBit( const uint64_t* bitSet, const size_t bitNumber )
+{
+    return bool( ( bitSet[bitNumber / 64] >> ( bitNumber % 64 ) ) & 1 );
+}
+
+__device__ inline void setBit( uint64_t* bitSet, const size_t bitNumber )
+{
+    bitSet[bitNumber / 64] += ( 1ull << ( bitNumber % 64 ) );
 }
 
 }

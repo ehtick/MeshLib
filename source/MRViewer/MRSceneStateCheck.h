@@ -1,91 +1,72 @@
 #pragma once
-#include "exports.h"
+
+#include "MRISceneStateCheck.h"
 #include "MRMesh/MRObject.h"
-#include "MRMesh/MRObjectPoints.h"
-#include "MRMesh/MRObjectVoxels.h"
-#include "MRMesh/MRObjectMesh.h"
-#include "MRMesh/MRObjectLines.h"
-#include "MRMesh/MRObjectDistanceMap.h"
-#include <memory>
-#include <vector>
-#include <string>
 
 namespace MR
 {
 
-class Object;
-
-// Interface for checking scene state, to determine availability, also can return string with requirements 
-class ISceneStateCheck
-{
-public:
-    virtual ~ISceneStateCheck() = default;
-    // return empty string if all requirements are satisfied, otherwise return first unsatisfied requirement
-    virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& ) const { return {}; }
-};
-
-// special namespace not to have signature conflicts
-namespace ModelCheck
-{
-inline bool model( const Object& )
-{
-    return true;
-}
-inline bool model( const ObjectMesh& obj )
-{
-    return bool( obj.mesh() );
-}
-#if !defined(__EMSCRIPTEN__) && !defined(MRMESH_NO_VOXEL)
-inline bool model( const ObjectVoxels& obj )
-{
-    return bool( obj.grid() );
-}
-#endif
-inline bool model( const ObjectPoints& obj )
-{
-    return bool( obj.pointCloud() );
-}
-inline bool model( const ObjectLines& obj )
-{
-    return bool( obj.polyline() );
-}
-inline bool model( const ObjectDistanceMap& obj )
-{
-    return bool( obj.getDistanceMap() );
-}
-}
-
-inline bool hasVisualRepresentation( const Object& )
-{
-    return true;
-}
-
-inline bool hasVisualRepresentation( const VisualObject& obj )
-{
-    return obj.hasVisualRepresentation();
-}
-
 // special struct for disabling visual representation check
 struct NoVisualRepresentationCheck {};
 
+// special struct for disabling model check
+struct NoModelCheck {};
+
+template<typename ObjectT>
+std::string getNObjectsLine( unsigned n )
+{
+    std::string typeName = ObjectT::TypeName();
+    if ( typeName.starts_with( "Object" ) && !typeName.ends_with( "Object" ) )
+        typeName = typeName.substr( 6 );
+    if ( typeName == "Points" )
+        typeName = "Point Cloud";
+    else if ( typeName == "Lines" )
+        typeName = "Polyline";
+    else if ( typeName == "Voxels" )
+        typeName = "Volume";
+
+    if ( n != 1 )
+    {
+        if ( typeName.ends_with( "s" ) || typeName.ends_with( "sh" ) )
+            typeName += "es";
+        else
+            typeName += "s";
+    }
+
+    switch ( n )
+    {
+    case 1:
+        return "one " + typeName;
+    case 2:
+        return "two " + typeName;
+    case 3:
+        return "three " + typeName;
+    case 4:
+        return "four " + typeName;
+    default:
+        return std::to_string( n ) + " " + typeName;
+    }    
+}
+
 // check that given vector has exactly N objects if type ObjectT
 // returns error message if requirements are not satisfied
-template<typename ObjectT, bool visualRepresentationCheck>
+template<typename ObjectT, bool visualRepresentationCheck, bool modelCheck>
 std::string sceneSelectedExactly( const std::vector<std::shared_ptr<const Object>>& objs, unsigned n )
 {
     if ( objs.size() != n )
-        return "Exactly " + std::to_string( n ) + " " + ObjectT::TypeName() + "(s) must be selected";
+        return "Select exactly " + getNObjectsLine<ObjectT>( n );
     for ( const auto& obj : objs )
     {
-        auto tObj = obj->asType<ObjectT>();
+        auto tObj = dynamic_cast<const ObjectT*>( obj.get() );
         if ( !tObj )
             return std::string( "Selected object(s) must have type: " ) + ObjectT::TypeName();
 
-        if ( !ModelCheck::model( *tObj ) )
-            return "Selected object(s) must have valid model";
+        if constexpr ( modelCheck )
+            if ( !tObj->hasModel() )
+                return "Selected object(s) must have valid model";
 
         if constexpr ( visualRepresentationCheck )
-            if ( !hasVisualRepresentation( *tObj ) )
+            if ( !tObj->hasVisualRepresentation() )
                 return "Selected object(s) must have valid visual representation";
     }
     return "";
@@ -93,27 +74,30 @@ std::string sceneSelectedExactly( const std::vector<std::shared_ptr<const Object
 
 // checks that given vector has at least N objects if type ObjectT
 // returns error message if requirements are not satisfied
-template<typename ObjectT, bool visualRepresentationCheck>
+template<typename ObjectT, bool visualRepresentationCheck, bool modelCheck>
 std::string sceneSelectedAtLeast( const std::vector<std::shared_ptr<const Object>>& objs, unsigned n )
 {
     if ( objs.size() < n )
-        return "At least " + std::to_string( n ) + " " + ObjectT::TypeName() + "(s) must be selected";
+        return "Select at least " + getNObjectsLine<ObjectT>( n );
     unsigned i = 0;
     for ( const auto& obj : objs )
     {
-        auto tObj = obj->asType<ObjectT>();
+        auto tObj = dynamic_cast<const ObjectT*>( obj.get() );
         if ( !tObj )
             continue;
-        if ( !ModelCheck::model( *tObj ) )
-            continue;
+
+        if constexpr ( modelCheck )
+            if ( !tObj->hasModel() )
+                continue;
+
         if constexpr ( visualRepresentationCheck )
-            if ( !hasVisualRepresentation( *tObj ) )
+            if ( !tObj->hasVisualRepresentation() )
                 continue;
         ++i;
     }
     return ( i >= n ) ? 
         "" : 
-        ( "At least " + std::to_string( n ) + " selected object(s) must have type: " + ObjectT::TypeName() + " with valid model" );
+        ( "Select at least " + getNObjectsLine<ObjectT>( n ) + " with valid model" );
 }
 
 // check that given vector has exactly N objects if type ObjectT
@@ -124,7 +108,7 @@ public:
     virtual ~SceneStateExactCheck() = default;
     virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
     {
-        return sceneSelectedExactly<ObjectT, true>(objs, N);
+        return sceneSelectedExactly<ObjectT, true, true>(objs, N);
     }
 };
 
@@ -135,7 +119,18 @@ public:
     virtual ~SceneStateExactCheck() = default;
     virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
     {
-        return sceneSelectedExactly<ObjectT, false>(objs, N);
+        return sceneSelectedExactly<ObjectT, false, true>(objs, N);
+    }
+};
+
+template<unsigned N, typename ObjectT>
+class SceneStateExactCheck<N, ObjectT, NoModelCheck> : virtual public ISceneStateCheck
+{
+public:
+    virtual ~SceneStateExactCheck() = default;
+    virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
+    {
+        return sceneSelectedExactly<ObjectT, false, false>( objs, N );
     }
 };
 
@@ -147,7 +142,7 @@ public:
     virtual ~SceneStateAtLeastCheck() = default;
     virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
     {
-        return sceneSelectedAtLeast<ObjectT, true>( objs, N );
+        return sceneSelectedAtLeast<ObjectT, true, true>( objs, N );
     }
 };
 
@@ -158,13 +153,24 @@ public:
     virtual ~SceneStateAtLeastCheck() = default;
     virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
     {
-        return sceneSelectedAtLeast<ObjectT, false>( objs, N );
+        return sceneSelectedAtLeast<ObjectT, false, true>( objs, N );
+    }
+};
+
+template<unsigned N, typename ObjectT>
+class SceneStateAtLeastCheck<N, ObjectT, NoModelCheck> : virtual public ISceneStateCheck
+{
+public:
+    virtual ~SceneStateAtLeastCheck() = default;
+    virtual std::string isAvailable( const std::vector<std::shared_ptr<const Object>>& objs ) const override
+    {
+        return sceneSelectedAtLeast<ObjectT, false, false>( objs, N );
     }
 };
 
 // checks that at least one of argument checks is true
 template<typename ...Checks>
-class SceneStateOrCheck : virtual public Checks...
+class SceneStateOrCheck : public Checks...
 {
 public:
     virtual ~SceneStateOrCheck() = default;
@@ -174,23 +180,25 @@ public:
         checkRes.reserve( sizeof...( Checks ) );
         ( checkRes.push_back( Checks::isAvailable( objs ) ), ... );
         std::string combinedRes;
-        for ( int i = 0; i + 1 < checkRes.size(); ++i )
+        for ( int i = 0; i  < checkRes.size(); ++i )
         {
             if ( checkRes[i].empty() )
                 return "";
+
+            if ( i != 0 )
+                checkRes[i].front() = ( char )tolower( checkRes[i].front() );
+
             combinedRes += checkRes[i];
-            combinedRes += " or ";
+            if ( i + 1 < checkRes.size() )
+                combinedRes += " or ";
         }
-        if ( checkRes.back().empty() )
-            return "";
-        combinedRes += checkRes.back();
         return combinedRes;
     }
 };
 
 // checks that all of argument checks are true
 template<typename ...Checks>
-class SceneStateAndCheck : virtual public Checks...
+class SceneStateAndCheck : public Checks...
 {
 public:
     virtual ~SceneStateAndCheck() = default;
@@ -199,12 +207,20 @@ public:
         std::vector<std::string> checkRes;
         checkRes.reserve( sizeof...( Checks ) );
         ( checkRes.push_back( Checks::isAvailable( objs ) ), ... );
-        for ( const auto& res : checkRes )
+        std::string combinedRes;
+        for ( int i = 0; i < checkRes.size(); ++i )
         {
-            if ( !res.empty() )
-                return res;
+            if ( checkRes[i].empty() )
+                continue;
+
+            if ( !combinedRes.empty() )
+            {
+                combinedRes += " and ";
+                checkRes[i].front() = ( char )tolower( checkRes[i].front() );
+            }
+            combinedRes += checkRes[i];
         }
-        return "";
+        return combinedRes;
     }
 };
 

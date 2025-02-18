@@ -19,16 +19,16 @@ MRMESH_API extern const IOFilters Filters;
 
 /**
  * @brief Load DistanceMap from binary file
- * @detail Format:
+ * Format:
  * 2 integer - DistanceMap.resX & DistanceMap.resY
  * [resX * resY] float - matrix of values
  */
-MRMESH_API Expected<DistanceMap, std::string> fromRaw( const std::filesystem::path& path, ProgressCallback progressCb = {} );
-MRMESH_API Expected<DistanceMap, std::string> fromMrDistanceMap( const std::filesystem::path& path, DistanceMapToWorld& params, ProgressCallback progressCb = {} );
+MRMESH_API Expected<DistanceMap> fromRaw( const std::filesystem::path& path, ProgressCallback progressCb = {} );
+MRMESH_API Expected<DistanceMap> fromMrDistanceMap( const std::filesystem::path& path, DistanceMapToWorld& params, ProgressCallback progressCb = {} );
 #if !defined( __EMSCRIPTEN__ ) && !defined( MRMESH_NO_TIFF )
-MRMESH_API Expected<DistanceMap, std::string> fromTiff( const std::filesystem::path& path, ProgressCallback progressCb = {} );
+MRMESH_API Expected<DistanceMap> fromTiff( const std::filesystem::path& path, DistanceMapToWorld& params, ProgressCallback progressCb = {} );
 #endif
-MRMESH_API Expected<DistanceMap, std::string> fromAnySupportedFormat( const std::filesystem::path& path, DistanceMapToWorld* params, ProgressCallback progressCb = {} );
+MRMESH_API Expected<DistanceMap> fromAnySupportedFormat( const std::filesystem::path& path, DistanceMapToWorld* params, ProgressCallback progressCb = {} );
 
 /// \}
 

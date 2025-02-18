@@ -1,11 +1,14 @@
 #include "MRMouseController.h"
-#include "MRMesh/MRConstants.h"
-#include "MRMesh/MRQuaternion.h"
-#include "MRMesh/MRVisualObject.h"
 #include "MRViewer.h"
 #include "MRGLMacro.h"
 #include "MRGladGlfw.h"
+#include "MRViewport.h"
+#include "MRMesh/MRConstants.h"
+#include "MRMesh/MRQuaternion.h"
+#include "MRMesh/MRObjectMesh.h"
 #include "MRPch/MRWasm.h"
+#include "MRMesh/MR2to3.h"
+#include "MRViewportCornerController.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -15,7 +18,7 @@ extern "C"
 EMSCRIPTEN_KEEPALIVE void emsDropEvents()
 {
     auto& viewer = MR::getViewerInstance();
-    const auto& ctl = viewer.mouseController;
+    const auto& ctl = viewer.mouseController();
     if ( ctl.isPressed( MR::MouseButton::Left ) )
         viewer.mouseUp( MR::MouseButton::Left, 0 );
     if ( ctl.isPressed( MR::MouseButton::Right ) )
@@ -29,6 +32,10 @@ EMSCRIPTEN_KEEPALIVE void emsDropEvents()
 
 namespace MR
 {
+
+// Maximum delay and offset for mouseClick
+static constexpr long long cMouseClickNs = 300'000'000; // 0.3s
+static constexpr int cMouseClickDist = 5;
 
 void MouseController::setMouseControl( const MouseControlKey& key, MouseMode mode )
 {
@@ -108,11 +115,14 @@ void MouseController::connect()
     downState_.resize( 3 );
     auto& viewer = getViewerInstance();
     viewer.mouseDownSignal.connect( MAKE_SLOT( &MouseController::preMouseDown_ ), boost::signals2::at_front );
+    // 5th group: we want cornerControllerMouseDown_ signal be caught before tools but after menu
+    viewer.mouseDownSignal.connect( 5, MAKE_SLOT( &MouseController::cornerControllerMouseDown_ ) );
     viewer.mouseDownSignal.connect( MAKE_SLOT( &MouseController::mouseDown_ ) );
     viewer.mouseUpSignal.connect( MAKE_SLOT( &MouseController::preMouseUp_ ), boost::signals2::at_front );
     viewer.mouseMoveSignal.connect( MAKE_SLOT( &MouseController::preMouseMove_ ), boost::signals2::at_front );
     viewer.mouseScrollSignal.connect( MAKE_SLOT( &MouseController::mouseScroll_ ) );
     viewer.cursorEntranceSignal.connect( MAKE_SLOT( &MouseController::cursorEntrance_ ) );
+    viewer.preDrawSignal.connect( MAKE_SLOT( &MouseController::preDraw_ ) );
 }
 
 void MouseController::cursorEntrance_( bool entered )
@@ -120,42 +130,109 @@ void MouseController::cursorEntrance_( bool entered )
     isCursorInside_ = entered;
 }
 
-bool MouseController::preMouseDown_( MouseButton btn, int )
+int MouseController::getMouseConflicts()
+{
+    // Check if camera movement is set to use left mouse button, regardless of modifiers
+    for ( auto& [mode, key] : backMap_ )
+        if ( keyToMouseAndMod( key ).btn == MouseButton::Left )
+            // Return relevant connections number
+            return
+                int( getViewerInstance().mouseDownSignal.num_slots() ) +
+                int( getViewerInstance().dragStartSignal.num_slots() );
+    return 0;
+}
+
+bool MouseController::preMouseDown_( MouseButton btn, int mod )
 {
     resetAllIfNeeded_();
     if ( !downState_.any() )
         downMousePos_ = currentMousePos_;
 
+    // Click behavior is enabled only if it has listeners
+    if ( getViewerInstance().mouseClickSignal.num_slots() > 0 )
+    {
+        clickButton_ = btn; // Support click by one button only
+        // No pending button yet - so that camera operation starts only if mouseDown had not been handled by other tool
+        clickPendingDown_ = MouseButton::NoButton;
+        clickModifiers_ = mod;
+        clickTime_ = std::chrono::system_clock::now();
+    }
+    if ( !dragActive_ && dragButton_ == MouseButton::NoButton )
+        dragButton_ = btn;
+
     downState_.set( int( btn ) );
+    return false;
+}
+
+bool MouseController::cornerControllerMouseDown_( MouseButton btn, int mod )
+{
+    if ( btn == MouseButton::Left && mod == 0 && tryPressViewController_() )
+        return true;
     return false;
 }
 
 bool MouseController::mouseDown_( MouseButton btn, int mod )
 {
+    auto& viewer = getViewerInstance();
+
+    if ( clickButton_ == MouseButton::NoButton && !dragActive_ && dragButton_ == btn &&
+         viewer.dragStart( btn, mod ) )
+    {
+        dragActive_ = true;
+        return true;
+    }
+
     if ( currentMode_ != MouseMode::None )
         return false;
 
     if ( downState_.count() > 1 )
         return false;
 
-    auto& viewer = getViewerInstance();
+    if ( clickButton_ != MouseButton::NoButton )
+    {
+        // Mouse down pending - will be handled if mouse is actually moved
+        clickPendingDown_ = btn;
+        return false;
+    }
+
     viewer.select_hovered_viewport();
 
     auto modIt = map_.find( mouseAndModToKey( { btn,mod } ) );
     if ( modIt == map_.end() )
+        modIt = map_.find( mouseAndModToKey( { btn,mod & ~GLFW_MOD_ALT } ) );
+    if ( modIt == map_.end() )
         return false;
 
     currentMode_ = modIt->second;
-    if ( currentMode_ == MouseMode::Rotation )
+    if ( currentMode_ == MouseMode::Rotation || currentMode_ == MouseMode::Roll )
         viewer.viewport().setRotation( true );
     else if ( currentMode_ == MouseMode::Translation )
         downTranslation_ = viewer.viewport().getParameters().cameraTranslation;
     return true;
 }
 
-bool MouseController::preMouseUp_( MouseButton btn, int )
+bool MouseController::preMouseUp_( MouseButton btn, int mod )
 {
+    auto& viewer = getViewerInstance();
+
     downState_.set( int( btn ), false );
+
+    if ( clickButton_ == btn )
+    {
+        if ( ( std::chrono::system_clock::now() - clickTime_ ).count() < cMouseClickNs )
+            getViewerInstance().mouseClick( btn, mod );
+    }
+    clickButton_ = MouseButton::NoButton;
+    if ( dragButton_ == btn )
+    {
+        if ( dragActive_ )
+        {
+            viewer.dragEnd( btn, mod );
+            dragActive_ = false;
+        }
+        dragButton_ = MouseButton::NoButton;
+    }
+
     if ( currentMode_ == MouseMode::None )
         return false;
 
@@ -166,22 +243,47 @@ bool MouseController::preMouseUp_( MouseButton btn, int )
     if ( keyToMouseAndMod( btnIt->second ).btn != btn )
         return false;
 
-    if ( currentMode_ == MouseMode::Rotation )
-        getViewerInstance().viewport().setRotation( false );
+    if ( currentMode_ == MouseMode::Rotation || currentMode_ == MouseMode::Roll )
+        viewer.viewport().setRotation( false );
 
     currentMode_ = MouseMode::None;
     return false; // so others can override mouse up even if scene control was active
 }
 
-bool MouseController::preMouseMove_( int x, int y)
+bool MouseController::preMouseMove_( int x, int y )
 {
+    auto& viewer = getViewerInstance();
+
+    // Click and dragging behavior
+    if ( clickButton_ != MouseButton::NoButton )
+    {
+        if ( std::abs( x - downMousePos_.x ) + std::abs( y - downMousePos_.y ) > cMouseClickDist ||
+             ( std::chrono::system_clock::now() - clickTime_ ).count() > cMouseClickNs )
+        {
+            // Moved the mouse far/long enough - replay mouse down in original position
+            MouseButton btn = clickButton_;
+            clickButton_ = MouseButton::NoButton;
+            // Note: currentMousePos_ is used as a position in pick functions
+            currentMousePos_ = downMousePos_;
+            if ( clickPendingDown_ == btn )
+                mouseDown_( btn, clickModifiers_ ); // Also handles dragging
+            // Continue mouse move handle as if it was a single event from downMousePos_
+        }
+    }
+
     prevMousePos_ = currentMousePos_;
     currentMousePos_ = { x,y };
+
+    if ( dragActive_ )
+        return viewer.drag( x, y );
+    if ( clickButton_ != MouseButton::NoButton )
+        return false;
+
+    // Own handle (camera control)
 
     if ( currentMode_ == MouseMode::None )
         return false;
 
-    auto& viewer = getViewerInstance();
     auto& viewport = viewer.viewport();
     AffineXf3f xf;
     switch ( currentMode_ )
@@ -195,6 +297,18 @@ bool MouseController::preMouseMove_( int x, int y)
             quat.inverse() *
             Quaternionf( Vector3f{ 0,1,0 }, angle.x ) *
             Quaternionf( Vector3f{ 1,0,0 }, angle.y ) *
+            quat
+            ).normalized();
+        xf = AffineXf3f::linear( Matrix3f( quat ) );
+        break;
+    }
+    case MR::MouseMode::Roll:
+    {
+        auto quat = viewport.getParameters().cameraTrackballAngle;
+        auto angle = PI_F * ( currentMousePos_.x - prevMousePos_.x ) / viewer.framebufferSize.x * 4.0f;
+        quat = (
+            quat.inverse() *
+            Quaternionf( Vector3f{ 0,0,1 }, angle ) *
             quat
             ).normalized();
         xf = AffineXf3f::linear( Matrix3f( quat ) );
@@ -274,12 +388,95 @@ bool MouseController::mouseScroll_( float delta )
     return true;
 }
 
+void MouseController::preDraw_()
+{
+    if ( downState_.none() )
+        tryHoverViewController_();
+}
+
 void MouseController::resetAllIfNeeded_()
 {
     if ( !dropOldEventsOnNew_ )
         return;
     for ( auto btn : downState_ )
         getViewerInstance().mouseUp( MouseButton( btn ), 0 );
+}
+
+bool MouseController::tryHoverViewController_()
+{
+    auto setHovered = [&] ( RegionId region )
+    {
+        if ( region == viewControllerHoveredRegion_ )
+            return;
+        viewControllerHoveredRegion_ = region;
+        if ( viewControllerHoveredRegion_ )
+        {
+            getViewerInstance().setSceneDirty();
+            getViewerInstance().basisViewController->setTexturePerFace( getCornerControllerHoveredTextureMap( viewControllerHoveredRegion_ ) );
+        }
+        else
+        {
+            getViewerInstance().setSceneDirty();
+            getViewerInstance().basisViewController->setTexturePerFace( getCornerControllerTexureMap() );
+        }
+    };
+
+    auto hoveredVpId = getViewerInstance().getHoveredViewportId();
+    if ( !hoveredVpId.valid() )
+    {
+        setHovered( {} );
+        return false;
+    }
+    const auto& vp = getViewerInstance().viewport( hoveredVpId );
+    if ( !getViewerInstance().basisViewController->isVisible( vp.id ) )
+    {
+        setHovered( {} );
+        return false;
+    }
+    auto screenPos = to2dim( getViewerInstance().viewportToScreen( to3dim( vp.getAxesPosition() ), vp.id ) );
+
+    if ( distanceSq( Vector2f( currentMousePos_ ), screenPos ) > sqr( vp.getAxesSize() ) )
+    {
+        setHovered( {} );
+        return false;
+    }
+
+    if ( !getViewerInstance().basisViewController->parent() )
+    {
+        // make fictive parent so picker works as expected (we need to make getSharedPtr() work)
+        static std::shared_ptr<Object> fictiveParent = std::make_shared<Object>();
+        fictiveParent->addChild( getViewerInstance().basisViewController );
+    }
+
+    auto staticRenderParams = vp.getBaseRenderParams( vp.getAxesProjectionMatrix() );
+    auto [obj, pick] = vp.pickRenderObject( { { static_cast< VisualObject* >( getViewerInstance().basisViewController.get() ) } }, { .baseRenderParams = &staticRenderParams } );
+    if ( obj != getViewerInstance().basisViewController )
+    {
+        setHovered( {} );
+        return false;
+    }
+
+    setHovered( getCornerControllerRegionByFace( pick.face ) );
+
+    return true;
+}
+
+bool MouseController::tryPressViewController_()
+{
+    if ( !viewControllerHoveredRegion_ )
+        return false;
+
+    // validate pick just in case
+    const auto& vp = getViewerInstance().viewport();
+    auto staticRenderParams = vp.getBaseRenderParams( vp.getAxesProjectionMatrix() );
+    auto [obj, pick] = vp.pickRenderObject( { { static_cast< VisualObject* >( getViewerInstance().basisViewController.get() ) } }, { .baseRenderParams = &staticRenderParams } );
+    if ( obj != getViewerInstance().basisViewController )
+        return false;
+    
+    auto region = getCornerControllerRegionByFace( pick.face );
+    updateCurrentViewByControllerRegion( region );
+
+    return true;
 }
 
 }

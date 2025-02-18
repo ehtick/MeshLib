@@ -1,33 +1,12 @@
 #include "MRRegularMapMesher.h"
-#include "MRPointsLoad.h"
 #include "MRRegularGridMesh.h"
 
 namespace MR
 {
 
-VoidOrErrStr RegularMapMesher::loadSurfacePC( const std::filesystem::path& path )
-{
-    auto res = PointsLoad::fromAnySupportedFormat( path );
-    if ( !res.has_value() )
-        return unexpected( res.error() );
-
-    surfacePC_ = std::make_unique<PointCloud>( std::move( res.value() ) );
-    return {};
-}
-
 void RegularMapMesher::setSurfacePC( const std::shared_ptr<PointCloud>& surfacePC )
 {
     surfacePC_ = surfacePC;
-}
-
-VoidOrErrStr RegularMapMesher::loadDirectionsPC( const std::filesystem::path& path )
-{
-    auto res = PointsLoad::fromAnySupportedFormat( path );
-    if ( !res.has_value() )
-        return unexpected( res.error() );
-    
-    directionsPC_ = std::make_unique<PointCloud>( std::move( res.value() ) );
-    return {};
 }
 
 void RegularMapMesher::setDirectionsPC( const std::shared_ptr<PointCloud>& directionsPC )
@@ -35,7 +14,7 @@ void RegularMapMesher::setDirectionsPC( const std::shared_ptr<PointCloud>& direc
     directionsPC_ = directionsPC;
 }
 
-VoidOrErrStr RegularMapMesher::loadDistances( int width, int height, const std::filesystem::path& path )
+Expected<void> RegularMapMesher::loadDistances( int width, int height, const std::filesystem::path& path )
 {
     width_ = width;
     height_ = height;
@@ -58,7 +37,7 @@ void RegularMapMesher::setDistances( int width, int height, const std::vector<fl
     distances_ = distances;
 }
 
-Expected<Mesh, std::string> RegularMapMesher::createMesh() const
+Expected<Mesh> RegularMapMesher::createMesh() const
 {
     auto refSize = width_ * height_;
     if ( !surfacePC_ )
@@ -76,19 +55,21 @@ Expected<Mesh, std::string> RegularMapMesher::createMesh() const
     if ( distances_.size() != refSize )
         return unexpected( "Distances size is not equal width*height" );
 
-
-    auto mesh = makeRegularGridMesh( width_, height_, [&]( size_t x, size_t y )
+    auto mesh = makeRegularGridMesh( width_, height_, [&] ( size_t x, size_t y )
     {
         return distances_[x + y * width_] != 0.0;
     },
-                                [&]( size_t x, size_t y )
+                                [&] ( size_t x, size_t y )
     {
         VertId idx = VertId( x + y * width_ );
         Vector3f org = surfacePC_->points[idx];
-        Vector3f dest = directionsPC_->points[VertId(x)];
+        Vector3f dest = directionsPC_->points[VertId( x )];
         return org + ( dest - org ).normalized() * ( 1.0f / distances_[idx] );
     } );
-    mesh.topology.flipOrientation();
+
+    if( mesh )
+        mesh.value().topology.flipOrientation();
+
     return mesh;
 }
 

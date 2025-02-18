@@ -1,8 +1,11 @@
 #include "MRNormalsToPoints.h"
 #include "MRMesh.h"
 #include "MRBitSetParallelFor.h"
+#include "MRParallelFor.h"
 #include "MRTriMath.h"
 #include "MRTimer.h"
+#include "MRRelaxParams.h" //getLimitedPos
+#include <limits>
 
 #pragma warning(push)
 #pragma warning(disable: 4068) // unknown pragmas
@@ -26,7 +29,7 @@ class Solver : public NormalsToPoints::ISolver
 {
 public:
     virtual void prepare( const MeshTopology & topology, float guideWeight ) override;
-    virtual void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points ) override;
+    virtual void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points, float maxInitialDistSq ) override;
 
 private:
     const MeshTopology * topology_ = nullptr;
@@ -85,22 +88,18 @@ void Solver::prepare( const MeshTopology & topology, float guideWeight )
         rhs_[i].resize( nRows );
 }
 
-void Solver::run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points )
+void Solver::run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points, float maxInitialDistSq )
 {
     MR_TIMER
     assert( topology_ );
     if ( !topology_ )
         return;
 
-    const int nVerts = (int)topology_->vertSize();
     // every point shall be close to corresponding guide point (with small weight)
-    tbb::parallel_for( tbb::blocked_range( 0_v, VertId( nVerts ) ), [&] ( const tbb::blocked_range<VertId>& range )
+    ParallelFor( 0_v, guide.endId(), [&]( VertId v )
     {
-        for ( VertId v = range.begin(); v < range.end(); ++v )
-        {
-            for ( int i = 0; i < 3; ++i )
-                rhs_[i][v] = guideWeight_ * guide[v][i];
-        }
+        for ( int i = 0; i < 3; ++i )
+            rhs_[i][v] = guideWeight_ * guide[v][i];
     } );
 
     // add 2 equations per triangle for relative position of projected triangle points
@@ -121,20 +120,21 @@ void Solver::run( const VertCoords & guide, const FaceNormals & normals, VertCoo
 
     // solve linear equations
     Eigen::VectorXd sol[3];
-    tbb::parallel_for( tbb::blocked_range<int>( 0, 3 ), [&]( const tbb::blocked_range<int> & range )
+    ParallelFor( 0, 3, [&]( int i )
     {
-        for ( int i = range.begin(); i < range.end(); ++i )
-            sol[i] = ldlt_.solve( mat_.adjoint() * rhs_[i] );
+        sol[i] = ldlt_.solve( mat_.adjoint() * rhs_[i] );
     } );
 
     // copy back the solution into points
-    tbb::parallel_for( tbb::blocked_range( 0_v, VertId( nVerts ) ), [&] ( const tbb::blocked_range<VertId>& range )
+    const bool limitNearInitial = std::isfinite( maxInitialDistSq );
+    ParallelFor( 0_v, guide.endId(), [&]( VertId v )
     {
-        for ( VertId v = range.begin(); v < range.end(); ++v )
-        {
-            for ( int i = 0; i < 3; ++i )
-                points[v][i] = (float)sol[i][v];
-        }
+        Vector3f np;
+        for ( int i = 0; i < 3; ++i )
+            np[i] = (float)sol[i][v];
+        if ( limitNearInitial )
+            np = getLimitedPos( np, guide[v], maxInitialDistSq );
+        points[v] = np;
     } );
 }
 
@@ -148,10 +148,15 @@ void NormalsToPoints::prepare( const MeshTopology & topology, float guideWeight 
 
 void NormalsToPoints::run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points )
 {
+    run( guide, normals, points, std::numeric_limits<float>::infinity() );
+}
+
+void NormalsToPoints::run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points, float maxInitialDistSq )
+{
     assert( solver_ );
     if ( !solver_ )
         return;
-    solver_->run( guide, normals, points );
+    solver_->run( guide, normals, points, maxInitialDistSq );
 }
 
 } //namespace MR

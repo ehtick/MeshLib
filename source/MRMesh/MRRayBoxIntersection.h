@@ -1,6 +1,7 @@
 #pragma once
 #include "MRBox.h"
 #include "MRIntersectionPrecomputes.h"
+#include "MRPch/MRBindingMacros.h"
 
 namespace MR
 {
@@ -21,13 +22,13 @@ struct RayOrigin
 template<>
 struct RayOrigin<float>
 {
-    __m128 p;
+    MR_BIND_IGNORE __m128 p;
     RayOrigin( const Vector3f & ro ) { p = _mm_set_ps( ro.x, ro.y, ro.z, 0 ); }
 };
 
 /// finds intersection between the Ray and the Box.
-/// Precompute values could be useful for several calls with the same direction
-/// \details http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.64.7663&rep=rep1&type=pdf
+/// Precomputed values could be useful for several calls with the same direction,
+/// see "An Efficient and Robust Ray-Box Intersection Algorithm" at https://people.csail.mit.edu/amy/papers/box-jgt.pdf
 inline bool rayBoxIntersect( const Box3f& box, const RayOrigin<float> & rayOrigin, float & t0, float & t1, const IntersectionPrecomputes<float>& prec )
 {
     __m128 l = _mm_set_ps( box.min.x, box.min.y, box.min.z, t0 );

@@ -16,9 +16,11 @@ public:
     {
         Mesh,
         Picker,
+        MeshDesktopPicker, // only for non corner-based mode
         TransparentMesh,
 
-        DrawPoints,
+        Points,
+        TransparentPoints,
 
         Lines,
         LinesJoint,

@@ -1,10 +1,11 @@
 #pragma once
 
-#include "MRMatrix3.h"
 #include "MRSymMatrix3.h"
 #include "MRPlane3.h"
 #include "MRLine3.h"
+#include "MRPolyline.h"
 #include "MRAffineXf3.h"
+#include <array>
 
 namespace MR
 {
@@ -34,20 +35,37 @@ public:
     MRMESH_API bool getCenteredCovarianceEigen( Vector3f& centroid, Matrix3f& eigenvectors, Vector3f& eigenvalues ) const;
 
     /// returns the transformation that maps (0,0,0) into point centroid,
-    /// and maps vectors (1,0,0), (0,1,0), (0,0,1) into first, second, third eigenvectors
+    /// and maps vectors (1,0,0), (0,1,0), (0,0,1) into first, second, third eigenvectors corresponding to ascending eigenvalues
     MRMESH_API AffineXf3d getBasicXf() const;
     AffineXf3f getBasicXf3f() const { return AffineXf3f( getBasicXf() ); }
+
+    /// returns 4 transformations, each maps (0,0,0) into point centroid,
+    /// and maps vectors (1,0,0), (0,1,0), (0,0,1) into +/- first, +/- second, +/- third eigenvectors (forming positive reference frame) corresponding to ascending eigenvalues
+    MRMESH_API std::array<AffineXf3d, 4> get4BasicXfs() const;
+    MRMESH_API std::array<AffineXf3f, 4> get4BasicXfs3f() const;
 
     bool valid() const { return sumWeight_ > 0; };
 
 private:
     double sumWeight_ = 0;
     Vector3d momentum1_;
-    Matrix3d momentum2_ = Matrix3d::zero();
+    SymMatrix3d momentum2_;
 };
 
-/// This function accumulate all mesh face centers added there with the weight equal to face area in existing `PointAccumulator`
+/// Adds in existing PointAccumulator all given points
+MRMESH_API void accumulatePoints( PointAccumulator& accum, const std::vector<Vector3f>& points, const AffineXf3f* xf = nullptr );
+
+/// Adds in existing PointAccumulator all given weighed points
+MRMESH_API void accumulateWeighedPoints( PointAccumulator& accum, const std::vector<Vector3f>& points, const std::vector<float>& weights, const AffineXf3f* xf = nullptr );
+
+/// Adds in existing PointAccumulator all mesh face centers with the weight equal to face area
 MRMESH_API void accumulateFaceCenters( PointAccumulator& accum, const MeshPart& mp, const AffineXf3f* xf = nullptr );
+
+/// Adds in existing PointAccumulator all line centers with the weight equal to the length line
+MRMESH_API void accumulateLineCenters( PointAccumulator& accum, const Polyline3& pl, const AffineXf3f* xf = nullptr );
+
+/// Adds in existing PointAccumulator all points from the cloud with weight 1
+MRMESH_API void accumulatePoints( PointAccumulator& accum, const PointCloud& pc, const AffineXf3f* xf = nullptr );
 
 /// \}
 

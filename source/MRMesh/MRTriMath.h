@@ -38,6 +38,52 @@ template <typename T>
     return std::sqrt( circumcircleDiameterSq( a, b, c ) );
 }
 
+/// Computes the center of the the triangle's 0AB circumcircle
+template <typename T>
+[[nodiscard]] Vector3<T> circumcircleCenter( const Vector3<T> & a, const Vector3<T> & b )
+{
+    const auto xabSq = cross( a, b ).lengthSq();
+    const auto aa = a.lengthSq();
+    const auto bb = b.lengthSq();
+    if ( xabSq <= 0 )
+    {
+        if ( aa <= 0 )
+            return b / T(2);
+        // else b == 0 || a == b
+        return a / T(2);
+    }
+    const auto ab = dot( a, b );
+    return ( bb * ( aa - ab ) * a + aa * ( bb - ab ) * b ) / ( 2 * xabSq );
+}
+
+/// Computes the center of the the triangle's ABC circumcircle
+template <typename T>
+[[nodiscard]] inline Vector3<T> circumcircleCenter( const Vector3<T> & a, const Vector3<T> & b, const Vector3<T> & c )
+{
+    return circumcircleCenter( a - c, b - c ) + c;
+}
+
+/// Given triangle ABC and ball radius, finds two centers of balls each touching all 3 triangle's vertices;
+/// \return false if such balls do not exist (radius is smaller that circumcircle radius)
+template <typename T>
+[[nodiscard]] bool circumballCenters( const Vector3<T> & a, const Vector3<T> & b, const Vector3<T> & c, T radius,
+    Vector3<T> & centerPos, // ball's center from the positive side of triangle
+    Vector3<T> & centerNeg )// ball's center from the negative side of triangle
+{
+    const auto rr = sqr( radius );
+    const auto circRadSq = circumcircleDiameterSq( a, b, c ) / T( 4 );
+    if ( rr < circRadSq )
+        return false;
+
+    const auto x = std::sqrt( rr - circRadSq );
+    const auto xn = x * normal( a, b, c );
+    const auto circCenter = circumcircleCenter( a, b, c );
+    centerPos = circCenter + xn;
+    centerNeg = circCenter - xn;
+
+    return true;
+}
+
 /// Computes sine of minimal angle in ABC triangle, which is equal to ratio of minimal edge length to circumcircle diameter
 /// \ingroup MathGroup
 template <typename T>
@@ -72,6 +118,13 @@ template<typename T>
         return std::numeric_limits<T>::max();
 
     return bc * ca * ab / den;
+}
+
+/// computes directed double area of given triangle
+template<typename T>
+[[nodiscard]] inline Vector3<T> dirDblArea( const Triangle3<T> & t )
+{
+    return cross( t[1] - t[0], t[2] - t[0] );
 }
 
 /// computes directed double area of given triangle
@@ -123,7 +176,31 @@ template<typename T>
     return dblArea( p, q, r ) / 2;
 }
 
-/// project given triangle on a plane passing via its centroid and having normal (n);
+/// make degenerate triangle (all 3 points on a line) that maximally resembles the input one and has the same centroid
+template <typename T>
+[[nodiscard]] Triangle3<T> makeDegenerate( const Triangle3<T> & t )
+{
+    const auto c = ( t[0] + t[1] + t[2] ) / T(3);
+    int longest = 0;
+    T longestSq = 0;
+    for ( int i = 0; i < 3; ++i )
+    {
+        const auto sq = ( t[i] - c ).lengthSq();
+        if ( longestSq >= sq )
+            continue;
+        longest = i;
+        longestSq = sq;
+    }
+    const auto d = ( t[longest] - c ).normalized();
+
+    // project triangle on the line (c, d)
+    Triangle3<T> res;
+    for ( int i = 0; i < 3; ++i )
+        res[i] = c + d * dot( d, t[i] - c );
+    return res;
+}
+
+/// project given triangle on a plane passing via its centroid and having unit normal (n);
 /// if after projection triangle normal turns out to be inversed, then collapses the triangle into degenerate line segment
 template <typename T>
 [[nodiscard]] Triangle3<T> triangleWithNormal( const Triangle3<T> & t, const Vector3<T> & n )
@@ -131,31 +208,10 @@ template <typename T>
     const auto c = ( t[0] + t[1] + t[2] ) / T(3);
     Triangle3<T> res;
     for ( int i = 0; i < 3; ++i )
-    {
-        const auto x = t[i] - c;
-        res[i] = x - n * dot( n, x );
-    }
-    if ( dot( n, cross( res[0], res[1] ) ) < 0 )
-    {
-        // projected triangle has inversed normal
-        int longest = 0;
-        T longestSq = 0;
-        for ( int i = 0; i < 3; ++i )
-        {
-            const auto sq = res[i].lengthSq();
-            if ( longestSq >= sq )
-                continue;
-            longest = i;
-            longestSq = sq;
-        }
-        const auto d = res[longest].normalized();
-        // project triangle the line (0, d)
-        for ( int i = 0; i < 3; ++i )
-            res[i] = d * dot( d, res[i] );
-    }
-    
-    for ( int i = 0; i < 3; ++i )
-        res[i] += c;
+        res[i] = t[i] - n * dot( n, t[i] - c );
+
+    if ( dot( n, dirDblArea( res ) ) < 0 ) // projected triangle has inversed normal
+        res = makeDegenerate( res );
     return res;
 }
 

@@ -39,7 +39,7 @@ static VertId getFurthestVertexFromPoint( const VertCoords & points, const VertB
     float maxDistSq = 0;
     for ( VertId v : validPoints )
     {
-        const auto distSq = ( points[v] - p ).lengthSq();
+        const auto distSq = distanceSq( points[v], p );
         if ( !res || maxDistSq < distSq )
         {
             res = v;
@@ -205,8 +205,7 @@ Mesh makeConvexHull( const VertCoords & points, const VertBitSet & validPoints )
             queue.setSmallerValue( myFace, NoDist );
             continue;
         }
-        auto newv = res.splitFace( myFace );
-        res.points[newv] = points[topmostVert];
+        auto newv = res.splitFace( myFace, points[topmostVert] );
 
         makeConvexOriginRing( res, res.topology.edgeWithOrg( newv ) );
         queue.resize( (int)res.topology.faceSize() );

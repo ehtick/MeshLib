@@ -18,15 +18,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MREigenCore.h" />
+    <ClInclude Include="MRFilesystem.h" />
+    <ClInclude Include="MRFmt.h" />
     <ClInclude Include="MRWasm.h" />
     <ClInclude Include="MRAsyncLaunchType.h" />
     <ClInclude Include="MREigen.h" />
-    <ClInclude Include="MROpenvdb.h" />
     <ClInclude Include="MRJson.h" />
     <ClInclude Include="MRPch.h" />
     <ClInclude Include="MRTBB.h" />
     <ClInclude Include="MRSpdlog.h" />
     <ClInclude Include="MRSuppressWarning.h" />
+    <ClInclude Include="MRBindingMacros.h" />
+    <ClInclude Include="MRWinapi.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
@@ -71,7 +74,7 @@
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
       <PrecompiledHeaderFile>MRPch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
     </ClCompile>
@@ -99,7 +102,7 @@
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
       <PrecompiledHeaderFile>MRPch.h</PrecompiledHeaderFile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(ProjectDir)..\..\thirdparty;$(ProjectDir)\..\..\thirdparty\imgui\</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>MRPch.h</ForcedIncludeFiles>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
     </ClCompile>

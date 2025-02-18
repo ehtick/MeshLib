@@ -4,6 +4,7 @@
 	"Tabs": [
 		{
 			"Name": "Home",
+			"Priority": 0,
 			"Groups": [
 				{
 					"Name": "New",
@@ -14,14 +15,19 @@
 					]
 				},
 				{
-					"Name": "Files",
+					"Name": "Files Open",
 					"List": [
 						{
 							"Name": "Open files"
 						},
 						{
 							"Name": "Open directory"
-						},
+						}
+					]
+				},
+				{
+					"Name": "Files Save",
+					"List": [
 						{
 							"Name": "Save Scene"
 						},
@@ -35,40 +41,30 @@
 							"Name": "Save object"
 						}
 					]
+				},
+				{
+					"Name": "Settings",
+					"List": [
+						{
+							"Name": "Viewer settings"
+						}
+					]
 				}
 			]
 		},
 		{
 			"Name": "View",
+			"Priority": 1,
 			"Groups": [
-				{
-					"Name": "Basic",
-					"List": [
-						{
-							"Name": "Fit data"
-						},
-						{
-							"Name": "Select objects"
-						},
-						{
-							"Name": "Move object"
-						},
-						{
-							"Name": "Capture screenshot"
-						},
-						{
-							"Name": "Add custom theme"
-						},
-						{
-							"Name": "Viewer settings"
-						}
-					]
-				},
+				
 				{
 					"Name": "Camera",
 					"List": [
 						{
-							"Name": "Camera"
+							"Name": "Show_Hide Global Basis"
+						},
+						{
+							"Name": "Fit data"
 						},
 						{
 							"Name": "Front View"
@@ -90,6 +86,9 @@
 						},
 						{
 							"Name": "Isometric View"
+						},
+						{
+							"Name": "Invert View"
 						}
 					]
 				},
@@ -109,13 +108,42 @@
 							"Name": "Quad Viewports"
 						}
 					]
+				},
+				{
+					"Name": "Animate",
+					"List": [
+						{
+							"Name": "Rotator"
+						},
+						{
+							"Name": "Capture screenshot"
+						},
+						{
+							"Name": "Add custom theme"
+						}
+					]
 				}
-
 			]
 		},
 		{
-			"Name": "Voxel",
-			"Priority": 1,
+			"Name": "Select",
+			"Priority": 2,
+			"Groups": [
+				{
+					"Name": "Basic",
+					"List": [
+						{
+							"Name": "Select objects"
+						}
+					]
+				}
+			]
+		},
+		
+		
+		{
+			"Name": "CT",
+			"Priority": 3,
 			"Groups": [
 				{
 					"Name": "Open",
@@ -128,6 +156,34 @@
 						},
 						{
 							"Name": "Open Voxels From TIFF"
+						}
+					]
+				},
+				{
+					"Name": "Basic",
+					"List": [
+					]
+				},
+				{
+					"Name": "Binary",
+					"List": [
+						{
+							"Name": "Binary Operations"
+						}
+					]
+				}
+			]
+		},
+		{
+			"Name": "Test",
+			"Priority": 3,
+			"Experimental": true,
+			"Groups": [
+				{
+					"Name": "Old",
+					"List": [
+						{
+							"Name": "Camera"
 						}
 					]
 				}
@@ -143,9 +199,6 @@
 		},
 		{
 			"Name": "Move object"
-		},
-		{
-			"Name": "Camera"
 		},
 		{
 			"Name": "Viewer settings"
@@ -168,6 +221,12 @@
 	"Scene Buttons": [
 		{
 			"Name": "Ribbon Scene Sort by name"
+		},
+		{
+			"Name": "Ribbon Scene Show all"
+		},
+		{
+			"Name": "Ribbon Scene Hide all"
 		},
 		{
 			"Name": "Ribbon Scene Select all"

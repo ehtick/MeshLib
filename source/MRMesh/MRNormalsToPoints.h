@@ -18,9 +18,11 @@ public:
 
     /// performs one iteration consisting of projection of all triangles on planes with given normals and finding best points from them
     /// \param guide target vertex positions to avoid under-determined system
-    /// \param normal target face normals
+    /// \param normals target face normals
     /// \param points initial approximation on input, updated approximation on output
+    /// \param maxInitialDistSq the maximum squared distance between a point and its position in (guide)
     MRMESH_API void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points );
+    MRMESH_API void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points, float maxInitialDistSq );
 
     // pImpl
     class ISolver
@@ -28,7 +30,7 @@ public:
     public:
         virtual ~ISolver() = default;
         virtual void prepare( const MeshTopology & topology, float guideWeight ) = 0;
-        virtual void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points ) = 0;
+        virtual void run( const VertCoords & guide, const FaceNormals & normals, VertCoords & points, float maxInitialDistSq ) = 0;
     };
 private:
     std::unique_ptr<ISolver> solver_;

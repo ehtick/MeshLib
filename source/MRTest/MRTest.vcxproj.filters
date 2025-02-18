@@ -7,7 +7,16 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MRSpdlog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MRTestApp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRTriangleIntersection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MRZlib.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
